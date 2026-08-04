@@ -463,6 +463,22 @@ test_pr_merge_survives_a_linear_failure() {
   pass "a Linear outage is reported but never blocks a merge"
 }
 
+test_pr_merge_does_not_close_a_failed_merge() {
+  local home rc
+  home=$(make_pr_home pr-merge-failed)
+  add_forge_mocks "$home" merge-fails
+
+  set +e
+  run_pr_script "$PR_MERGE" "$home" rac125-font https://github.com/example/repo/pull/15 >/dev/null 2>&1
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "pr-merge-failed: a failed merge must still be reported as a failure"
+  assert_no_grep '"stateId": "st-done"' "$home/linear.log" \
+    "pr-merge-failed: a merge that did not land must not close the issue"
+  pass "a merge that failed leaves the issue open rather than reporting it Done"
+}
+
 test_pr_merge_does_not_close_an_auto_merge() {
   local home rc
   home=$(make_pr_home pr-merge-auto)
@@ -584,6 +600,7 @@ test_pr_check_moves_the_issue_to_in_review
 test_pr_check_survives_a_linear_failure
 test_pr_merge_moves_the_issue_to_done
 test_pr_merge_survives_a_linear_failure
+test_pr_merge_does_not_close_a_failed_merge
 test_pr_merge_does_not_close_an_auto_merge
 test_spawn_moves_the_issue_to_in_progress
 test_spawn_survives_a_linear_failure
