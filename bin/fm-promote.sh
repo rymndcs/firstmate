@@ -12,7 +12,13 @@
 # read the scout's report (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never looks it up.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
-# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off>
+# A scout has no branch, so promotion is also where a supplied branch name is
+# decided. --branch <name> records branch=<name> in the meta and names that branch
+# in the printed ship instructions, matching what fm-brief.sh --branch does for a
+# task that shipped from the start (see that script's header for why a tracker's
+# own branch name matters). Omitted, the promoted task uses fm/<task-id> and no
+# branch= is recorded, leaving the meta byte-identical to the historical form.
+# Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch <name>]
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,8 +28,10 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 
 MODE=
 YOLO=
+BRANCH_ARG=
 MODE_SET=0
 YOLO_SET=0
+BRANCH_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -34,6 +42,7 @@ for a in "$@"; do
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
       yolo) YOLO=$a; YOLO_SET=1 ;;
+      branch) BRANCH_ARG=$a; BRANCH_SET=1 ;;
     esac
     want_value=
     continue
@@ -43,6 +52,8 @@ for a in "$@"; do
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
     --yolo) want_value=yolo ;;
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
+    --branch) want_value=branch ;;
+    --branch=*) BRANCH_ARG=${a#--branch=}; BRANCH_SET=1 ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -67,6 +78,17 @@ case "$YOLO" in
   on|off) ;;
   *) echo "error: --yolo must be on or off (got '$YOLO')" >&2; exit 1 ;;
 esac
+if [ "$BRANCH_SET" -eq 1 ]; then
+  case "$BRANCH_ARG" in
+    '') echo "error: --branch requires a branch name" >&2; exit 1 ;;
+    -*) echo "error: --branch must not start with a dash (got '$BRANCH_ARG')" >&2; exit 1 ;;
+    *[[:space:]]*) echo "error: --branch must not contain whitespace (got '$BRANCH_ARG')" >&2; exit 1 ;;
+  esac
+  git check-ref-format "refs/heads/$BRANCH_ARG" >/dev/null 2>&1 || {
+    echo "error: --branch is not a valid git branch name: $BRANCH_ARG" >&2
+    exit 1
+  }
+fi
 
 "$FM_ROOT/bin/fm-guard.sh" || true
 ID=${POS[0]}
@@ -74,15 +96,19 @@ META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
 grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (kind=scout not in meta)" >&2; exit 1; }
 
+BRANCH=${BRANCH_ARG:-fm/$ID}
+
 TMP="$META.tmp"
-grep -v -e '^kind=' -e '^mode=' -e '^yolo=' "$META" > "$TMP"
+grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^branch=' "$META" > "$TMP"
 {
   echo "kind=ship"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
+  # Recorded only when supplied, so an ordinary promotion's meta is unchanged.
+  if [ "$BRANCH_SET" -eq 1 ]; then echo "branch=$BRANCH"; fi
 } >> "$TMP"
 mv "$TMP" "$META"
 
 HOME_Q=$(printf '%q' "$FM_HOME")
 echo "promoted $ID to ship mode=$MODE yolo=$YOLO (teardown protection restored)"
-echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch fm/$ID; implement; report done>'"
+echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch $BRANCH; implement; report done>'"

@@ -6,7 +6,7 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch <name>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -43,6 +43,19 @@
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
+# The task branch is `fm/<task-id>` unless --branch supplies one. --branch exists
+# for issue trackers whose forge integration transitions an issue only when the
+# branch carries the exact name that tracker published for it (Linear's
+# gitBranchName is the motivating case), so naming the branch their way lets the
+# integration do the status transitions with no agent in the loop. The name is
+# supplied by firstmate at intake; this script never looks one up and adds no
+# tracker dependency. When --branch is given, the ship brief's machine-readable
+# delivery line carries a trailing " branch=<name>" that bin/fm-spawn.sh records
+# in the task metadata, so every later consumer resolves the same branch after a
+# restart. Without --branch the scaffold is byte-identical to the fm/<task-id>
+# form and no branch= is recorded anywhere. --branch is refused on scout and
+# secondmate scaffolds: a scout works in a scratch worktree it never branches,
+# and a charter has no task branch.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
@@ -106,6 +119,8 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+BRANCH_ARG=
+BRANCH_SET=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -115,6 +130,7 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      branch) BRANCH_ARG=$a; BRANCH_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
     want_value=
@@ -127,6 +143,8 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    --branch) want_value=branch ;;
+    --branch=*) BRANCH_ARG=${a#--branch=}; BRANCH_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's approval authority, not a
     # brief input. Refuse it loudly so it is never silently dropped here and then
     # believed to have been recorded.
@@ -155,6 +173,35 @@ elif [ "$MODE_SET" -eq 1 ]; then
   exit 1
 fi
 ID=${POS[0]}
+
+# A supplied branch name replaces fm/<task-id> everywhere this scaffold names the
+# task branch. Validate it here rather than letting an unusable name reach the
+# worker's `git checkout -b`, where it would fail after the brief already claimed
+# that name. check-ref-format is git's own rule set; the leading-dash and
+# whitespace guards cover the shapes it accepts but that would be parsed as flags
+# or split into words downstream.
+if [ "$BRANCH_SET" -eq 1 ] && [ "$KIND" != ship ]; then
+  echo "error: --branch applies only to ship briefs; a scout works in a scratch worktree it never branches, and a secondmate charter has no task branch" >&2
+  exit 1
+fi
+if [ "$BRANCH_SET" -eq 1 ]; then
+  case "$BRANCH_ARG" in
+    '') echo "error: --branch requires a branch name" >&2; exit 1 ;;
+    -*) echo "error: --branch must not start with a dash (got '$BRANCH_ARG')" >&2; exit 1 ;;
+    *[[:space:]]*) echo "error: --branch must not contain whitespace (got '$BRANCH_ARG')" >&2; exit 1 ;;
+  esac
+  git check-ref-format "refs/heads/$BRANCH_ARG" >/dev/null 2>&1 || {
+    echo "error: --branch is not a valid git branch name: $BRANCH_ARG" >&2
+    exit 1
+  }
+fi
+BRANCH=${BRANCH_ARG:-fm/$ID}
+# Recorded only when the name was supplied, so a brief without --branch stays
+# byte-identical to the historical fm/<task-id> scaffold.
+BRANCH_CONTRACT=""
+if [ "$BRANCH_SET" -eq 1 ]; then
+  BRANCH_CONTRACT=" branch=$BRANCH"
+fi
 
 if [ "$KIND" = secondmate ] && [ "$HERDR_LAB" -eq 1 ]; then
   echo "error: --herdr-lab applies only to crewmate ship or scout briefs" >&2
@@ -352,10 +399,10 @@ fi
 case "$MODE" in
   direct-PR)
     SETUP2=""
-    RULE1='1. Never push to the default branch (push only your `fm/'"$ID"'` branch). Never merge a PR.'
+    RULE1='1. Never push to the default branch (push only your `'"$BRANCH"'` branch). Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-Delivery contract: mode=direct-PR
+Delivery contract: mode=direct-PR$BRANCH_CONTRACT
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
@@ -364,14 +411,14 @@ EOF
     ;;
   local-only)
     SETUP2=""
-    RULE1="1. Never push to any remote and never open a PR. Work only on your \`fm/$ID\` branch; firstmate handles the merge into local \`main\`."
+    RULE1="1. Never push to any remote and never open a PR. Work only on your \`$BRANCH\` branch; firstmate handles the merge into local \`main\`."
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-Delivery contract: mode=local-only
+Delivery contract: mode=local-only$BRANCH_CONTRACT
 This task ships **local-only**: no remote, no PR, no pipeline.
-The task is complete only when committed on your branch \`fm/$ID\`. Do NOT push, do NOT open a PR, do NOT merge.
+The task is complete only when committed on your branch \`$BRANCH\`. Do NOT push, do NOT open a PR, do NOT merge.
 Keep your branch a clean fast-forward onto the current default branch - if \`main\` has advanced, rebase onto it so the eventual merge stays a fast-forward.
-When it is implemented and committed, append \`done: ready in branch fm/$ID\` to the status file and stop.
+When it is implemented and committed, append \`done: ready in branch $BRANCH\` to the status file and stop.
 The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path.
 EOF
     ;;
@@ -381,7 +428,7 @@ EOF
     RULE1='1. Never push to the default branch. Never merge a PR.'
     IFS= read -r -d '' DOD <<EOF || true
 # Definition of done
-Delivery contract: mode=no-mistakes
+Delivery contract: mode=no-mistakes$BRANCH_CONTRACT
 The task is complete only when committed on your branch.
 When you believe it is complete, append \`done: {summary}\` to the status file and stop.
 Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
@@ -422,7 +469,7 @@ You are in a disposable git worktree of $REPO, at a detached HEAD on a clean def
 The path check is authoritative: \`git rev-parse --git-dir\` and \`git rev-parse --git-common-dir\` can help inspect the repo, but they do not prove you are outside the primary checkout.
 If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append \`blocked: launched in primary checkout, not an isolated worktree\` to the status file and stop.
 
-1. First action: create your branch: \`git checkout -b fm/$ID\`$SETUP2
+1. First action: create your branch: \`git checkout -b $BRANCH\`$SETUP2
 
 # Rules
 $RULE1
