@@ -20,8 +20,8 @@ fm_git_identity fmtest fmtest@example.invalid
 REVIEW_DIFF="$ROOT/bin/fm-review-diff.sh"
 TMP_ROOT=$(fm_test_tmproot fm-review-diff-tests)
 
-make_case() {
-  local name=$1 case_dir
+make_case() {  # <name> [<task-branch>]
+  local name=$1 branch=${2:-fm/task-x1} case_dir
   case_dir="$TMP_ROOT/$name"
   mkdir -p "$case_dir/state"
 
@@ -36,7 +36,7 @@ make_case() {
 
   git clone -q "$case_dir/origin.git" "$case_dir/project"
   git -C "$case_dir/project" remote set-head origin main 2>/dev/null || true
-  git -C "$case_dir/project" worktree add -q -b fm/task-x1 "$case_dir/wt" main
+  git -C "$case_dir/project" worktree add -q -b "$branch" "$case_dir/wt" main
 
   touch "$case_dir/state/.last-watcher-beat"
   printf '%s\n' "$case_dir"
@@ -53,7 +53,7 @@ write_task_meta() {
 }
 
 stale_and_pr_commits() {
-  local case_dir=$1
+  local case_dir=$1 branch=${2:-fm/task-x1}
   printf 'stale-local\n' > "$case_dir/wt/feature.txt"
   git -C "$case_dir/wt" add feature.txt
   git -C "$case_dir/wt" commit -qm "stale local branch"
@@ -64,7 +64,7 @@ stale_and_pr_commits() {
   git -C "$case_dir/wt" commit -qm "pipeline fix on PR"
   PR_SHA=$(git -C "$case_dir/wt" rev-parse HEAD)
 
-  git -C "$case_dir/wt" checkout -q fm/task-x1
+  git -C "$case_dir/wt" checkout -q "$branch"
 }
 
 run_review_diff() {
@@ -169,8 +169,48 @@ test_unreachable_pr_head_falls_back_with_warning() {
   pass "fm-review-diff falls back to local branch with a warning when PR head is unreachable"
 }
 
+# A task whose branch carries its tracker's own published name has no fm/<id>
+# branch to find. The checked-out HEAD covers that while the worktree still has
+# the branch checked out, so this drives the case where it does not: a detached
+# worktree, where deriving fm/<id> from the id is the ONLY other source and there
+# is nothing to fall back to. The recorded branch must answer it.
+test_recorded_branch_is_used_when_head_cannot_answer() {
+  local case_dir out linear
+  linear="rcs/rac-105-purchase_order_params-permits-status-bypassing-the-state"
+  case_dir=$(make_case linear-branch "$linear")
+  stale_and_pr_commits "$case_dir" "$linear"
+  write_task_meta "$case_dir" "branch=$linear"
+  git -C "$case_dir/wt" checkout -q --detach
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" '+stale-local' \
+    "linear-branch: the recorded branch's own commit should be in the diff"
+  assert_not_contains "$(cat "$case_dir/stderr")" 'does not exist' \
+    "linear-branch: review refused a branch it should have read from the task record"
+  pass "fm-review-diff resolves a recorded branch that is neither fm/<task-id> nor checked out"
+}
+
+# The default shape must keep working with no branch recorded at all, which is
+# every task that is not tracker-linked.
+test_default_branch_shape_still_resolves_without_a_record() {
+  local case_dir out
+  case_dir=$(make_case default-branch-shape)
+  stale_and_pr_commits "$case_dir"
+  write_task_meta "$case_dir"
+  git -C "$case_dir/wt" checkout -q --detach
+
+  out=$(run_review_diff "$case_dir" task-x1 2> "$case_dir/stderr")
+
+  assert_contains "$out" '+stale-local' \
+    "default-branch-shape: fm/<task-id> should still resolve with no branch recorded"
+  pass "fm-review-diff still derives fm/<task-id> when the task records no branch"
+}
+
 test_pr_meta_uses_pr_head_not_stale_local
 test_pr_meta_fetches_pull_head_without_recorded_sha
+test_recorded_branch_is_used_when_head_cannot_answer
+test_default_branch_shape_still_resolves_without_a_record
 test_stale_recorded_pr_head_loses_to_fetched_pull_head
 test_no_pr_meta_uses_local_branch
 test_unreachable_pr_head_falls_back_with_warning

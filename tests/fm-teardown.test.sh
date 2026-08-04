@@ -38,6 +38,8 @@
 #   (o) fm-pr-check rerun after HEAD moved                      -> no stale pr_head
 #   (p) fm-pr-check when local HEAD lags                        -> record remote PR head
 #   (q) no-mistakes + NO pr= recorded, PR discovered by branch  -> ALLOW  (yolo/no-CI merge)
+#   (q1) supplied branch name + merged PR discoverable only by that name -> ALLOW
+#   (q2) supplied branch name + genuinely unlanded work                  -> REFUSE
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -68,8 +70,8 @@ export REAL_GIT_FOR_TEST
 #   $CASE/project/      - clone of origin; acts as the firstmate project dir
 #   $CASE/wt/           - a worktree of the project (the task worktree)
 # Echoes the case dir.
-make_case() {
-  local name=$1 case_dir fakebin
+make_case() {  # <name> [<task-branch>]
+  local name=$1 task_branch=${2:-fm/task-x1} case_dir fakebin
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
   mkdir -p "$case_dir/state" "$case_dir/config" "$fakebin"
@@ -119,8 +121,10 @@ SH
   # Clone as the project; give it a `main` branch and an origin/HEAD.
   git clone -q "$case_dir/origin.git" "$case_dir/project"
   git -C "$case_dir/project" remote set-head origin main 2>/dev/null || true
-  # Add a worktree on a fresh task branch; that branch is where the crewmate commits.
-  git -C "$case_dir/project" worktree add -q -b fm/task-x1 "$case_dir/wt" main
+  # Add a worktree on a fresh task branch; that branch is where the crewmate
+  # commits. Defaults to the fm/<task-id> shape; a caller passes a tracker-supplied
+  # name to prove the landed-work test never depends on that shape.
+  git -C "$case_dir/project" worktree add -q -b "$task_branch" "$case_dir/wt" main
 
   # Fresh watcher beacon so fm-guard stays quiet.
   touch "$case_dir/state/.last-watcher-beat"
@@ -228,6 +232,48 @@ case "\${1:-} \${2:-}" in
     case " \$* " in
       *"state,headRefOid"*) printf '%s\t%s\n' 'MERGED' '$head' ; exit 0 ;;
       *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
+    esac
+    ;;
+esac
+echo "error: pull request not found" >&2
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+# Like add_gh_pr_merged_for_head, but the PR is only discoverable when the branch
+# name actually asked for is <branch>. Any other --head value answers "no PR", so a
+# consumer that derived the branch from the task id instead of reading the real one
+# gets nothing back.
+add_gh_pr_merged_for_branch() {
+  local case_dir=$1 branch=$2 head=$3
+  cat > "$case_dir/fakebin/gh-axi" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "pr list")
+    for a in "\$@"; do
+      if [ "\$a" = '$branch' ]; then
+        printf '%s\n' "count: 1 (showing first 1)" "pull_requests[1]{number,state}:" "  7,merged"
+        exit 0
+      fi
+    done
+    printf '%s\n' "count: 0 (showing first 0)" "pull_requests[]: []"
+    exit 0 ;;
+  "pr view") echo "error: pull request not found" >&2 ; exit 1 ;;
+esac
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *" 7 "*)
+        case " \$* " in
+          *"state,headRefOid"*) printf '%s\t%s\n' 'MERGED' '$head' ; exit 0 ;;
+          *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
+        esac
+        ;;
     esac
     ;;
 esac
@@ -701,6 +747,65 @@ test_no_pr_recorded_discovers_merged_pr_by_branch_allows() {
   expect_code 0 "$rc" "no-pr-branch-discovery: teardown should succeed by discovering the merged PR from the branch name"
   ! grep -q REFUSED "$case_dir/stderr" || fail "no-pr-branch-discovery: teardown printed a REFUSED line"
   pass "teardown discovers a merged PR by branch name and tears down when no pr= was ever recorded"
+}
+
+# Teardown decides whether work has LANDED, and treehouse return hard-resets the
+# worktree, so a false "unlanded" is the costly answer here and a false "landed" is
+# the dangerous one. Both directions must hold for a branch carrying a tracker's own
+# published name rather than the fm/<task-id> shape.
+#
+# Landed direction: the branch's own commits are on no remote (squash-merged, head
+# branch deleted) and its content is NOT in the default branch, so the merged PR -
+# discoverable only by asking GitHub for THIS branch's name - is the sole signal
+# that the work landed. A consumer deriving fm/<task-id> would ask about a branch
+# that never existed, find no PR, and refuse work that is already merged.
+test_supplied_branch_name_merged_pr_is_recognized_as_landed() {
+  local case_dir rc linear pr_head
+  linear="rcs/rac-105-purchase_order_params-permits-status-bypassing-the-state"
+  case_dir=$(make_case linear-branch-landed "$linear")
+  write_meta "$case_dir" no-mistakes ship
+  printf 'branch=%s\n' "$linear" >> "$case_dir/state/task-x1.meta"
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_merged_for_branch "$case_dir" "$linear" "$pr_head"
+
+  ! grep -qE '^(pr|pr_head)=' "$case_dir/state/task-x1.meta" \
+    || fail "linear-branch-landed: test setup bug, meta unexpectedly records a PR"
+  git -C "$case_dir/wt" rev-parse --verify --quiet refs/heads/fm/task-x1 >/dev/null \
+    && fail "linear-branch-landed: test setup bug, the fm/<task-id> branch exists"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "linear-branch-landed: landed work on a supplied branch name was not torn down"
+  ! grep -q REFUSED "$case_dir/stderr" \
+    || fail "linear-branch-landed: teardown reported a merged supplied-name branch as unlanded"
+  pass "teardown recognizes a merged PR on a branch that is not fm/<task-id> as landed"
+}
+
+# Safety direction for the same shape: with no merged PR and nothing in the default
+# branch, a supplied-name branch's work is genuinely unlanded and teardown must
+# still refuse, so the shape change cannot have weakened the guard into a pass.
+test_supplied_branch_name_unlanded_work_still_refuses() {
+  local case_dir rc linear
+  linear="rcs/rac-105-purchase_order_params-permits-status-bypassing-the-state"
+  case_dir=$(make_case linear-branch-unlanded "$linear")
+  write_meta "$case_dir" no-mistakes ship
+  printf 'branch=%s\n' "$linear" >> "$case_dir/state/task-x1.meta"
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  [ "$rc" -ne 0 ] || fail "linear-branch-unlanded: teardown discarded genuinely unlanded work"
+  grep -q REFUSED "$case_dir/stderr" \
+    || fail "linear-branch-unlanded: teardown did not refuse loudly"
+  assert_present "$case_dir/wt" "linear-branch-unlanded: refused teardown removed the worktree"
+  pass "teardown still refuses unlanded work on a branch that is not fm/<task-id>"
 }
 
 test_squash_merged_pr_allows_replayed_unpushed_patch() {
@@ -1845,6 +1950,8 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed
 test_squash_merged_branch_deleted_allows
 test_squash_merged_pr_allows_when_head_ancestor_of_pr_head
 test_no_pr_recorded_discovers_merged_pr_by_branch_allows
+test_supplied_branch_name_merged_pr_is_recognized_as_landed
+test_supplied_branch_name_unlanded_work_still_refuses
 test_squash_merged_pr_allows_replayed_unpushed_patch
 test_merged_pr_with_later_local_commit_refuses
 test_pr_check_does_not_refresh_stale_pr_head

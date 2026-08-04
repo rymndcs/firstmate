@@ -708,12 +708,103 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+# A task may carry a branch name its issue tracker published for the issue, so the
+# tracker's own forge integration recognizes the PR and moves the issue with no
+# agent in the loop. When one is supplied, the scaffold must name THAT branch
+# everywhere it names the task branch: a surviving fm/<task-id> anywhere would have
+# the worker create a branch the tracker is not watching, which is the exact
+# failure this flag exists to remove. The machine-readable delivery line must also
+# carry it, because that line is where bin/fm-spawn.sh reads it back into the
+# task's durable record.
+test_supplied_branch_replaces_the_default_everywhere() {
+  local home id mode brief linear
+  home="$TMP_ROOT/supplied-branch-home"
+  mkdir -p "$home/data"
+  linear="rcs/rac-105-purchase_order_params-permits-status-bypassing-the-state"
+
+  for id_mode in "brief-branch-e1:no-mistakes" "brief-branch-e2:direct-PR" "brief-branch-e3:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" --branch "$linear" >/dev/null 2>&1 \
+      || fail "$id: --branch scaffold on mode $mode exited non-zero"
+    brief="$home/data/$id/brief.md"
+    assert_grep "git checkout -b $linear" "$brief" \
+      "$id: the first action did not create the supplied branch"
+    assert_no_grep "fm/$id" "$brief" \
+      "$id: the fm/<task-id> default survived somewhere in a supplied-branch brief"
+    grep -qx "Delivery contract: mode=$mode branch=$linear" "$brief" \
+      || fail "$id: the delivery line did not record the supplied branch for the spawn to read back"
+  done
+
+  assert_grep "push only your \`$linear\` branch" "$home/data/brief-branch-e2/brief.md" \
+    "direct-PR rule 1 still names the default branch shape"
+  assert_grep "done: ready in branch $linear" "$home/data/brief-branch-e3/brief.md" \
+    "local-only done signal still reports the default branch shape"
+  assert_grep "committed on your branch \`$linear\`" "$home/data/brief-branch-e3/brief.md" \
+    "local-only definition of done still names the default branch shape"
+  pass "fm-brief.sh: a supplied branch name replaces fm/<task-id> everywhere, in every ship mode"
+}
+
+# Most tasks are not tracker-linked and must be completely unaffected: without
+# --branch the scaffold keeps naming fm/<task-id> and records no branch at all, so
+# nothing downstream sees a branch it then has to resolve.
+test_absent_branch_keeps_the_default_shape() {
+  local home id mode brief
+  home="$TMP_ROOT/default-branch-home"
+  mkdir -p "$home/data"
+  for id_mode in "brief-nobranch-f1:no-mistakes" "brief-nobranch-f2:direct-PR" "brief-nobranch-f3:local-only"; do
+    id=${id_mode%%:*}
+    mode=${id_mode##*:}
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "$id: plain scaffold on mode $mode exited non-zero"
+    brief="$home/data/$id/brief.md"
+    assert_grep "git checkout -b fm/$id" "$brief" \
+      "$id: a brief with no supplied branch stopped naming fm/<task-id>"
+    grep -qx "Delivery contract: mode=$mode" "$brief" \
+      || fail "$id: the delivery line changed for a task that supplied no branch"
+    assert_no_grep "branch=" "$brief" \
+      "$id: a task with no supplied branch still recorded a branch"
+  done
+  pass "fm-brief.sh: without --branch the scaffold keeps the fm/<task-id> shape and records nothing"
+}
+
+# An unusable branch name must stop the scaffold, not reach the worker's
+# `git checkout -b` after the brief already committed to that name. A scout never
+# branches and a charter has no task branch, so both refuse rather than accept and
+# silently drop the flag.
+test_branch_is_validated_and_refused_where_it_does_not_apply() {
+  local home out status label args expect n=0
+  home="$TMP_ROOT/branch-refusal-home"
+  mkdir -p "$home/data"
+  while IFS='|' read -r label args expect; do
+    [ -n "$label" ] || continue
+    n=$((n + 1))
+    # shellcheck disable=SC2086  # args is an intentional word-split arg list
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "brief-badbranch-$n" $args 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$label: expected a non-zero exit"
+    assert_contains "$out" "$expect" "$label: refusal did not explain why"
+    assert_absent "$home/data/brief-badbranch-$n/brief.md" "$label: refused scaffold still wrote a brief"
+  done <<'ROWS'
+missing value|some-proj --mode no-mistakes --branch --yolo|requires a value
+empty value|some-proj --mode no-mistakes --branch=|requires a branch name
+leading dash|some-proj --mode no-mistakes --branch=-force|must not start with a dash
+invalid git ref|some-proj --mode no-mistakes --branch=rac..105|not a valid git branch name
+branch on a scout|some-proj --scout --branch=rcs/rac-105|--branch applies only to ship briefs
+branch on a secondmate charter|--secondmate --no-projects --branch=rcs/rac-105|--branch applies only to ship briefs
+ROWS
+  pass "fm-brief.sh: an unusable --branch is refused, and scout/secondmate scaffolds refuse it outright"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
 test_ship_mode_is_explicit_not_registry
+test_supplied_branch_replaces_the_default_everywhere
+test_absent_branch_keeps_the_default_shape
+test_branch_is_validated_and_refused_where_it_does_not_apply
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording

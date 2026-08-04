@@ -16,6 +16,13 @@
 #   loud one-line deviation notice is printed and the spawn continues.
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
+#   That same brief line optionally carries a trailing " branch=<name>" when the
+#   brief was scaffolded with fm-brief.sh --branch. The spawn reads it back and
+#   records branch=<name> in the task metadata so later consumers resolve the
+#   task branch after a restart. There is deliberately no --branch flag here: the
+#   brief is the one place the name is stated, and a second flag could disagree
+#   with the instructions the worker actually follows. A brief that declares none
+#   records no branch= at all and every consumer derives fm/<task-id> as before.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -1328,9 +1335,17 @@ delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task
 # fm-brief.sh records a ship brief's mode as a fixed "Delivery contract: mode=<mode>"
 # line. A spawn that disagrees would launch a worker whose instructions and whose
 # recorded task delivery differ, which is the exact drift this contract prevents.
+BRIEF_BRANCH=
 if [ "$KIND" = ship ]; then
   PROJ_NAME=$(basename "$PROJ_ABS")
   BRIEF_MODE=$(sed -n 's/^Delivery contract: mode=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
+  # The same line optionally carries " branch=<name>" when fm-brief.sh scaffolded
+  # the task on a supplied branch name instead of the fm/<task-id> default. The
+  # brief is the single place that name is stated, so reading it back here (rather
+  # than taking a second flag that could disagree with the worker's instructions)
+  # keeps them from drifting apart. Absent means the default, and nothing is
+  # recorded, so a non-Linear task's metadata stays byte-identical.
+  BRIEF_BRANCH=$(sed -n 's/^Delivery contract: mode=[^ ]*[[:space:]]\{1,\}branch=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
   if [ -z "$BRIEF_MODE" ]; then
     echo "warning: $BRIEF records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode $MODE - confirm its definition of done matches" >&2
   elif [ "$BRIEF_MODE" != "$MODE" ]; then
@@ -2149,6 +2164,9 @@ META_WINDOW=$T
   echo "kind=$KIND"
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
+  # Written only for a task whose brief declared a supplied branch name; absent
+  # means the fm/<task-id> default, which every consumer already derives.
+  [ -z "$BRIEF_BRANCH" ] || echo "branch=$BRIEF_BRANCH"
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"

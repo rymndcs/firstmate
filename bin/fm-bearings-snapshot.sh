@@ -225,6 +225,13 @@ EOF
 $(printf '%s' "$SNAP" | jq -r '.tasks[] | select(.kind != "secondmate") | .paths.worktree.path // empty')
 EOF
 
+    # A task whose brief supplied its own branch name (bin/fm-brief.sh --branch)
+    # has no fm/ prefix to strip, so the naming convention alone cannot attribute
+    # its PR. The canonical snapshot records that name, so map recorded branch ->
+    # task id first and keep the convention strip as the fallback for every task
+    # that records none. Built from the snapshot, never by reading state itself.
+    BRANCH_TASKS=$(printf '%s' "$SNAP" | jq -c '
+      [ .tasks[] | select((.branch // "") != "") | {key:.branch, value:.id} ] | from_entries')
     for repo in $repos; do PR_REPOS_TOTAL=$((PR_REPOS_TOTAL + 1)); done
     nrepos=0; npr=0; nwarn=0; ncapped=0; rows='[]'
     pr_fetch_limit=$((FM_BEARINGS_PR_LIMIT + 1))
@@ -235,11 +242,15 @@ EOF
         --json number,title,url,headRefName,reviewDecision,mergeable,statusCheckRollup 2>/dev/null) \
         || { nwarn=$((nwarn + 1)); continue; }
       [ -n "$out" ] || out='[]'
-      repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --argjson limit "$FM_BEARINGS_PR_LIMIT" '
+      repo_result=$(printf '%s' "$out" | jq --arg repo "$repo" --argjson limit "$FM_BEARINGS_PR_LIMIT" \
+        --argjson branch_tasks "$BRANCH_TASKS" '
         [ .[] | {
           num:(.number|tostring),
           repo:$repo,
-          task:(if (.headRefName // "" | startswith("fm/")) then (.headRefName | ltrimstr("fm/")) else "-" end),
+          task:((.headRefName // "") as $h
+                | if ($branch_tasks[$h] // "") != "" then $branch_tasks[$h]
+                  elif ($h | startswith("fm/")) then ($h | ltrimstr("fm/"))
+                  else "-" end),
           url:(.url // "-"),
           review:(.reviewDecision // "none"),
           mergeable:(.mergeable // "UNKNOWN"),

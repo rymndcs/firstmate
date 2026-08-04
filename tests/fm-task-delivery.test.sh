@@ -40,13 +40,61 @@ make_home() {  # <name> [<registry-line>...]
   printf '%s\n' "$home|$projects/proj|$fakebin"
 }
 
-write_brief() {  # <home> <id> [<recorded-mode>]
-  local home=$1 id=$2 mode=${3:-}
+write_brief() {  # <home> <id> [<recorded-mode>] [<recorded-branch>]
+  local home=$1 id=$2 mode=${3:-} branch=${4:-}
   mkdir -p "$home/data/$id"
   {
     printf 'You are a crewmate.\n\n# Definition of done\n'
-    [ -z "$mode" ] || printf 'Delivery contract: mode=%s\n' "$mode"
+    if [ -n "$mode" ]; then
+      if [ -n "$branch" ]; then
+        printf 'Delivery contract: mode=%s branch=%s\n' "$mode" "$branch"
+      else
+        printf 'Delivery contract: mode=%s\n' "$mode"
+      fi
+    fi
   } > "$home/data/$id/brief.md"
+}
+
+# A spawn fixture that runs to completion, so the task metadata it writes can be
+# read back. The delivery-contract cases above deliberately stop at a refusing
+# tmux; these cases need the whole launch to land. Echoes
+# "<home>|<project-dir>|<worktree>|<fakebin>".
+make_completing_home() {  # <name>
+  local name=$1 home proj wt fakebin
+  home="$TMP_ROOT/$name/home"
+  proj="$TMP_ROOT/$name/project"
+  wt="$TMP_ROOT/$name/wt"
+  fakebin=$(fm_fakebin "$TMP_ROOT/$name/fake")
+  mkdir -p "$home/data" "$home/state" "$home/config" "$home/projects"
+  printf 'claude\n' > "$home/config/crew-harness"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+esac
+case "${1:-}" in
+  display-message) printf 'firstmate\n'; exit 0 ;;
+  list-windows) exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  fm_fake_exit0 "$fakebin" treehouse
+  fm_git_worktree "$proj" "$wt" "wt-$name"
+  touch "$home/state/.last-watcher-beat"
+  printf '%s\n' "$home|$proj|$wt|$fakebin"
+}
+
+run_completing_spawn() {  # <home> <worktree> <fakebin> <spawn-args...>
+  local home=$1 wt=$2 fakebin=$3
+  shift 3
+  FM_ROOT_OVERRIDE='' FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \
+    FM_SPAWN_NO_GUARD=1 FM_FAKE_PANE_PATH="$wt" TMUX="fake,1,0" FM_BACKEND=tmux \
+    PATH="$fakebin:$PATH" \
+    "$SPAWN" "$@" 2>&1
 }
 
 run_spawn() {  # <home> <fakebin> <spawn-args...>
@@ -238,6 +286,67 @@ test_promote_requires_and_records_the_delivery_contract() {
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
 }
 
+# A task whose brief was scaffolded on a supplied branch name (bin/fm-brief.sh
+# --branch) must have that name in its durable record, because every later
+# consumer resolves the task branch from there after a restart - deriving
+# fm/<task-id> would look for a branch that was never created. A task that
+# supplied none records nothing, so those consumers keep deriving the default.
+test_spawn_records_only_a_supplied_branch() {
+  local rec home proj wt fakebin out
+  rec=$(make_completing_home spawn-branch)
+  IFS='|' read -r home proj wt fakebin <<EOF
+$rec
+EOF
+  local linear="rcs/rac-105-purchase_order_params-permits-status-bypassing-the-state"
+
+  write_brief "$home" delivery-branch-e1 no-mistakes "$linear"
+  out=$(run_completing_spawn "$home" "$wt" "$fakebin" delivery-branch-e1 "$proj" claude --mode no-mistakes --yolo off)
+  assert_present "$home/state/delivery-branch-e1.meta" "supplied-branch spawn wrote no task record: $out"
+  grep -qx "branch=$linear" "$home/state/delivery-branch-e1.meta" \
+    || fail "the spawn did not carry the brief's supplied branch into the task record"
+  assert_not_contains "$out" "delivery mismatch" \
+    "a delivery line carrying a branch was misread as a mode mismatch"
+
+  write_brief "$home" delivery-branch-e2 no-mistakes
+  out=$(run_completing_spawn "$home" "$wt" "$fakebin" delivery-branch-e2 "$proj" claude --mode no-mistakes --yolo off)
+  assert_present "$home/state/delivery-branch-e2.meta" "plain spawn wrote no task record: $out"
+  ! grep -q '^branch=' "$home/state/delivery-branch-e2.meta" \
+    || fail "a task that supplied no branch still recorded one"
+  pass "fm-spawn: the brief's supplied branch reaches the task record, and only when there is one"
+}
+
+# A scout never branches, so promotion is where a promoted task's branch is
+# decided. It records a supplied name and names it in the ship instructions;
+# without one the instructions keep naming fm/<task-id> and nothing is recorded.
+test_promote_records_only_a_supplied_branch() {
+  local home meta out linear
+  home="$TMP_ROOT/promote-branch/home"
+  mkdir -p "$home/state"
+  linear="rcs/rac-105-purchase_order_params-permits-status-bypassing-the-state"
+
+  meta="$home/state/promote-e1.meta"
+  printf 'window=fm-promote-e1\nkind=scout\nworktree=/tmp/wt\n' > "$meta"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    "$PROMOTE" promote-e1 --mode no-mistakes --yolo off --branch "$linear" 2>&1) \
+    || fail "promotion carrying --branch exited non-zero: $out"
+  grep -qx "branch=$linear" "$meta" || fail "promotion did not record the supplied branch"
+  assert_contains "$out" "create branch $linear" "promotion instructions did not name the supplied branch"
+
+  meta="$home/state/promote-e2.meta"
+  printf 'window=fm-promote-e2\nkind=scout\nworktree=/tmp/wt\n' > "$meta"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    "$PROMOTE" promote-e2 --mode no-mistakes --yolo off 2>&1) \
+    || fail "plain promotion exited non-zero: $out"
+  ! grep -q '^branch=' "$meta" || fail "a promotion with no supplied branch still recorded one"
+  assert_contains "$out" "create branch fm/promote-e2" "plain promotion stopped naming fm/<task-id>"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" \
+    "$PROMOTE" promote-e2 --mode no-mistakes --yolo off --branch 'rac..105' 2>&1) \
+    && fail "promotion accepted an invalid git branch name"
+  assert_contains "$out" "not a valid git branch name" "promotion refusal did not explain the bad branch name"
+  pass "fm-promote: a supplied branch is recorded and used, and an invalid one is refused"
+}
+
 # The registry parser survives for the mechanical consumers only. It accepts the
 # conditional policy, maps it to its most rigorous leg for them, and exposes the
 # raw annotation for the one caller that must tell a policy from a flat mode.
@@ -278,5 +387,7 @@ test_spawn_refuses_a_brief_mode_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
+test_spawn_records_only_a_supplied_branch
+test_promote_records_only_a_supplied_branch
 test_project_mode_maps_the_conditional_policy
 echo "# all fm-task-delivery tests passed"

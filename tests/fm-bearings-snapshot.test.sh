@@ -44,6 +44,10 @@ SH
 echo "gh $*" >> "$NET_LOG"
 if [ "${FAKE_GH_FAIL:-0}" = 1 ]; then exit 1; fi
 if [ "${FAKE_GH_SLEEP:-0}" = 1 ]; then sleep 30; fi
+if [ -n "${FAKE_GH_HEAD_REF:-}" ]; then
+  printf '[{"number":9,"title":"Ship the thing","url":"https://github.com/kunchenguid/firstmate/pull/9","headRefName":"%s","reviewDecision":"APPROVED","mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS","status":"COMPLETED"}]}]\n' "$FAKE_GH_HEAD_REF"
+  exit 0
+fi
 if [ "${FAKE_GH_MANY:-0}" = 1 ]; then
   cat <<'JSON'
 [{"number":1,"title":"One","url":"https://github.com/acme/repo/pull/1","headRefName":"fm/one","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":2,"title":"Two","url":"https://github.com/acme/repo/pull/2","headRefName":"fm/two","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]},{"number":3,"title":"Three","url":"https://github.com/acme/repo/pull/3","headRefName":"fm/three","reviewDecision":"","mergeable":"MERGEABLE","statusCheckRollup":[]}]
@@ -979,6 +983,31 @@ test_include_prs_is_the_only_fetch_path() {
     .candidate_prs | any(.[]; .num == "9" and .task == "ship-task" and .checks == "passing" and .review == "APPROVED")
   ' >/dev/null || fail "candidate_prs must carry the fetched PR cross-referenced to its task: $json"
   pass "--include-prs is the only path that fetches, and it enriches correctly"
+}
+
+# A task whose branch carries its tracker's own published name has no fm/ prefix to
+# strip, so the naming convention alone cannot attribute its open PR and the row
+# would read as belonging to no task at all. The recorded branch is what closes
+# that gap; an unrecorded branch still falls back to the convention, and a PR on a
+# branch belonging to nobody still reads as unattributed.
+test_open_prs_map_to_tasks_by_recorded_branch() {
+  local home fakebin json linear
+  linear="rcs/rac-105-purchase_order_params-permits-status-bypassing-the-state"
+  home=$(make_home prs-branch); write_fixture "$home"
+  fakebin=$(make_fakebin "$home"); : > "$home/net.log"
+  printf 'branch=%s\n' "$linear" >> "$home/state/ship-task.meta"
+
+  json=$(FAKE_GH_HEAD_REF="$linear" run "$home" "$fakebin" --include-prs --json)
+  printf '%s' "$json" | jq -e --arg n "9" '
+    .candidate_prs | any(.[]; .num == $n and .task == "ship-task")
+  ' >/dev/null || fail "an open PR on a recorded branch was not attributed to its task: $json"
+
+  # A branch nobody recorded and that carries no fm/ prefix stays unattributed.
+  json=$(FAKE_GH_HEAD_REF="rcs/rac-999-someone-elses-branch" run "$home" "$fakebin" --include-prs --json)
+  printf '%s' "$json" | jq -e '
+    .candidate_prs | any(.[]; .num == "9" and .task == "-")
+  ' >/dev/null || fail "an unrecognized branch was attributed to a task anyway: $json"
+  pass "bearings attributes open PRs by recorded branch and leaves unknown branches unattributed"
 }
 
 test_partial_github_failure_degrades() {
@@ -1924,6 +1953,7 @@ test_open_decision_surfaces_end_to_end
 test_report_pointers_surface
 test_superseded_queued_item_dropped_by_default
 test_include_prs_is_the_only_fetch_path
+test_open_prs_map_to_tasks_by_recorded_branch
 test_partial_github_failure_degrades
 test_perl_fallback_bounds_github_call
 test_section_caps_and_expansion_flags

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Perform the approved local merge for a local-only ship task: fast-forward the
-# project's default branch to the crewmate's fm/<id> branch.
+# project's default branch to the crewmate's task branch - the branch= recorded in
+# state/<id>.meta, or fm/<id> when the task recorded none.
 #
 # This is firstmate's merge gate-action (the captain's merge authority applied
 # locally instead of via a GitHub PR). It is the one sanctioned exception to hard
@@ -41,7 +42,11 @@ default_branch() {
   return 1
 }
 
-BRANCH="fm/$ID"
+# The task branch is fm/<id> unless the task recorded a supplied name (see
+# bin/fm-brief.sh --branch). Deriving it from the id alone would look for a branch
+# that never existed and refuse a perfectly landable merge.
+BRANCH=$(grep '^branch=' "$META" | tail -1 | cut -d= -f2- || true)
+[ -n "$BRANCH" ] || BRANCH="fm/$ID"
 git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$BRANCH" >/dev/null || { echo "error: branch $BRANCH does not exist in $PROJ" >&2; exit 1; }
 
 DEFAULT=$(default_branch) || { echo "error: cannot determine default branch for $PROJ; expected origin/HEAD, main, or master" >&2; exit 1; }
