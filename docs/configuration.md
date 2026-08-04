@@ -298,6 +298,21 @@ Secondmate homes inherit this file from the primary and each enforces its own co
 Each task's validation pipeline also spawns its own reviewer agents, which no spawn gate observes.
 A limit of 3 workers is a limit on workers, not a limit on agents or processes.
 
+## Linear status binding (config/linear-api-key)
+
+`config/linear-api-key` is an optional local, gitignored file whose first line is a Linear API key.
+When it is present, the three lifecycle steps that already know a task's fate also move that task's Linear issue: a successful ship or scout dispatch sets In Progress, recording a PR against the task sets In Review, and a confirmed merge sets Done.
+The transition happens as part of the lifecycle step rather than as a separate action afterwards, so keeping Linear current does not depend on an agent remembering to do it.
+[`bin/fm-linear.sh`](../bin/fm-linear.sh) is the single owner of Linear API mechanics, and its header and `--help` own the exact commands, issue-resolution rules, and workflow-state matching.
+
+An absent, unreadable, or empty file means the binding is off: no network call, no output, and firstmate behaves exactly as it does in a home that never configured Linear.
+A task with no resolvable Linear issue identifier is the normal case rather than an error, because most firstmate tasks are not Linear-tracked, and it is skipped in silence.
+A configured update that then fails - missing `curl` or `jq`, a rejected key, an unreachable API, an unknown issue, a team with no matching workflow state, or a refused update - reports one `LINEAR:` line on standard error and never blocks the operation it rode along with, so a spawn still spawns and a merge still merges while Linear is down.
+The key is never printed, never passed on a command line, and is removed from any message Linear itself returns.
+
+This file is local to its home and is not part of secondmate inherited configuration, because propagating a credential to another host is the captain's decision rather than a side effect of provisioning.
+A secondmate that needs the binding gets its own key file placed in its own home.
+
 ## Toolchain
 
 On session start the first mate detects what its required toolchain is missing or too old and lists each problem with either an exact install command or manual instructions.

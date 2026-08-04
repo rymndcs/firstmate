@@ -49,6 +49,18 @@ caller_has_merge_method() {
   return 1
 }
 
+# True when the caller only queued the merge for later: --auto hands the merge
+# to the forge, so this run confirms nothing and must transition nothing.
+caller_defers_merge() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --auto) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 reject_repo_overrides() {
   local arg
   for arg in "$@"; do
@@ -81,4 +93,16 @@ if ! caller_has_merge_method "$@"; then
   merge_args=(--squash)
 fi
 
-gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@"
+MERGE_STATUS=0
+gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@" \
+  || MERGE_STATUS=$?
+
+# A confirmed merge IS the Done transition, so it happens here rather than as a
+# step an agent has to remember afterwards. bin/fm-linear.sh is silent for an
+# unconfigured home or a task with no Linear identifier, reports loudly on
+# stderr when a configured update fails, and can never unmake a merge that
+# already landed. fm-pr-check.sh above owns the In Review transition.
+if [ "$MERGE_STATUS" -eq 0 ] && ! caller_defers_merge "$@"; then
+  "$SCRIPT_DIR/fm-linear.sh" transition "$ID" 'done' || true
+fi
+exit "$MERGE_STATUS"

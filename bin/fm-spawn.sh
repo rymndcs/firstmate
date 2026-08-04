@@ -2305,3 +2305,13 @@ fi
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"
+
+# Dispatching Linear-tracked work IS the In Progress transition, so it happens
+# here rather than as a step an agent has to remember afterwards. A secondmate
+# is a persistent home rather than a work item and never transitions anything.
+# bin/fm-linear.sh is silent for an unconfigured home or a task with no Linear
+# identifier, reports loudly on stderr when a configured update fails, and can
+# never fail a spawn that already succeeded.
+case "$KIND" in
+  ship|scout) "$SCRIPT_DIR/fm-linear.sh" transition "$ID" in-progress || true ;;
+esac
