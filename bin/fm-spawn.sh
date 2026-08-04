@@ -109,6 +109,16 @@
 #   default-branch commit when safe; skipped syncs warn and launch unchanged.
 #   Ship/scout spawns refuse to launch unless the resolved task path is a real
 #   git worktree root distinct from the primary project checkout.
+# Live worker limit: a ship or scout spawn is refused when this home already has
+#   as many live ship/scout workers as config/crew-limit allows (absent means 3).
+#   The refusal names the live holders and the config path, and happens before
+#   any endpoint, worktree, or metadata exists. Only an endpoint that
+#   fm_backend_agent_alive reports confidently dead frees its slot, so a crashed
+#   worker's leftover metadata does not hold one. --secondmate spawns are a
+#   persistent home rather than a worker and are never counted or blocked.
+#   FM_ALLOW_OVER_CREW_LIMIT=1 authorizes one deliberate over-limit spawn per
+#   invocation. See docs/configuration.md "Live worker limit" for the cap's
+#   scope, including what it deliberately does not cover.
 # Batch dispatch: pass one or more `id=repo` pairs instead of a single <id> <project>, e.g.
 #     fm-spawn.sh fix-a-k3=projects/foo add-b-q7=projects/bar [--scout]
 #   Each pair re-execs this script in single-task mode, so the single path stays the only
@@ -769,8 +779,106 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   done
   exit "$rc"
 fi
+# --- live worker limit ------------------------------------------------------
+#
+# The machine is the scarce resource, not the fleet: the captain caps how many
+# ship/scout workers may run at once, and this applies that cap instead of
+# leaving it to firstmate's memory.
+#
+# What it does NOT cover, stated plainly so nobody reads it as a total-process
+# guarantee: a --secondmate spawn is a persistent home rather than a worker and
+# is exempt; each secondmate home enforces its own inherited limit separately,
+# so N homes allow N x limit workers; and every task's validation pipeline
+# spawns its own reviewer agents, a population no spawn gate can see. A limit of
+# 3 workers is therefore not 3 agents.
+#
+# A slot is held by any ship/scout task whose recorded endpoint is not
+# CONFIDENTLY agent-free. fm_backend_agent_alive (bin/fm-backend.sh) stays the
+# single owner of that verdict and only its `dead` answer frees a slot, so an
+# unreadable or unverified endpoint refuses the spawn rather than silently
+# overshooting the cap. A task with no recorded endpoint holds nothing.
+# The count reads durable metadata at the moment of the spawn, so two spawns
+# issued simultaneously in one home could both pass it; a home issues its spawns
+# sequentially, and each pair of a batch re-execs through this same check.
+CREW_LIMIT_DEFAULT=3
+CREW_LIMIT_FILE="$CONFIG/crew-limit"
+
+# The configured limit, or a refusal. A malformed file is never quietly treated
+# as the default: a limit that cannot be read is a limit that cannot be trusted.
+crew_limit_value() {
+  local raw
+  [ -f "$CREW_LIMIT_FILE" ] || { printf '%s' "$CREW_LIMIT_DEFAULT"; return 0; }
+  raw=$(head -n 1 "$CREW_LIMIT_FILE" 2>/dev/null | tr -d '[:space:]')
+  case "$raw" in
+    ''|*[!0-9]*)
+      echo "error: $CREW_LIMIT_FILE must hold one whole number of concurrently live workers (found '$raw'); correct or remove it - an unreadable limit is not treated as the default $CREW_LIMIT_DEFAULT" >&2
+      return 1
+      ;;
+  esac
+  printf '%s' "$((10#$raw))"
+}
+
+# Task ids currently holding a slot, one per line, excluding <self-id> so a
+# recovery respawn of a task never counts its own recorded endpoint.
+crew_limit_live_holders() {  # <self-id>
+  local self=$1 meta id kind target backend
+  for meta in "$STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    id=$(basename "$meta" .meta)
+    [ "$id" != "$self" ] || continue
+    # Metadata written before kind= existed records a crewmate, so an absent
+    # kind counts rather than escaping the cap.
+    kind=$(fm_meta_get "$meta" kind)
+    case "${kind:-ship}" in
+      ship|scout) ;;
+      *) continue ;;
+    esac
+    target=$(fm_backend_target_of_meta "$meta")
+    [ -n "$target" ] || continue
+    backend=$(fm_backend_of_meta "$meta")
+    [ "$(fm_backend_agent_alive "$backend" "$target")" != dead ] || continue
+    printf '%s\n' "$id"
+  done
+}
+
+# Refuses with 1 when this spawn would exceed the limit. Runs before the task
+# lock, the endpoint, the worktree, and the metadata, so a refusal leaves
+# nothing behind to clean up.
+crew_limit_enforce() {  # <task-id> <kind>
+  local id=$1 kind=$2 limit held count list
+  local -a holders=()
+  case "$kind" in
+    ship|scout) ;;
+    *) return 0 ;;
+  esac
+  limit=$(crew_limit_value) || return 1
+  while IFS= read -r held; do
+    [ -n "$held" ] || continue
+    holders+=("$held")
+  done <<EOF
+$(crew_limit_live_holders "$id")
+EOF
+  count=${#holders[@]}
+  [ "$count" -ge "$limit" ] || return 0
+  if [ "$count" -gt 0 ]; then
+    list=$(printf '%s, ' "${holders[@]}")
+    list="$count live workers already hold the limit of $limit (${list%, })"
+  else
+    # Only reachable when the limit itself is zero, which is a deliberate
+    # "start nothing here" setting rather than a fleet that is full.
+    list="the live worker limit is $limit, so this home starts no workers"
+  fi
+  if [ "${FM_ALLOW_OVER_CREW_LIMIT:-}" = 1 ]; then
+    echo "notice: spawning $id past the live worker limit of $limit - $list; FM_ALLOW_OVER_CREW_LIMIT=1 authorized this one spawn" >&2
+    return 0
+  fi
+  echo "error: refusing to spawn $id: $list. Wait for one to finish and tear it down, raise the limit in $CREW_LIMIT_FILE (absent means $CREW_LIMIT_DEFAULT), or set FM_ALLOW_OVER_CREW_LIMIT=1 for one deliberate over-limit spawn." >&2
+  return 1
+}
+
 ID=${POS[0]}
 fm_task_id_creation_valid "$ID" || { echo "error: invalid task id" >&2; exit 2; }
+crew_limit_enforce "$ID" "$KIND" || exit 1
 SPAWN_TASK_LOCK="$STATE/.spawn-$ID.lock"
 if ! fm_lock_try_acquire "$SPAWN_TASK_LOCK"; then
   echo "error: another spawn is already creating task $ID" >&2
