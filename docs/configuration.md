@@ -279,6 +279,25 @@ Malformed JSON, an empty or malformed rule/default array, an unverified harness,
 While the file remains present, no crewmate or scout spawn may proceed without an explicit resolved harness; malformed configuration must be reported and corrected rather than selected around.
 Secondmate homes inherit this file from the primary, so a secondmate's own crewmates apply the same dispatch profile behavior.
 
+## Live worker limit (config/crew-limit)
+
+`config/crew-limit` is an optional local, gitignored file holding one whole number: the most ship and scout workers this home may have running at once.
+An absent file means 3, a deliberately conservative default because each worker also drives a validation pipeline, and the combined load is carried by one developer machine.
+A file whose first line is not a whole number refuses the spawn naming the file, rather than being treated as the default.
+A limit of `0` is a valid deliberate setting meaning this home starts no workers until the value is raised or the per-invocation override below is used.
+`bin/fm-spawn.sh` applies the limit and its header owns the exact refusal mechanics.
+
+A slot is held by any ship or scout task whose recorded endpoint is not confidently agent-free, which keeps the count on live work rather than on leftover records: `fm_backend_agent_alive` in [`bin/fm-backend.sh`](../bin/fm-backend.sh) remains the single owner of that verdict, and only its confident `dead` answer frees a slot, so an unreadable or unverified endpoint refuses the spawn instead of overshooting the cap.
+A crashed worker's leftover metadata therefore holds nothing, and a recovery respawn never counts its own recorded endpoint against the limit.
+The refusal happens before any endpoint, worktree, or metadata exists, so a refused spawn leaves nothing to clean up.
+Set `FM_ALLOW_OVER_CREW_LIMIT=1` for one deliberate over-limit spawn; it is per invocation and never a stored default.
+
+The limit is per home and covers only the workers that home launches directly.
+`--secondmate` spawns are a persistent home rather than a worker and are never counted or blocked.
+Secondmate homes inherit this file from the primary and each enforces its own copy, so a fleet of N homes permits N times the limit.
+Each task's validation pipeline also spawns its own reviewer agents, which no spawn gate observes.
+A limit of 3 workers is a limit on workers, not a limit on agents or processes.
+
 ## Toolchain
 
 On session start the first mate detects what its required toolchain is missing or too old and lists each problem with either an exact install command or manual instructions.
@@ -315,7 +334,7 @@ When a running home advances and its loaded instruction surface (`AGENTS.md`, `b
 If that send fails, bootstrap keeps an idempotent retry marker and emits `NUDGE_SECONDMATES:` with the failure reason.
 The same bootstrap run emits `SECONDMATE_LIVENESS:` only when a registered secondmate is skipped or its relaunch fails; already-live and successfully relaunched secondmates are handled silently.
 For a mid-session inherited local-material edit where tracked-file sync is not needed, run `bin/fm-config-push.sh`.
-It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `backlog-backend`, `backend`, `herdr-presentation-spaces`, `startup-memory-budget`, `trace-context`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
+It uses the same live secondmate discovery and propagation helper as bootstrap, prints each live home's `crew-dispatch.json`, `crew-harness`, `crew-limit`, `backlog-backend`, `backend`, `herdr-presentation-spaces`, `startup-memory-budget`, `trace-context`, and `data/captain-shared.md` result as `pushed`, `unchanged`, `skipped`, or `error`, and exits non-zero for real propagation errors or config-reread send failures.
 When an allowlisted config item changes for an already-running local home, it sends the literal-content reread pointer described in [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); unchanged allowlisted config sends no pointer unless a previous delivery is pending.
 A changed remote home instead receives one durably recorded marked re-read instruction after the allowlisted bytes have transferred because primary-local generation paths are not meaningful on another host.
 The locked bootstrap inheritance pass uses the same placement-specific behavior; see `secondmate-provisioning` for the single contract owner.
@@ -482,6 +501,7 @@ FM_CONFIG_OVERRIDE=      # alternate config dir, mainly for tests
 FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for the Linux process-identity read in fm-wake-lib.sh, mainly for tests
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
+FM_ALLOW_OVER_CREW_LIMIT=   # set to 1 for one deliberate spawn past config/crew-limit; per invocation, never a default
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
 FM_BACKEND_HERDR_COMPOSER_LINES=20  # herdr-only: tail lines scanned by composer-state guard/fallback paths; idle-baseline submit confirmation uses agent-state
 FM_BACKEND_HERDR_IDLE_RE='^Type a message\.\.\.$'  # herdr-only: empty-composer placeholder regex after shared ghost extraction plus border and prompt stripping
