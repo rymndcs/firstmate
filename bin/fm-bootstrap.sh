@@ -67,6 +67,13 @@
 #          guesses at malformed or unsafe existing files, and secondmate homes
 #          await the primary-authoritative inherited value instead of creating
 #          their own.
+#          The locked mutable path also roots the ONE shared no-mistakes daemon
+#          in this firstmate home before any crewmate can start it lazily inside
+#          a disposable worktree; bin/fm-nomistakes-daemon.sh owns that contract,
+#          is idempotent and silent when a healthy daemon exists, and can never
+#          fail bootstrap. Anything it does have to say is a plain unprefixed
+#          advisory line on stderr, which reaches the captain in the session
+#          digest's BOOTSTRAP section but carries no routed diagnostic prefix.
 #          X mode is OPTIONAL and inert unless FM_HOME/.env has a non-empty
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.
@@ -79,8 +86,9 @@
 #          refresh relays any completed fm-fleet-sync.sh output before the
 #          aggregate timeout skip line with timeout and elapsed seconds.
 #          Set FM_FLEET_PRUNE=0 to skip branch pruning during that refresh.
-#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip the six MUTATING sweeps
-#          (PR-check migration, secondmate_sync, secondmate_liveness_sweep,
+#          Set FM_BOOTSTRAP_DETECT_ONLY=1 to skip every MUTATING sweep
+#          (PR-check migration, startup_memory_budget_setup, the shared
+#          no-mistakes daemon ensure, secondmate_sync, secondmate_liveness_sweep,
 #          secondmate_handoff_resume, x_mode_setup, fleet_sync) while still
 #          printing every read-only detect line
 #          above; the TANGLE line switches to advisory-only wording with no
@@ -1007,6 +1015,12 @@ fi
 if [ "${FM_BOOTSTRAP_DETECT_ONLY:-0}" != 1 ]; then
   "$SCRIPT_DIR/fm-pr-check-migrate.sh" || true
   startup_memory_budget_setup
+  # Root the ONE shared no-mistakes daemon in the firstmate home before any
+  # crewmate can start it lazily from inside a disposable worktree, where the
+  # next teardown's process sweep would kill it under other lanes' live
+  # validation runs. Idempotent and silent when a healthy daemon already exists;
+  # see bin/fm-nomistakes-daemon.sh. Best-effort - never a bootstrap failure.
+  "$SCRIPT_DIR/fm-nomistakes-daemon.sh" ensure || true
 fi
 
 if [ "$BACKEND_VALID" -eq 0 ]; then

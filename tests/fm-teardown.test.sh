@@ -544,6 +544,149 @@ run_teardown() {
     "$TEARDOWN" task-x1 "$@"
 }
 
+# --- shared no-mistakes daemon recovery after a treehouse return -------------
+#
+# `treehouse return` terminates the returned worktree's lingering processes, so a
+# shared daemon a crewmate started lazily from inside that worktree dies with it
+# and every OTHER lane's in-flight validation run fails with "daemon shutting
+# down". Teardown re-checks the daemon the moment a return succeeds. The verdict
+# and start-directory contract itself is pinned in
+# tests/fm-nomistakes-daemon.test.sh; these cases pin the wiring plus the
+# absolute rule that a daemon problem can never fail a teardown.
+#
+# lib.sh neutralizes the ensure path suite-wide so the other cases here never
+# reach the machine's real shared daemon; these four re-enable it against a
+# `no-mistakes` PATH stub.
+
+# Install a `no-mistakes` stub that logs "<argv>|<cwd>" and answers `daemon
+# status` from the environment. Args: case_dir
+add_no_mistakes_daemon_stub() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+printf '%s|%s\n' "$*" "$(pwd -P)" >> "$NM_LOG"
+case "${1:-} ${2:-}" in
+  "daemon status")
+    [ -z "${NM_STATUS_TEXT:-}" ] || printf '%s\n' "$NM_STATUS_TEXT"
+    exit 0
+    ;;
+  "daemon start") exit "${NM_START_RC:-0}" ;;
+esac
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/no-mistakes"
+  : > "$case_dir/nm.log"
+}
+
+# Run teardown with the daemon ensure path live. Args: case_dir [extra args...]
+run_teardown_with_live_daemon_check() {
+  local case_dir=$1; shift
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_NOMISTAKES_DAEMON_DISABLE=0 \
+  NM_LOG="$case_dir/nm.log" \
+  PATH="$case_dir/fakebin:$PATH" \
+    "$TEARDOWN" task-x1 "$@"
+}
+
+nm_start_calls() {
+  grep -c '^daemon start|' "$1/nm.log" 2>/dev/null || true
+}
+
+test_shared_daemon_restored_after_a_successful_return() {
+  local case_dir rc
+  case_dir=$(make_case daemon-restored-after-return)
+  write_meta "$case_dir" no-mistakes ship
+  add_no_mistakes_daemon_stub "$case_dir"
+  export NM_STATUS_TEXT="  ○ daemon not running"
+
+  set +e
+  run_teardown_with_live_daemon_check "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  unset NM_STATUS_TEXT
+
+  expect_code 0 "$rc" "daemon-restored-after-return: teardown should succeed"
+  [ "$(nm_start_calls "$case_dir")" = 1 ] \
+    || fail "daemon-restored-after-return: expected exactly one daemon start, got $(nm_start_calls "$case_dir")"
+  pass "teardown restores a shared daemon the worktree return swept away"
+}
+
+test_shared_daemon_left_untouched_when_healthy() {
+  local case_dir rc pid
+  case_dir=$(make_case daemon-healthy-untouched)
+  write_meta "$case_dir" no-mistakes ship
+  add_no_mistakes_daemon_stub "$case_dir"
+  # A real live process, so the verdict's kernel signal is exercised rather than
+  # assumed. Backgrounded with its own redirects so it never holds a pipe open.
+  sleep 120 >/dev/null 2>&1 &
+  pid=$!
+  export NM_STATUS_TEXT="  ● daemon running (pid $pid)"
+
+  set +e
+  run_teardown_with_live_daemon_check "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  unset NM_STATUS_TEXT
+  kill "$pid" 2>/dev/null
+
+  expect_code 0 "$rc" "daemon-healthy-untouched: teardown should succeed"
+  [ "$(nm_start_calls "$case_dir")" = 0 ] \
+    || fail "daemon-healthy-untouched: teardown restarted an already-healthy shared daemon"
+  assert_no_grep "no-mistakes daemon" "$case_dir/stderr" \
+    "daemon-healthy-untouched: teardown was not silent about a healthy daemon"
+  pass "teardown leaves a healthy shared daemon completely alone (idempotent)"
+}
+
+test_shared_daemon_absent_is_a_clean_no_op() {
+  local case_dir rc
+  case_dir=$(make_case daemon-absent-noop)
+  write_meta "$case_dir" no-mistakes ship
+  add_no_mistakes_daemon_stub "$case_dir"
+  rm -f "$case_dir/fakebin/no-mistakes"
+
+  set +e
+  # PATH is deliberately reduced to the case's fakebin plus the standard system
+  # dirs, so a no-mistakes installed on the developer's PATH cannot leak in and
+  # make "not installed" untestable. git is re-exposed explicitly.
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_NOMISTAKES_DAEMON_DISABLE=0 \
+  NM_LOG="$case_dir/nm.log" \
+  PATH="$case_dir/fakebin:$(dirname "$REAL_GIT_FOR_TEST"):/usr/bin:/bin:/usr/sbin:/sbin" \
+    "$TEARDOWN" task-x1 > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "daemon-absent-noop: teardown should succeed without no-mistakes installed"
+  assert_no_grep "no-mistakes daemon" "$case_dir/stderr" \
+    "daemon-absent-noop: teardown complained about a daemon that is not installed"
+  pass "a home without no-mistakes installed tears down exactly as before"
+}
+
+test_shared_daemon_failure_never_fails_teardown() {
+  local case_dir rc
+  case_dir=$(make_case daemon-failure-nonfatal)
+  write_meta "$case_dir" no-mistakes ship
+  add_no_mistakes_daemon_stub "$case_dir"
+  export NM_STATUS_TEXT="  ○ daemon not running" NM_START_RC=1
+
+  set +e
+  run_teardown_with_live_daemon_check "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  unset NM_STATUS_TEXT NM_START_RC
+
+  expect_code 0 "$rc" "daemon-failure-nonfatal: a daemon problem must never fail teardown"
+  assert_grep "teardown task-x1 complete" "$case_dir/stdout" \
+    "daemon-failure-nonfatal: teardown did not run to completion"
+  assert_grep "could not be started" "$case_dir/stderr" \
+    "daemon-failure-nonfatal: the daemon failure was not reported"
+  pass "a shared daemon that cannot be restarted is reported without failing teardown"
+}
+
 test_local_only_fork_remote_allows() {
   local case_dir rc
   case_dir=$(make_case fork-allow)
@@ -1929,6 +2072,10 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
   pass "herdr projection teardown retains every record when post-close presence is unknown"
 }
 
+test_shared_daemon_restored_after_a_successful_return
+test_shared_daemon_left_untouched_when_healthy
+test_shared_daemon_absent_is_a_clean_no_op
+test_shared_daemon_failure_never_fails_teardown
 test_local_only_fork_remote_allows
 test_teardown_prompts_tasks_axi_done_when_compatible
 test_teardown_manual_backend_prompts_hand_edit_even_when_tasks_axi_present

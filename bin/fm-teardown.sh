@@ -52,6 +52,12 @@
 # leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
+# After a treehouse return succeeds, teardown re-checks the ONE shared
+# no-mistakes daemon and restarts it from a safe directory if the return's
+# process sweep took it down, so other lanes' in-flight validation runs never
+# observe the outage. bin/fm-nomistakes-daemon.sh owns that contract; it is
+# idempotent, silent when a healthy daemon exists, and reports rather than fails
+# - a daemon problem can never block or fail a teardown.
 # Usage: fm-teardown.sh <task-id> [--force]
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
@@ -873,6 +879,20 @@ cleanup_stale_lock_for_safety_check() {
 
   echo "teardown: worktree safety check blocked by git lock $lock that is not provably stale (may belong to a live process); leaving it in place" >&2
   return "$TEARDOWN_TREEHOUSE_LOCK_REFUSED"
+}
+
+# `treehouse return` terminates the returned directory's lingering processes and
+# firstmate cannot exclude anything from that sweep, so a shared no-mistakes
+# daemon that some crewmate started lazily from inside that worktree dies with
+# it - taking every OTHER lane's in-flight validation run down too. Re-check it
+# the moment a return succeeds, so concurrent runs never observe the outage.
+# bin/fm-nomistakes-daemon.sh owns the verdict and the safe start directory; it
+# is idempotent, silent when a healthy daemon exists, and starts nothing unless
+# the daemon is provably down. A daemon problem is reported, never fatal:
+# teardown's unlanded-work guarantees take absolute precedence, so this can
+# neither block nor fail teardown.
+restore_shared_nomistakes_daemon() {
+  "$FM_ROOT/bin/fm-nomistakes-daemon.sh" ensure || true
 }
 
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
@@ -1817,6 +1837,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1
   }
+  restore_shared_nomistakes_daemon
 fi
 
 HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
@@ -1888,6 +1909,7 @@ fi
 if [ "$KIND" = secondmate ]; then
   [ -n "$HOME_PATH" ] || HOME_PATH=$WT
   remove_firstmate_home "$HOME_PATH" "secondmate home" "$ID" || exit $?
+  restore_shared_nomistakes_daemon
   remove_secondmate_registry_entry "$ID"
 fi
 remove_grok_turnend_auth "$STATE" "$ID"
