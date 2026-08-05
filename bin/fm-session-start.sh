@@ -260,10 +260,11 @@ if [ "$LOCK_RC" -ne 0 ]; then
     printf '%s\n' "$BAR"
     printf '●  READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED\n'
     printf '●  %s\n' "$LOCK_OUT"
-    printf '●  Skipping every mutating step: PR-check migration, stale Herdr child cleanup,\n'
-    printf '●  secondmate convergence, secondmate liveness, pending remote handoff retry,\n'
-    printf '●  X-mode artifacts, fleet sync, and wake-queue drain. Detect-only bootstrap\n'
-    printf '●  diagnostics and the rest of this read-only-safe digest still ran below.\n'
+    printf '●  Skipping every mutating step: PR-check migration, stale Herdr child\n'
+    printf '●  cleanup, shared no-mistakes daemon rooting, secondmate convergence,\n'
+    printf '●  secondmate liveness, pending remote handoff retry, X-mode artifacts,\n'
+    printf '●  fleet sync, and wake-queue drain. Detect-only bootstrap diagnostics\n'
+    printf '●  and the rest of this read-only-safe digest still ran below.\n'
     printf '●  Operate read-only until this resolves - do not spawn, steer, merge, or\n'
     printf '●  otherwise mutate fleet state from this session.\n'
     printf '%s\n' "$BAR"
