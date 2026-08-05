@@ -902,12 +902,15 @@ families_for_changed_path() {
     bin/fm-x-*|bin/fm-check*)
       printf '%s\n' pr-forge
       ;;
-    bin/fm-spawn.sh|bin/fm-send.sh|bin/fm-harness.sh|\
-    bin/fm-peek.sh|bin/fm-composer*)
+    bin/fm-spawn.sh)
       printf '%s\n' backend-dispatch
       printf '%s\n' pure-contract-unit
-      # The spawn path also carries the Linear status binding.
+      # The spawn path alone carries the Linear status binding.
       printf '%s\n' pr-forge
+      ;;
+    bin/fm-send.sh|bin/fm-harness.sh|bin/fm-peek.sh|bin/fm-composer*)
+      printf '%s\n' backend-dispatch
+      printf '%s\n' pure-contract-unit
       ;;
     bin/fm-linear.sh)
       printf '%s\n' pr-forge

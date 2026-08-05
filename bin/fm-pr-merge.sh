@@ -55,7 +55,7 @@ caller_defers_merge() {
   local arg
   for arg in "$@"; do
     case "$arg" in
-      --auto) return 0 ;;
+      --auto|--auto=*) return 0 ;;
     esac
   done
   return 1

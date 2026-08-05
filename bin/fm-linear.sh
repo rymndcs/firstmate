@@ -10,9 +10,10 @@
 #   fm-linear.sh -h | --help
 #
 # Lifecycle owners, one transition each:
-#   bin/fm-spawn.sh     in-progress  after a successful ship or scout spawn
-#   bin/fm-pr-check.sh  in-review    when a PR is recorded against the task
-#   bin/fm-pr-merge.sh  done         after a merge is confirmed
+#   bin/fm-spawn.sh        in-progress  after a successful ship or scout spawn
+#   bin/fm-pr-check.sh     in-review    when a PR is recorded against the task
+#   bin/fm-pr-merge.sh     done         after a PR merge is confirmed
+#   bin/fm-merge-local.sh  done         after an approved local-only landing
 #
 # CREDENTIAL
 # The key is the first line of the effective home's local, gitignored
@@ -25,15 +26,18 @@
 # configuration, because pushing a credential to another host is a decision for
 # the captain rather than a side effect of provisioning.
 #
-# ISSUE RESOLUTION, in order:
-#   1. branch=<name> in state/<task-id>.meta - the Linear branch name that
-#      bin/fm-brief.sh --branch recorded (rcs/rac-125-select2-font-size).
-#   2. the task id itself (rac125-select2-font-size).
-# Both yield RAC-125. A team key that contains digits is resolvable only
-# through the recorded branch name, where the dash separates key from number.
+# ISSUE RESOLUTION
+# The issue comes from one place only: branch=<name> in state/<task-id>.meta,
+# the Linear branch name that bin/fm-brief.sh --branch recorded, whose leaf
+# rac-125-select2-font-size yields RAC-125. Linear-tracked work always carries
+# a Linear branch, so a task id is deliberately never read as an issue
+# reference: an ordinary id such as db2-index-cleanup would otherwise resolve
+# DB-2 and move a completely unrelated issue. Only an all-letter team key of
+# two to five characters is accepted, so a team key containing digits has to be
+# moved by hand.
 # A task with NO resolvable identifier is the normal case rather than an error,
-# because most firstmate tasks are not Linear-tracked: it exits 0 in silence,
-# as does an issue that already sits in the target state.
+# because most firstmate tasks are not Linear-tracked: it exits 0 in silence
+# and never touches the network.
 #
 # TARGET STATE, matched case-insensitively by name against the issue's own
 # team, in preference order:
@@ -42,6 +46,15 @@
 #                                          In Progress AND In Review, so a type
 #                                          guess could move the issue backwards)
 #   done         Done, Completed, Merged  (else the first `completed` state)
+#
+# FORWARD ONLY
+# Transitions run in the lifecycle order in-progress -> in-review -> done, and
+# an issue already sitting at or past the requested step is left exactly where
+# it is: no update, no output, exit 0. The issue's CURRENT state is ranked by
+# the same vocabulary the targets use, with a `completed` or `canceled` state
+# terminal, so re-running a lifecycle step - a second fm-pr-merge.sh against an
+# already merged PR, a re-armed fm-pr-check.sh - can never drag an issue
+# backwards out of the state a later step gave it.
 #
 # OUTPUT AND EXIT STATUS
 # Every line goes to STDERR, so a caller's stdout contract is unchanged.
@@ -73,6 +86,7 @@ TEAM_KEY=
 ISSUE_NUMBER=
 STATE_NAMES=
 STATE_FALLBACK_TYPE=
+TARGET_RANK=
 WORK=
 AUTH_HEADER=
 
@@ -93,9 +107,9 @@ loud() {
 
 # --- identifier resolution --------------------------------------------------
 
-# A Linear team key is uppercase alphanumeric, and only an all-letter key of two
-# to five characters can be told apart from the issue number in the run-together
-# task-id form, so that is what both resolvers accept. Sets TEAM_KEY and
+# A Linear team key is uppercase alphanumeric, but only an all-letter key of two
+# to five characters is accepted, so an ordinary branch leaf such as
+# v2-3-hotfix-rollup is never mistaken for an issue reference. Sets TEAM_KEY and
 # ISSUE_NUMBER.
 accept_identifier() {  # <key> <number>
   local key=$1 number=$2
@@ -126,27 +140,15 @@ identifier_from_branch() {  # <branch>
   accept_identifier "${leaf%%-*}" "${rest%%-*}"
 }
 
-# rac125-select2-font-size -> RAC 125, the fallback used when the task recorded
-# no branch of its own.
-identifier_from_task_id() {  # <task-id>
-  local id=$1 head key
-  head=${id%%-*}
-  key=${head%%[0-9]*}
-  accept_identifier "$key" "${head#"$key"}"
-}
-
-# The identifier for a task, preferring its recorded branch name. Failure means
-# "not Linear-tracked", never an error.
+# The identifier for a task, read only from the branch name it recorded.
+# Failure means "not Linear-tracked", never an error.
 resolve_identifier() {  # <task-id>
   local id=$1 meta branch
   meta="$STATE/$id.meta"
-  if [ -f "$meta" ] && [ ! -L "$meta" ]; then
-    branch=$(sed -n 's/^branch=//p' "$meta" | tail -n 1)
-    if [ -n "$branch" ] && identifier_from_branch "$branch"; then
-      return 0
-    fi
-  fi
-  identifier_from_task_id "$id"
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  branch=$(sed -n 's/^branch=//p' "$meta" | tail -n 1)
+  [ -n "$branch" ] || return 1
+  identifier_from_branch "$branch"
 }
 
 # --- transition vocabulary --------------------------------------------------
@@ -156,16 +158,43 @@ transition_targets() {  # <transition>
     in-progress)
       STATE_NAMES='["In Progress","Started"]'
       STATE_FALLBACK_TYPE=started
+      TARGET_RANK=1
       ;;
     in-review)
       STATE_NAMES='["In Review","Code Review"]'
       STATE_FALLBACK_TYPE=
+      TARGET_RANK=2
       ;;
     done)
       STATE_NAMES='["Done","Completed","Merged"]'
       STATE_FALLBACK_TYPE=completed
+      TARGET_RANK=3
       ;;
     *) return 1 ;;
+  esac
+}
+
+# Where a workflow state sits in the lifecycle order this script drives: 0 not
+# started, 1 in-progress, 2 in-review, 3 terminal. The state's own name decides
+# first, because Linear's `started` type covers In Progress AND In Review;
+# `completed` and `canceled` are terminal and outrank every target, which is
+# what stops a re-run of a landing step from reopening a finished issue.
+state_rank() {  # <name> <type>
+  local name
+  name=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  case "$2" in
+    completed|canceled) printf '%s' 3; return 0 ;;
+  esac
+  case "$name" in
+    done|completed|merged) printf '%s' 3 ;;
+    'in review'|'code review') printf '%s' 2 ;;
+    'in progress'|started) printf '%s' 1 ;;
+    *)
+      case "$2" in
+        started) printf '%s' 1 ;;
+        *) printf '%s' 0 ;;
+      esac
+      ;;
   esac
 }
 
@@ -186,9 +215,11 @@ redact() {  # <text>
 }
 
 # POST one GraphQL document and echo the HTTP status; the body lands in <body>.
+# The short connect timeout bounds the common partition case, so an unreachable
+# Linear costs a lifecycle step seconds rather than the full overall cap.
 graphql() {  # <payload-file> <body-file>
   local payload=$1 body=$2 code
-  code=$(curl -m 20 -s -o "$body" -w '%{http_code}' \
+  code=$(curl --connect-timeout 5 -m 20 -s -o "$body" -w '%{http_code}' \
     -X POST \
     -H "@$AUTH_HEADER" \
     -H 'Content-Type: application/json' \
@@ -243,7 +274,8 @@ cmd_resolve() {  # <task-id>
 }
 
 cmd_transition() {  # <task-id> <transition>
-  local id transition tool query mutation payload body code issue current target_id target_name
+  local id transition tool query mutation payload body code issue
+  local current_name current_type target_id target_name
   id=${1-}
   transition=${2-}
   require_task_id "$id"
@@ -293,7 +325,9 @@ cmd_transition() {  # <task-id> <transition>
     || loud "$IDENT -> $transition failed - Linear could not be reached"
   [ "$code" = 200 ] || loud "$IDENT -> $transition failed - $(http_reason "$code" "$body")"
 
-  # issue id, current state id, target state id, target state name.
+  # issue id, current state name and type, target state id and name. The
+  # current state is read out of the team's own list so it carries the same
+  # name and type vocabulary the target was matched against.
   issue=$(jq -r --argjson names "$STATE_NAMES" --arg fallback "$STATE_FALLBACK_TYPE" '
     (.data.issues.nodes[0] // empty) as $issue
     | (($issue.team.states.nodes) // []) as $states
@@ -304,21 +338,26 @@ cmd_transition() {  # <task-id> <transition>
        else ($states | map(select(.type == $fallback)) | sort_by(.position) | first)
        end) as $typed
     | (($named // $typed) // {}) as $target
-    | [$issue.id, ($issue.state.id // ""), ($target.id // ""), ($target.name // "")]
+    | ((($states | map(select(.id == ($issue.state.id // ""))) | first)
+        // $issue.state) // {}) as $current
+    | [$issue.id, ($current.name // ""), ($current.type // ""),
+       ($target.id // ""), ($target.name // "")]
     | @tsv
   ' "$body" 2>/dev/null) || issue=
   [ -n "$issue" ] \
     || loud "$IDENT -> $transition failed - that issue is not in the workspace this Linear API key can read"
 
-  IFS=$'\t' read -r ISSUE_ID current target_id target_name <<EOF
+  IFS=$'\t' read -r ISSUE_ID current_name current_type target_id target_name <<EOF
 $issue
 EOF
   [ -n "$ISSUE_ID" ] \
     || loud "$IDENT -> $transition failed - that issue is not in the workspace this Linear API key can read"
   [ -n "$target_id" ] \
     || loud "$IDENT -> $transition failed - that issue's team has no matching workflow state; add one or move the issue by hand"
-  # Already there: nothing to do, and nothing worth saying.
-  [ "$current" != "$target_id" ] || exit 0
+  # Forward only: an issue already at or past this step - including one already
+  # sitting in the target state - keeps the state a later step gave it, with
+  # nothing sent and nothing worth saying.
+  [ "$(state_rank "$current_name" "$current_type")" -lt "$TARGET_RANK" ] || exit 0
 
   # shellcheck disable=SC2016  # $id/$stateId are GraphQL variables, not shell ones.
   mutation='mutation FirstmateTransition($id: String!, $stateId: String!) {

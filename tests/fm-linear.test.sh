@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-# Behavior tests for the Linear status binding: bin/fm-linear.sh and the three
+# Behavior tests for the Linear status binding: bin/fm-linear.sh and the four
 # lifecycle owners that call it (bin/fm-spawn.sh, bin/fm-pr-check.sh,
-# bin/fm-pr-merge.sh).
+# bin/fm-pr-merge.sh, bin/fm-merge-local.sh).
 #
 # The binding exists so the issue transition happens as part of the lifecycle
 # step rather than as something an agent remembers afterwards, which means the
-# two properties worth pinning are symmetric:
+# three properties worth pinning are:
 #   - it is INVISIBLE when unconfigured or when the task is not Linear-tracked,
 #     so every home that never configures Linear behaves exactly as before;
 #   - it is LOUD but NEVER blocking when a configured update fails, so a Linear
-#     outage cannot stop a spawn, a PR record, or a merge.
+#     outage cannot stop a spawn, a PR record, or a merge;
+#   - it only ever moves an issue FORWARD, so re-running a lifecycle step
+#     cannot drag a finished issue back out of the state a later step gave it.
 #
 # The Linear transport is stubbed with a fakebin `curl` (the same technique
 # tests/fm-x-mode.test.sh uses for the relay), so these stay hermetic: no
@@ -23,7 +25,9 @@ fm_git_identity fmtest fmtest@example.invalid
 LINEAR="$ROOT/bin/fm-linear.sh"
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
 PR_MERGE="$ROOT/bin/fm-pr-merge.sh"
+MERGE_LOCAL="$ROOT/bin/fm-merge-local.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
+LINEAR_BRANCH=rcs/rac-125-select2-font-size
 TMP_ROOT=$(fm_test_tmproot fm-linear-tests)
 
 # A key shaped like a real one, so the "never printed" assertions are meaningful.
@@ -40,6 +44,20 @@ LINEAR_ISSUE_BODY='{"data":{"issues":{"nodes":[{"id":"issue-uuid","identifier":"
 
 # The same workspace with the issue already sitting in In Progress.
 LINEAR_ISSUE_BODY_IN_PROGRESS='{"data":{"issues":{"nodes":[{"id":"issue-uuid","identifier":"RAC-125","state":{"id":"st-prog","name":"In Progress"},"team":{"states":{"nodes":[
+  {"id":"st-todo","name":"Todo","type":"unstarted","position":1},
+  {"id":"st-prog","name":"In Progress","type":"started","position":2},
+  {"id":"st-rev","name":"In Review","type":"started","position":3},
+  {"id":"st-done","name":"Done","type":"completed","position":4}]}}}]}}}'
+
+# The same workspace with the issue already in In Review, and already Done: the
+# two states a re-run of an earlier lifecycle step must not undo.
+LINEAR_ISSUE_BODY_IN_REVIEW='{"data":{"issues":{"nodes":[{"id":"issue-uuid","identifier":"RAC-125","state":{"id":"st-rev","name":"In Review"},"team":{"states":{"nodes":[
+  {"id":"st-todo","name":"Todo","type":"unstarted","position":1},
+  {"id":"st-prog","name":"In Progress","type":"started","position":2},
+  {"id":"st-rev","name":"In Review","type":"started","position":3},
+  {"id":"st-done","name":"Done","type":"completed","position":4}]}}}]}}}'
+
+LINEAR_ISSUE_BODY_DONE='{"data":{"issues":{"nodes":[{"id":"issue-uuid","identifier":"RAC-125","state":{"id":"st-done","name":"Done"},"team":{"states":{"nodes":[
   {"id":"st-todo","name":"Todo","type":"unstarted","position":1},
   {"id":"st-prog","name":"In Progress","type":"started","position":2},
   {"id":"st-rev","name":"In Review","type":"started","position":3},
@@ -123,6 +141,13 @@ configure_key() {  # <home>
   printf '%s\n' "$API_KEY" > "$1/config/linear-api-key"
 }
 
+# The task record a Linear-tracked task carries: the Linear branch name that
+# bin/fm-brief.sh --branch recorded, which is the only thing that resolves an
+# issue at all.
+write_linear_meta() {  # <home> <task-id>
+  fm_write_meta "$1/state/$2.meta" "kind=ship" "branch=$LINEAR_BRANCH"
+}
+
 # Run the helper against <home>, with the fake Linear on PATH and its call log
 # at <home>/linear.log (truncated first so each case reads only its own calls).
 run_linear() {  # <home> <args...>
@@ -160,8 +185,7 @@ write_argv_log() {  # <home>
 test_no_configured_key_is_a_clean_noop() {
   local home out rc
   home=$(make_home no-key)
-  fm_write_meta "$home/state/rac125-font.meta" \
-    "kind=ship" "branch=rcs/rac-125-select2-font-size"
+  write_linear_meta "$home" rac125-font
 
   set +e
   out=$(run_linear "$home" transition rac125-font in-progress 2>&1)
@@ -196,10 +220,10 @@ test_identifier_is_read_from_the_recorded_branch() {
   local home out rc
   home=$(make_home branch-identifier)
   configure_key "$home"
-  # The task id alone would resolve to ABC-7; the recorded Linear branch name
-  # must win, which is what proves the branch is the preferred source.
+  # The task id is shaped like a reference to a completely different issue, so
+  # only the recorded Linear branch name may decide which issue moves.
   fm_write_meta "$home/state/abc7-legacy-id.meta" \
-    "kind=ship" "branch=rcs/rac-125-select2-font-size"
+    "kind=ship" "branch=$LINEAR_BRANCH"
 
   out=$(run_linear "$home" resolve abc7-legacy-id) \
     || fail "branch-identifier: resolve failed"
@@ -216,24 +240,37 @@ test_identifier_is_read_from_the_recorded_branch() {
     "branch-identifier: the issue query did not carry the branch's issue number"
   assert_no_grep '"key": "ABC"' "$home/linear.log" \
     "branch-identifier: the task id was used even though a branch was recorded"
-  pass "the issue identifier is extracted from the recorded branch name in preference to the task id"
+  pass "the issue identifier is extracted from the recorded branch name, never from the task id"
 }
 
-test_identifier_falls_back_to_the_task_id() {
-  local home out
-  home=$(make_home task-id-identifier)
+test_task_without_a_recorded_branch_is_a_clean_noop() {
+  local home out rc
+  home=$(make_home no-branch)
   configure_key "$home"
+  # This id reads exactly like an issue reference, and is deliberately never
+  # treated as one: guessing it would move a real but unrelated RAC-125.
+  fm_write_meta "$home/state/rac125-select2-font-size.meta" "kind=ship"
 
-  out=$(run_linear "$home" resolve rac125-select2-font-size) \
-    || fail "task-id-identifier: resolve failed"
-  [ "$out" = RAC-125 ] || fail "task-id-identifier: expected RAC-125 from the task id, got '$out'"
-  pass "a task with no recorded branch resolves its issue identifier from the task id"
+  set +e
+  out=$(run_linear "$home" transition rac125-select2-font-size in-progress 2>&1)
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "no-branch: a task with no recorded branch must succeed"
+  [ -z "$out" ] || fail "no-branch: a task with no recorded branch must print nothing, got: $out"
+  [ ! -s "$home/linear.log" ] \
+    || fail "no-branch: a task with no recorded branch must not reach the network"
+  out=$(run_linear "$home" resolve rac125-select2-font-size)
+  [ -z "$out" ] \
+    || fail "no-branch: the task id resolved '$out' on its own, which may never happen"
+  pass "a task id that reads like an issue reference resolves nothing without a recorded branch"
 }
 
 test_api_failure_is_loud_and_never_prints_the_key() {
   local home err rc
   home=$(make_home api-rejected)
   configure_key "$home"
+  write_linear_meta "$home" rac125-select2
 
   set +e
   err=$(FAKE_LINEAR_HTTP=401 \
@@ -257,6 +294,7 @@ test_unreachable_linear_is_loud() {
   local home err rc
   home=$(make_home api-unreachable)
   configure_key "$home"
+  write_linear_meta "$home" rac125-select2
 
   set +e
   err=$(FAKE_LINEAR_CURL_EXIT=7 run_linear "$home" transition rac125-select2 'done' 2>&1 >/dev/null)
@@ -272,6 +310,7 @@ test_missing_workflow_state_is_loud() {
   local home err rc
   home=$(make_home no-review-state)
   configure_key "$home"
+  write_linear_meta "$home" rac125-select2
 
   set +e
   err=$(FAKE_LINEAR_ISSUE_BODY="$LINEAR_ISSUE_BODY_NO_REVIEW" \
@@ -291,6 +330,7 @@ test_issue_already_in_target_state_sends_no_update() {
   local home out rc
   home=$(make_home already-there)
   configure_key "$home"
+  write_linear_meta "$home" rac125-select2
 
   set +e
   out=$(FAKE_LINEAR_ISSUE_BODY="$LINEAR_ISSUE_BODY_IN_PROGRESS" \
@@ -305,10 +345,49 @@ test_issue_already_in_target_state_sends_no_update() {
   pass "an issue already in the target state is left alone without an update"
 }
 
+test_a_finished_issue_is_never_moved_back_to_in_review() {
+  local home out rc
+  home=$(make_home forward-done)
+  configure_key "$home"
+  write_linear_meta "$home" rac125-select2
+
+  set +e
+  out=$(FAKE_LINEAR_ISSUE_BODY="$LINEAR_ISSUE_BODY_DONE" \
+    run_linear "$home" transition rac125-select2 in-review 2>&1)
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "forward-done: a step re-run against a finished issue must succeed"
+  [ -z "$out" ] || fail "forward-done: nothing should be reported, got: $out"
+  [ "$(mutation_calls "$home")" = 0 ] \
+    || fail "forward-done: a Done issue must never be dragged back to In Review"
+  pass "a Done issue asked for In Review keeps its state, so re-running a merge cannot reopen it"
+}
+
+test_an_in_review_issue_is_never_moved_back_to_in_progress() {
+  local home out rc
+  home=$(make_home forward-review)
+  configure_key "$home"
+  write_linear_meta "$home" rac125-select2
+
+  set +e
+  out=$(FAKE_LINEAR_ISSUE_BODY="$LINEAR_ISSUE_BODY_IN_REVIEW" \
+    run_linear "$home" transition rac125-select2 in-progress 2>&1)
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "forward-review: a re-dispatch of a reviewed task must succeed"
+  [ -z "$out" ] || fail "forward-review: nothing should be reported, got: $out"
+  [ "$(mutation_calls "$home")" = 0 ] \
+    || fail "forward-review: an In Review issue must never be dragged back to In Progress"
+  pass "an In Review issue asked for In Progress keeps its state, so a re-dispatch cannot undo the review"
+}
+
 test_transition_targets_each_lifecycle_state() {
   local home rc transition expected
   home=$(make_home each-state)
   configure_key "$home"
+  write_linear_meta "$home" rac125-select2
   while IFS='|' read -r transition expected; do
     [ -n "$transition" ] || continue
     set +e
@@ -367,7 +446,7 @@ make_pr_home() {  # <name>
     "project=$home/project" \
     "kind=ship" \
     "mode=no-mistakes" \
-    "branch=rcs/rac-125-select2-font-size"
+    "branch=$LINEAR_BRANCH"
   printf '%s\n' "$home"
 }
 
@@ -495,6 +574,103 @@ test_pr_merge_does_not_close_an_auto_merge() {
   pass "an auto-merge is queued rather than confirmed, so the issue is not closed yet"
 }
 
+test_pr_merge_does_not_close_an_auto_equals_merge() {
+  local home rc
+  home=$(make_pr_home pr-merge-auto-equals)
+
+  set +e
+  run_pr_script "$PR_MERGE" "$home" rac125-font https://github.com/example/repo/pull/16 -- --auto=true \
+    >/dev/null 2>&1
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "pr-merge-auto-equals: queuing an auto-merge should succeed"
+  assert_no_grep '"stateId": "st-done"' "$home/linear.log" \
+    "pr-merge-auto-equals: the --auto=<value> spelling still only queues the merge"
+  pass "an auto-merge written as --auto=true is recognised as queued rather than confirmed"
+}
+
+# --- approved local-only landing --------------------------------------------
+
+# A home whose project sits on main with a landable task branch, plus the fake
+# Linear already on PATH: the shape bin/fm-merge-local.sh needs to fast-forward.
+make_local_merge_home() {  # <name>
+  local name=$1 home
+  home=$(make_home "$name")
+  configure_key "$home"
+  fm_git_init_commit "$home/project"
+  git -C "$home/project" branch -M main
+  git -C "$home/project" worktree add -q -b "$LINEAR_BRANCH" "$home/wt" main
+  printf 'landed\n' > "$home/wt/feature.txt"
+  git -C "$home/wt" add feature.txt
+  git -C "$home/wt" commit -qm "task work"
+  touch "$home/state/.last-watcher-beat"
+  fm_write_meta "$home/state/rac125-font.meta" \
+    "window=firstmate:fm-rac125-font" \
+    "worktree=$home/wt" \
+    "project=$home/project" \
+    "kind=ship" \
+    "mode=local-only" \
+    "branch=$LINEAR_BRANCH"
+  printf '%s\n' "$home"
+}
+
+run_merge_local() {  # <home> <args...>
+  local home=$1
+  shift
+  : > "$home/linear.log"
+  env FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$home" \
+    FM_STATE_OVERRIDE="$home/state" FM_CONFIG_OVERRIDE="$home/config" \
+    FAKE_LINEAR_LOG="$home/linear.log" \
+    FAKE_LINEAR_ISSUE_BODY="$LINEAR_ISSUE_BODY" \
+    FAKE_LINEAR_HTTP="${FAKE_LINEAR_HTTP:-200}" \
+    FAKE_LINEAR_CURL_EXIT="${FAKE_LINEAR_CURL_EXIT:-}" \
+    PATH="$home/fakebin:$PATH" \
+    "$MERGE_LOCAL" "$@"
+}
+
+landed_head() {  # <home>
+  [ "$(git -C "$1/project" rev-parse main)" = "$(git -C "$1/wt" rev-parse "$LINEAR_BRANCH")" ]
+}
+
+test_local_merge_moves_the_issue_to_done() {
+  local home out rc
+  home=$(make_local_merge_home local-merge-done)
+
+  set +e
+  out=$(run_merge_local "$home" rac125-font 2>/dev/null)
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "local-merge-done: the approved landing should succeed"
+  assert_contains "$out" "into local main" \
+    "local-merge-done: the fast-forward must still report what it landed"
+  landed_head "$home" || fail "local-merge-done: local main was not fast-forwarded"
+  assert_grep '"stateId": "st-done"' "$home/linear.log" \
+    "local-merge-done: an approved local landing did not move the issue to Done"
+  pass "an approved local-only landing moves its Linear issue to Done"
+}
+
+test_local_merge_survives_a_linear_failure() {
+  local home out err rc
+  home=$(make_local_merge_home local-merge-linear-down)
+
+  set +e
+  out=$(FAKE_LINEAR_CURL_EXIT=7 run_merge_local "$home" rac125-font 2> "$home/stderr")
+  rc=$?
+  set -e
+  err=$(cat "$home/stderr")
+
+  expect_code 0 "$rc" "local-merge-linear-down: a Linear outage must not fail the landing"
+  assert_contains "$out" "into local main" \
+    "local-merge-linear-down: the fast-forward must still land while Linear is down"
+  landed_head "$home" \
+    || fail "local-merge-linear-down: local main was not fast-forwarded"
+  assert_contains "$err" "LINEAR: RAC-125" \
+    "local-merge-linear-down: the Linear failure must be reported"
+  pass "a Linear outage is reported but never blocks an approved local landing"
+}
+
 # --- spawn ------------------------------------------------------------------
 
 # Fake tmux answering the pane-path query and swallowing every send, so a spawn
@@ -590,11 +766,13 @@ test_spawn_survives_a_linear_failure() {
 test_no_configured_key_is_a_clean_noop
 test_task_without_identifier_is_a_clean_noop
 test_identifier_is_read_from_the_recorded_branch
-test_identifier_falls_back_to_the_task_id
+test_task_without_a_recorded_branch_is_a_clean_noop
 test_api_failure_is_loud_and_never_prints_the_key
 test_unreachable_linear_is_loud
 test_missing_workflow_state_is_loud
 test_issue_already_in_target_state_sends_no_update
+test_a_finished_issue_is_never_moved_back_to_in_review
+test_an_in_review_issue_is_never_moved_back_to_in_progress
 test_transition_targets_each_lifecycle_state
 test_pr_check_moves_the_issue_to_in_review
 test_pr_check_survives_a_linear_failure
@@ -602,5 +780,8 @@ test_pr_merge_moves_the_issue_to_done
 test_pr_merge_survives_a_linear_failure
 test_pr_merge_does_not_close_a_failed_merge
 test_pr_merge_does_not_close_an_auto_merge
+test_pr_merge_does_not_close_an_auto_equals_merge
+test_local_merge_moves_the_issue_to_done
+test_local_merge_survives_a_linear_failure
 test_spawn_moves_the_issue_to_in_progress
 test_spawn_survives_a_linear_failure
