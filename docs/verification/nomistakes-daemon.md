@@ -63,6 +63,21 @@ That path is covered by `tests/fm-nomistakes-daemon.test.sh` and `tests/fm-teard
 
 This is an acceptable gap because the failure direction is safe by construction.
 If a future build rewords its status output - or fails the call outright with text this verdict cannot parse - the verdict falls to `unknown`, `ensure` starts nothing and says so, and behavior degrades to the pre-existing lazy start, never to an unwanted restart.
-`absent` is deliberately not that catch-all: it is reserved for a daemon surface proven missing, meaning `no-mistakes` is not on PATH at all or it rejects `daemon status` as an unknown command or a usage error.
+`absent` is deliberately not that catch-all: it is reserved for a daemon surface proven missing, meaning `no-mistakes` is not on PATH at all, or it rejects `daemon status` as an unknown command or flag, or it answers with a command list rather than a status.
 An unrecognized failure is doubt about a possibly-down daemon, so it is reported rather than silently filed as "no surface here".
+
+That shape was measured rather than assumed, because a too-broad match would reopen the swallow:
+
+```sh
+$ no-mistakes daemon status --bogus-flag
+unknown flag: --bogus-flag              # exit 1, and NO usage dump
+$ no-mistakes daemon bogussub
+Manage the no-mistakes daemon
+...
+Available Commands:                     # the unsupported-subcommand shape
+  restart     Restart the daemon (stop if running, then start)
+```
+
+This build does not dump usage on a runtime error, but that is a property of the build rather than of the contract: cobra prints a full usage dump on any `RunE` error unless `SilenceUsage` is set.
+So `absent` anchors on the command-list shape and never on a bare `Usage:` substring - a future build that reports a down daemon as `Error: ...` trailed by a usage block must reach `unknown` and be reported, not be filed as "no surface here".
 Refresh this record after a no-mistakes upgrade by re-running the two commands under "The verdict against the real build"; a `running` verdict against a live daemon proves both signals still parse.

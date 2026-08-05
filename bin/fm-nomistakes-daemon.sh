@@ -48,8 +48,9 @@
 #                                        absent  - proven no daemon surface:
 #                                                  no-mistakes is not installed,
 #                                                  or it rejects `daemon status`
-#                                                  as an unknown command or a
-#                                                  usage error
+#                                                  as an unknown command/flag,
+#                                                  or answers with a command
+#                                                  list instead of a status
 #                                        running - proven live
 #                                        down    - proven not running
 #                                        unknown - indeterminate; do nothing
@@ -192,14 +193,26 @@ nm_daemon_verdict() {
     return 0
   fi
 
-  # A non-zero exit whose output is shaped like an unsupported subcommand or a
-  # usage dump is evidence about the SURFACE, not about the daemon: this build
-  # has no `daemon status` to answer with. Nothing can be reasoned about and
-  # nothing needs saying, since the pre-existing lazy-start behavior is
-  # unchanged either way.
+  # A non-zero exit that explicitly rejects the subcommand or flag - or that
+  # dumps a COMMAND LIST instead of answering - is evidence about the SURFACE,
+  # not about the daemon: this build has no `daemon status` to answer with.
+  # Nothing can be reasoned about and nothing needs saying, since the
+  # pre-existing lazy-start behavior is unchanged either way.
+  #
+  # The shape is anchored deliberately narrowly. Verified 2026-08-05 against the
+  # installed no-mistakes v1.41.2: `daemon status --bogus-flag` exits 1 printing
+  # only `unknown flag: --bogus-flag` with NO usage dump, while an unsupported
+  # subcommand prints the command-list help carrying `Available Commands:`. So
+  # this build does not dump usage on a runtime error - but that is a property
+  # of today's build, not of the contract: cobra prints a full usage dump on any
+  # RunE error unless SilenceUsage is set. A bare `Usage:` match would therefore
+  # file a future build's `Error: ...` + usage trailer - which is how a DOWN
+  # daemon could well be reported - as absent, silently swallowing the very
+  # outage this script exists to catch. The command-list anchor keeps the
+  # unsupported-subcommand case working and sends that shape to `unknown`.
   if [ "$rc" -ne 0 ]; then
     case "$out" in
-      *"unknown command"*|*"unknown flag"*|*"unknown shorthand flag"*|*"Usage:"*|*"usage:"*)
+      *"unknown command"*|*"unknown flag"*|*"unknown shorthand flag"*|*"Available Commands:"*)
         printf '%s\n' absent
         return 0
         ;;

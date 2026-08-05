@@ -289,14 +289,21 @@ test_missing_no_mistakes_is_a_clean_no_op() {
 }
 
 test_build_without_a_daemon_surface_is_silent() {
-  local case_dir rc out err verdict
+  local case_dir rc out err verdict status_text
   case_dir=$(make_case no-daemon-surface)
   # An installed build that rejects `daemon status` as an unsupported subcommand.
   # That shape is evidence about the SURFACE - there is no daemon status to
   # answer with - so nothing can be done and today's lazy-start behavior is
-  # unchanged, and this is the one failing status that stays silent. The case
-  # below drives the other shape and must NOT reach absent.
-  export NM_STATUS_TEXT='Error: unknown command "daemon" for "no-mistakes"' NM_STATUS_RC=1
+  # unchanged, and this is the one failing status that stays silent. The two
+  # cases below drive the other shapes and must NOT reach absent.
+  status_text='Error: unknown command "daemon" for "no-mistakes"'
+  export NM_STATUS_TEXT="$status_text" NM_STATUS_RC=1
+  # Divergence: absent must be earned by the explicit unsupported marker, not by
+  # a usage dump the fixture happens to carry - so there is none here to lean on.
+  assert_contains "$status_text" 'unknown command' \
+    "no-daemon-surface: fixture must carry the genuine unsupported-subcommand marker"
+  assert_not_contains "$status_text" 'Usage:' \
+    "no-daemon-surface: fixture must not reach absent via a usage dump"
 
   verdict=$(run_nm "$case_dir" status)
   [ "$verdict" = absent ] || fail "no-daemon-surface: expected verdict absent, got '$verdict'"
@@ -325,12 +332,12 @@ test_unrecognized_status_failure_is_reported_not_filed_absent() {
   # starts nothing; the only guarantee it loses is silence.
   status_text="Error: could not reach the daemon socket"
   export NM_STATUS_TEXT="$status_text" NM_STATUS_RC=1
-  # Divergence from the absent case above: no unsupported-subcommand or usage
-  # shape anywhere, so the two cannot quietly collapse into one another.
+  # Divergence from the absent case above: no unsupported-subcommand marker and
+  # no command list anywhere, so the two cannot quietly collapse into one another.
   assert_not_contains "$status_text" "unknown command" \
     "unrecognized-failure: fixture must not look like an unsupported subcommand"
-  assert_not_contains "$status_text" "sage:" \
-    "unrecognized-failure: fixture must not look like a usage dump"
+  assert_not_contains "$status_text" "Available Commands:" \
+    "unrecognized-failure: fixture must not look like a command-list dump"
 
   verdict=$(run_nm "$case_dir" status)
   [ "$verdict" = unknown ] \
@@ -349,6 +356,48 @@ test_unrecognized_status_failure_is_reported_not_filed_absent() {
   [ "$(start_calls "$case_dir")" = 0 ] \
     || fail "unrecognized-failure: ensure started a daemon it could not reason about"
   pass "a status failure the verdict cannot classify is reported as unknown, never as absent"
+}
+
+test_runtime_error_with_a_usage_trailer_is_reported_not_filed_absent() {
+  local case_dir rc out err verdict status_text
+  case_dir=$(make_case usage-trailer-failure)
+  # `no-mistakes` is cobra-based, and cobra dumps the command's usage after ANY
+  # RunE error unless SilenceUsage is set. So a build that reports a DOWN daemon
+  # as an error can emit exactly this - an error line plus a usage trailer - and
+  # a verdict that treated any `Usage:` text as "no surface here" would swallow
+  # the outage silently. Absent must be earned by the unsupported shape, which a
+  # bare usage trailer is not: it carries no command list.
+  status_text='Error: could not reach the daemon socket
+Usage:
+  no-mistakes daemon status [flags]
+
+Flags:
+  -h, --help   help for status'
+  export NM_STATUS_TEXT="$status_text" NM_STATUS_RC=1
+  assert_contains "$status_text" "Usage:" \
+    "usage-trailer-failure: fixture must carry the usage trailer being pinned"
+  assert_not_contains "$status_text" "Available Commands:" \
+    "usage-trailer-failure: a usage trailer is not the command-list shape"
+  assert_not_contains "$status_text" "unknown command" \
+    "usage-trailer-failure: fixture must not look like an unsupported subcommand"
+
+  verdict=$(run_nm "$case_dir" status)
+  [ "$verdict" = unknown ] \
+    || fail "usage-trailer-failure: expected verdict unknown, got '$verdict'"
+
+  set +e
+  out=$(run_nm "$case_dir" ensure 2>"$case_dir/err")
+  rc=$?
+  set -e
+  unset NM_STATUS_TEXT NM_STATUS_RC
+  err=$(cat "$case_dir/err")
+
+  expect_code 1 "$rc" "usage-trailer-failure: a runtime error must report failure"
+  [ -z "$out" ] || fail "usage-trailer-failure: ensure wrote to stdout: $out"
+  assert_contains "$err" "indeterminate" "usage-trailer-failure: the doubt was not reported"
+  [ "$(start_calls "$case_dir")" = 0 ] \
+    || fail "usage-trailer-failure: ensure started a daemon on an indeterminate verdict"
+  pass "a runtime error trailed by a usage dump is reported as unknown, never as absent"
 }
 
 # --- a wedged daemon socket must not stall teardown or bootstrap -------------
@@ -567,6 +616,7 @@ test_contradictory_negative_with_a_pid_starts_nothing
 test_missing_no_mistakes_is_a_clean_no_op
 test_build_without_a_daemon_surface_is_silent
 test_unrecognized_status_failure_is_reported_not_filed_absent
+test_runtime_error_with_a_usage_trailer_is_reported_not_filed_absent
 test_hung_status_is_bounded_and_starts_nothing
 test_failed_start_is_reported_not_fatal
 test_start_directory_avoids_a_linked_worktree
