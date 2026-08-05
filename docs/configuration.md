@@ -298,6 +298,24 @@ Secondmate homes inherit this file from the primary and each enforces its own co
 Each task's validation pipeline also spawns its own reviewer agents, which no spawn gate observes.
 A limit of 3 workers is a limit on workers, not a limit on agents or processes.
 
+## Linear status binding (config/linear-api-key)
+
+`config/linear-api-key` is an optional local, gitignored file whose first line is a Linear API key.
+When it is present, the lifecycle steps that already know a task's fate also move that task's Linear issue: a successful ship or scout dispatch sets In Progress, recording a PR against the task sets In Review, and a landing sets Done, whether it landed as a confirmed PR merge or as an approved local-only fast-forward.
+The transition happens as part of the lifecycle step rather than as a separate action afterwards, so keeping Linear current does not depend on an agent remembering to do it.
+Transitions only ever move forward through In Progress, In Review, and Done, so re-running a lifecycle step never drags an issue back out of a state a later step already gave it.
+[`bin/fm-linear.sh`](../bin/fm-linear.sh) is the single owner of Linear API mechanics, and its header and `--help` own the exact commands, issue-resolution rules, and workflow-state matching.
+
+An absent, unreadable, or empty file means the binding is off: no network call, no output, and firstmate behaves exactly as it does in a home that never configured Linear.
+A task's issue is resolved only from the Linear branch name its task record carries, so a task with no such branch is the normal case rather than an error, because most firstmate tasks are not Linear-tracked, and it is skipped in silence without a network call.
+Linear-tracked ship work is therefore scaffolded with `bin/fm-brief.sh --branch <the branch Linear published for the issue>`, which is the one thing that records that name for every later lifecycle step to resolve.
+A ship brief that reads as a Linear issue while recording no branch is an intake gap rather than untracked work, so `bin/fm-spawn.sh` names the task and the issue on standard error after dispatching it untouched, and it says so whether or not this home configured a key.
+A configured update that then fails - missing `curl` or `jq`, a rejected key, an unreachable API, an unknown issue, a team with no matching workflow state, or a refused update - reports one `LINEAR:` line on standard error and never blocks the operation it rode along with, so a spawn still spawns and a merge still merges while Linear is down.
+The key is never printed, never passed on a command line, and is removed from any message Linear itself returns.
+
+This file is local to its home and is not part of secondmate inherited configuration, because propagating a credential to another host is the captain's decision rather than a side effect of provisioning.
+A secondmate that needs the binding gets its own key file placed in its own home.
+
 ## Toolchain
 
 On session start the first mate detects what its required toolchain is missing or too old and lists each problem with either an exact install command or manual instructions.

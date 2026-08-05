@@ -53,9 +53,15 @@
 # delivery line carries a trailing " branch=<name>" that bin/fm-spawn.sh records
 # in the task metadata, so every later consumer resolves the same branch after a
 # restart. Without --branch the scaffold is byte-identical to the fm/<task-id>
-# form and no branch= is recorded anywhere. --branch is refused on scout and
-# secondmate scaffolds: a scout works in a scratch worktree it never branches,
-# and a charter has no task branch.
+# form and no branch= is recorded anywhere. Linear-tracked ship work is therefore
+# always scaffolded with the branch Linear published for its issue rather than
+# the fm/<task-id> default: bin/fm-linear.sh resolves the task's issue from that
+# recorded name alone, so a task scaffolded without it ships with its issue never
+# moving. This script still looks nothing up; the name is one firstmate already
+# holds at intake, and deriving it from an identifier in hand is fine while
+# fetching one is not. --branch is refused on scout and secondmate scaffolds: a
+# scout works in a scratch worktree it never branches, and a charter has no task
+# branch.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
 # a spawn-time and firstmate-side input only (AGENTS.md section 7).
 # Every scaffold's status protocol distinguishes the configured
