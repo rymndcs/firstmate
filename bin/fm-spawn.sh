@@ -23,6 +23,9 @@
 #   brief is the one place the name is stated, and a second flag could disagree
 #   with the instructions the worker actually follows. A brief that declares none
 #   records no branch= at all and every consumer derives fm/<task-id> as before.
+#   A ship brief that names a Linear issue outright while recording no branch is
+#   an intake gap, since bin/fm-linear.sh resolves the issue from the recorded
+#   branch alone: the spawn proceeds untouched and says so loudly on stderr.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -1336,6 +1339,7 @@ delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task
 # line. A spawn that disagrees would launch a worker whose instructions and whose
 # recorded task delivery differ, which is the exact drift this contract prevents.
 BRIEF_BRANCH=
+BRIEF_LINEAR_IDENT=
 if [ "$KIND" = ship ]; then
   PROJ_NAME=$(basename "$PROJ_ABS")
   BRIEF_MODE=$(sed -n 's/^Delivery contract: mode=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
@@ -1346,6 +1350,21 @@ if [ "$KIND" = ship ]; then
   # keeps them from drifting apart. Absent means the default, and nothing is
   # recorded, so a non-Linear task's metadata stays byte-identical.
   BRIEF_BRANCH=$(sed -n 's/^Delivery contract: mode=[^ ]*[[:space:]]\{1,\}branch=\([^ ]*\).*$/\1/p' "$BRIEF" | head -n 1)
+  # Linear-tracked work is dispatched on the branch name Linear published for
+  # the issue, and bin/fm-linear.sh resolves the issue from that recorded name
+  # alone. A brief that names an issue while recording no branch is therefore an
+  # intake gap rather than a task to skip: it would ship with its issue never
+  # moving. Detect it here, where the same line is already read, and name it
+  # loudly below. Only an identifier the brief states outright counts - an
+  # uppercase <TEAM>-<number> token, which is also the form a linear.app issue
+  # URL carries - and a task id is never read as an issue reference, because an
+  # ordinary id such as db2-index-cleanup would name a completely unrelated
+  # issue. This reads the brief and nothing else: it sends no Linear request,
+  # and its whole effect is the diagnostic.
+  if [ -z "$BRIEF_BRANCH" ]; then
+    BRIEF_LINEAR_IDENT=$(grep -oE '(^|[^0-9A-Za-z_-])[A-Z]{2,5}-[0-9]{1,6}([^0-9A-Za-z_-]|$)' "$BRIEF" \
+      | grep -oE '[A-Z]{2,5}-[0-9]{1,6}' | head -n 1) || BRIEF_LINEAR_IDENT=
+  fi
   if [ -z "$BRIEF_MODE" ]; then
     echo "warning: $BRIEF records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode $MODE - confirm its definition of done matches" >&2
   elif [ "$BRIEF_MODE" != "$MODE" ]; then
@@ -2315,3 +2334,9 @@ echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW
 case "$KIND" in
   ship|scout) "$SCRIPT_DIR/fm-linear.sh" transition "$ID" in-progress || true ;;
 esac
+# A brief that names an issue but recorded no branch resolves to nothing, so the
+# transition above was a silent no-op. That silence is the bug the binding
+# exists to remove: say so, naming the task and the issue, so the intake gap is
+# fixed rather than repeated. The dispatch itself already succeeded and stands.
+[ -z "$BRIEF_LINEAR_IDENT" ] || \
+  echo "warning: $ID: its brief reads as Linear issue $BRIEF_LINEAR_IDENT but records no branch, so no issue can be resolved and this task's Linear status will not follow its lifecycle; scaffold Linear-tracked ship work with bin/fm-brief.sh --branch <the branch Linear published for the issue> so dispatch, PR record, and merge move it" >&2

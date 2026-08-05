@@ -694,9 +694,13 @@ SH
 }
 
 # A home ready for one real fm-spawn.sh run against a real git worktree, with a
-# ship brief whose delivery contract carries the Linear branch name.
-make_spawn_home() {  # <name> <task-id>
-  local name=$1 id=$2 home
+# ship brief whose delivery contract carries the Linear branch name. <branch>
+# defaults to that name and an empty <branch> scaffolds the brief the way
+# bin/fm-brief.sh does without --branch, recording no branch at all. <body> is an
+# extra brief line, for the task material an issue identifier arrives in.
+make_spawn_home() {  # <name> <task-id> [<branch>] [<body>]
+  local name=$1 id=$2 home delivery
+  local branch=${3-$LINEAR_BRANCH} body=${4-}
   home=$(make_home "$name")
   configure_key "$home"
   make_spawn_fakebin "$home"
@@ -705,9 +709,12 @@ make_spawn_home() {  # <name> <task-id>
   touch "$home/state/.last-watcher-beat"
   fm_git_worktree "$home/project" "$home/wt" "wt-$name"
   mkdir -p "$home/data/$id"
+  delivery="Delivery contract: mode=no-mistakes"
+  [ -z "$branch" ] || delivery="$delivery branch=$branch"
   {
     printf 'brief for %s\n' "$id"
-    printf 'Delivery contract: mode=no-mistakes branch=rcs/rac-125-select2-font-size\n'
+    [ -z "$body" ] || printf '%s\n' "$body"
+    printf '%s\n' "$delivery"
   } > "$home/data/$id/brief.md"
   printf '%s\n' "$home"
 }
@@ -763,6 +770,67 @@ test_spawn_survives_a_linear_failure() {
   pass "a Linear outage is reported but never blocks a dispatch"
 }
 
+test_spawn_names_a_linear_task_scaffolded_without_a_branch() {
+  local home out err rc
+  home=$(make_spawn_home spawn-no-branch rac125-font "" "Fixes RAC-125: the Select2 font size.")
+
+  set +e
+  out=$(run_spawn "$home" rac125-font 2> "$home/stderr")
+  rc=$?
+  set -e
+  err=$(cat "$home/stderr")
+
+  expect_code 0 "$rc" "spawn-no-branch: the spawn must not be refused"
+  assert_contains "$out" "spawned rac125-font" \
+    "spawn-no-branch: the task must still be dispatched"
+  assert_contains "$err" "rac125-font" \
+    "spawn-no-branch: the diagnostic must name the task"
+  assert_contains "$err" "RAC-125" \
+    "spawn-no-branch: the diagnostic must name the issue the brief states"
+  assert_contains "$err" "--branch" \
+    "spawn-no-branch: the diagnostic must say how the gap is closed at intake"
+  [ ! -s "$home/linear.log" ] \
+    || fail "spawn-no-branch: detecting an identifier must never call Linear"
+  pass "a Linear brief scaffolded without its branch is named loudly, and still spawns"
+}
+
+test_spawn_with_a_recorded_branch_says_nothing_about_intake() {
+  local home err rc
+  home=$(make_spawn_home spawn-branch-quiet rac125-font "$LINEAR_BRANCH" \
+    "Fixes RAC-125: the Select2 font size.")
+
+  set +e
+  run_spawn "$home" rac125-font > /dev/null 2> "$home/stderr"
+  rc=$?
+  set -e
+  err=$(cat "$home/stderr")
+
+  expect_code 0 "$rc" "spawn-branch-quiet: the spawn should succeed"
+  assert_not_contains "$err" "records no branch" \
+    "spawn-branch-quiet: a properly scaffolded task must not be complained about"
+  assert_grep '"stateId": "st-prog"' "$home/linear.log" \
+    "spawn-branch-quiet: the dispatch should transition the issue as usual"
+  pass "a Linear brief that recorded its branch transitions quietly, with no complaint"
+}
+
+test_spawn_without_any_linear_issue_stays_silent() {
+  local home err rc
+  home=$(make_spawn_home spawn-not-linear plain-task "" "Tidy the config loader.")
+
+  set +e
+  run_spawn "$home" plain-task > /dev/null 2> "$home/stderr"
+  rc=$?
+  set -e
+  err=$(cat "$home/stderr")
+
+  expect_code 0 "$rc" "spawn-not-linear: the spawn should succeed"
+  assert_not_contains "$err" "Linear" \
+    "spawn-not-linear: work that is not Linear-tracked must not be complained about"
+  [ ! -s "$home/linear.log" ] \
+    || fail "spawn-not-linear: a task with no identifier must not reach the network"
+  pass "a task with no Linear issue anywhere spawns silently and calls nothing"
+}
+
 test_no_configured_key_is_a_clean_noop
 test_task_without_identifier_is_a_clean_noop
 test_identifier_is_read_from_the_recorded_branch
@@ -785,3 +853,6 @@ test_local_merge_moves_the_issue_to_done
 test_local_merge_survives_a_linear_failure
 test_spawn_moves_the_issue_to_in_progress
 test_spawn_survives_a_linear_failure
+test_spawn_names_a_linear_task_scaffolded_without_a_branch
+test_spawn_with_a_recorded_branch_says_nothing_about_intake
+test_spawn_without_any_linear_issue_stays_silent
