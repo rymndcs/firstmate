@@ -47,10 +47,16 @@
 #   fm-nomistakes-daemon.sh status     print the verdict word and exit 0:
 #                                        absent  - proven no daemon surface:
 #                                                  no-mistakes is not installed,
-#                                                  or it rejects `daemon status`
-#                                                  as an unknown command/flag,
-#                                                  or answers with a command
-#                                                  list instead of a status
+#                                                  or the call FAILED rejecting
+#                                                  `daemon status` as an unknown
+#                                                  command/flag, or FAILED with
+#                                                  a command list instead of a
+#                                                  status. That last shape does
+#                                                  not fire on the installed
+#                                                  v1.41.2, which exits 0 for an
+#                                                  unknown subcommand and so
+#                                                  reports `unknown`; it is kept
+#                                                  for older builds that fail.
 #                                        running - proven live
 #                                        down    - proven not running
 #                                        unknown - indeterminate; do nothing
@@ -199,17 +205,27 @@ nm_daemon_verdict() {
   # Nothing can be reasoned about and nothing needs saying, since the
   # pre-existing lazy-start behavior is unchanged either way.
   #
-  # The shape is anchored deliberately narrowly. Verified 2026-08-05 against the
-  # installed no-mistakes v1.41.2: `daemon status --bogus-flag` exits 1 printing
-  # only `unknown flag: --bogus-flag` with NO usage dump, while an unsupported
-  # subcommand prints the command-list help carrying `Available Commands:`. So
-  # this build does not dump usage on a runtime error - but that is a property
-  # of today's build, not of the contract: cobra prints a full usage dump on any
+  # The shape is anchored deliberately narrowly. Measured 2026-08-05 against the
+  # installed no-mistakes v1.41.2, reading each exit status DIRECTLY (a pipe
+  # reports the LAST command's status and gives a wrong reading):
+  #   `daemon status --bogus-flag` -> exit 1, prints only
+  #       `unknown flag: --bogus-flag`, no usage dump. This DOES reach the guard
+  #       below and is filed absent.
+  #   `daemon bogussub`            -> exit 0, prints the command-list help
+  #       carrying `Available Commands:` and no `unknown command` text. Because
+  #       it exits 0 it never reaches the guard at all: it falls through to
+  #       `unknown` and is REPORTED, not silently filed absent.
+  # So the command-list alternative is CONDITIONAL and does not fire on this
+  # build. It is kept for older installs and other cobra configurations that do
+  # return non-zero for an unsupported subcommand; a no-mistakes missing from
+  # PATH entirely is already handled by the `command -v` check above.
+  #
+  # This build not dumping usage on a runtime error is likewise a property of
+  # today's build, not of the contract: cobra prints a full usage dump on any
   # RunE error unless SilenceUsage is set. A bare `Usage:` match would therefore
   # file a future build's `Error: ...` + usage trailer - which is how a DOWN
   # daemon could well be reported - as absent, silently swallowing the very
-  # outage this script exists to catch. The command-list anchor keeps the
-  # unsupported-subcommand case working and sends that shape to `unknown`.
+  # outage this script exists to catch, so the anchor requires the command list.
   if [ "$rc" -ne 0 ]; then
     case "$out" in
       *"unknown command"*|*"unknown flag"*|*"unknown shorthand flag"*|*"Available Commands:"*)
