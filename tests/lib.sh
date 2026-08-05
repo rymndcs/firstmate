@@ -34,6 +34,14 @@ FM_TEST_LIB_SOURCED=1
 # strips this to verify real refusal.
 export FM_GATE_REFUSE_BYPASS=1
 
+# Neutralize the shared no-mistakes daemon ensure (bin/fm-nomistakes-daemon.sh)
+# for the suite at large. Dozens of tests drive the real fm-teardown.sh and
+# fm-bootstrap.sh, both of which call `ensure`; without this they would reach the
+# machine's ONE real shared daemon - the very daemon serving the no-mistakes gate
+# that runs this suite. Tests that cover the daemon contract itself unset this
+# and supply their own `no-mistakes` PATH stub, so the behavior is still proven.
+export FM_NOMISTAKES_DAEMON_DISABLE=1
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

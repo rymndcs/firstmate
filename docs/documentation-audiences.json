@@ -325,6 +325,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/nomistakes-daemon.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/process-event-sources.md",
       "audience": "maintainer-verification"
     },
