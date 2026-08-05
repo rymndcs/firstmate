@@ -70,8 +70,10 @@
 #          The locked mutable path also roots the ONE shared no-mistakes daemon
 #          in this firstmate home before any crewmate can start it lazily inside
 #          a disposable worktree; bin/fm-nomistakes-daemon.sh owns that contract,
-#          is idempotent and silent when a healthy daemon exists, reports on
-#          stderr, and can never fail bootstrap.
+#          is idempotent and silent when a healthy daemon exists, and can never
+#          fail bootstrap. Anything it does have to say is a plain unprefixed
+#          advisory line on stderr, which reaches the captain in the session
+#          digest's BOOTSTRAP section but carries no routed diagnostic prefix.
 #          X mode is OPTIONAL and inert unless FM_HOME/.env has a non-empty
 #          FMX_PAIRING_TOKEN. When opted in, bootstrap requires curl+jq, writes
 #          the relay poll shim and 30s cadence config, and prints an FMX line.

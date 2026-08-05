@@ -45,13 +45,25 @@
 #                                      Exit 1 = a needed start failed, or the
 #                                      state could not be determined.
 #   fm-nomistakes-daemon.sh status     print the verdict word and exit 0:
-#                                        absent  - no usable no-mistakes daemon
-#                                                  surface here (not installed,
-#                                                  or a build without it)
+#                                        absent  - proven no daemon surface:
+#                                                  no-mistakes is not installed,
+#                                                  or it rejects `daemon status`
+#                                                  as an unknown command or a
+#                                                  usage error
 #                                        running - proven live
 #                                        down    - proven not running
 #                                        unknown - indeterminate; do nothing
 #   fm-nomistakes-daemon.sh --help
+#
+# WHERE THE NOTICES LAND
+# `ensure` writes only to stderr, so it can never inject a line into bootstrap's
+# parsed stdout diagnostics. It is nonetheless captain-visible: the session
+# digest's BOOTSTRAP section is bin/fm-session-start.sh capturing the locked
+# bootstrap as `2>&1` and printing it, so a daemon notice does appear there. That
+# is intended, and so is its lack of a diagnostic prefix - those prefixes exist to
+# route a startup problem to an owner procedure (see the bootstrap-diagnostics
+# skill), and a daemon notice has no such procedure. It stays a plain, unprefixed
+# advisory line rather than inventing routed surface for nobody to act on.
 #
 # FM_NOMISTAKES_DAEMON_DISABLE=1 makes `ensure` an immediate silent no-op. It
 # exists for firstmate's own test suite (tests/lib.sh exports it), which drives
@@ -180,10 +192,26 @@ nm_daemon_verdict() {
     return 0
   fi
 
-  # No usable signal at all. A failing command here means this build or
-  # environment exposes no daemon status surface - report absent and stay quiet,
-  # since the pre-existing lazy-start behavior is unchanged either way.
-  if [ "$rc" -ne 0 ]; then printf '%s\n' absent; else printf '%s\n' unknown; fi
+  # A non-zero exit whose output is shaped like an unsupported subcommand or a
+  # usage dump is evidence about the SURFACE, not about the daemon: this build
+  # has no `daemon status` to answer with. Nothing can be reasoned about and
+  # nothing needs saying, since the pre-existing lazy-start behavior is
+  # unchanged either way.
+  if [ "$rc" -ne 0 ]; then
+    case "$out" in
+      *"unknown command"*|*"unknown flag"*|*"unknown shorthand flag"*|*"Usage:"*|*"usage:"*)
+        printf '%s\n' absent
+        return 0
+        ;;
+    esac
+  fi
+
+  # Every other failure, and every output this verdict cannot parse, is doubt
+  # about a daemon that may well be down - "I did not understand the answer" is
+  # not evidence of absence, and filing it as absent would silently swallow the
+  # very outage this script exists to catch. `unknown` still starts nothing; it
+  # only makes the uncertainty visible on stderr.
+  printf '%s\n' unknown
 }
 
 nm_daemon_ensure() {

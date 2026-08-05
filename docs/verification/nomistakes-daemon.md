@@ -62,5 +62,7 @@ Doing so would require stopping the one shared daemon, which kills every concurr
 That path is covered by `tests/fm-nomistakes-daemon.test.sh` and `tests/fm-teardown.test.sh` against a `no-mistakes` stub, with real processes supplying the live and reaped pids.
 
 This is an acceptable gap because the failure direction is safe by construction.
-If a future build rewords its status output, the verdict falls to `unknown`, `ensure` starts nothing and says so, and behavior degrades to the pre-existing lazy start - never to an unwanted restart.
+If a future build rewords its status output - or fails the call outright with text this verdict cannot parse - the verdict falls to `unknown`, `ensure` starts nothing and says so, and behavior degrades to the pre-existing lazy start, never to an unwanted restart.
+`absent` is deliberately not that catch-all: it is reserved for a daemon surface proven missing, meaning `no-mistakes` is not on PATH at all or it rejects `daemon status` as an unknown command or a usage error.
+An unrecognized failure is doubt about a possibly-down daemon, so it is reported rather than silently filed as "no surface here".
 Refresh this record after a no-mistakes upgrade by re-running the two commands under "The verdict against the real build"; a `running` verdict against a live daemon proves both signals still parse.

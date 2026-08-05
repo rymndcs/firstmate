@@ -291,8 +291,11 @@ test_missing_no_mistakes_is_a_clean_no_op() {
 test_build_without_a_daemon_surface_is_silent() {
   local case_dir rc out err verdict
   case_dir=$(make_case no-daemon-surface)
-  # An installed build whose `daemon status` is not a usable surface. Nothing can
-  # be done safely, and today's lazy-start behavior is unchanged, so stay quiet.
+  # An installed build that rejects `daemon status` as an unsupported subcommand.
+  # That shape is evidence about the SURFACE - there is no daemon status to
+  # answer with - so nothing can be done and today's lazy-start behavior is
+  # unchanged, and this is the one failing status that stays silent. The case
+  # below drives the other shape and must NOT reach absent.
   export NM_STATUS_TEXT='Error: unknown command "daemon" for "no-mistakes"' NM_STATUS_RC=1
 
   verdict=$(run_nm "$case_dir" status)
@@ -310,6 +313,42 @@ test_build_without_a_daemon_surface_is_silent() {
   [ "$(start_calls "$case_dir")" = 0 ] \
     || fail "no-daemon-surface: ensure started a daemon it could not reason about"
   pass "an installed build with no usable daemon surface is a silent no-op"
+}
+
+test_unrecognized_status_failure_is_reported_not_filed_absent() {
+  local case_dir rc out err verdict status_text
+  case_dir=$(make_case unrecognized-failure)
+  # A `daemon status` that FAILS with wording this verdict cannot classify. That
+  # is the shape a genuinely down daemon takes on a build that words its negative
+  # differently, so it must not be swallowed as "no surface here" - which would
+  # hide the exact outage this script exists to catch. It is still doubt, so it
+  # starts nothing; the only guarantee it loses is silence.
+  status_text="Error: could not reach the daemon socket"
+  export NM_STATUS_TEXT="$status_text" NM_STATUS_RC=1
+  # Divergence from the absent case above: no unsupported-subcommand or usage
+  # shape anywhere, so the two cannot quietly collapse into one another.
+  assert_not_contains "$status_text" "unknown command" \
+    "unrecognized-failure: fixture must not look like an unsupported subcommand"
+  assert_not_contains "$status_text" "sage:" \
+    "unrecognized-failure: fixture must not look like a usage dump"
+
+  verdict=$(run_nm "$case_dir" status)
+  [ "$verdict" = unknown ] \
+    || fail "unrecognized-failure: expected verdict unknown, got '$verdict'"
+
+  set +e
+  out=$(run_nm "$case_dir" ensure 2>"$case_dir/err")
+  rc=$?
+  set -e
+  unset NM_STATUS_TEXT NM_STATUS_RC
+  err=$(cat "$case_dir/err")
+
+  expect_code 1 "$rc" "unrecognized-failure: an uninterpretable status must report failure"
+  [ -z "$out" ] || fail "unrecognized-failure: ensure wrote to stdout: $out"
+  assert_contains "$err" "indeterminate" "unrecognized-failure: the doubt was not reported"
+  [ "$(start_calls "$case_dir")" = 0 ] \
+    || fail "unrecognized-failure: ensure started a daemon it could not reason about"
+  pass "a status failure the verdict cannot classify is reported as unknown, never as absent"
 }
 
 # --- a wedged daemon socket must not stall teardown or bootstrap -------------
@@ -527,6 +566,7 @@ test_unprovable_pid_never_triggers_a_start
 test_contradictory_negative_with_a_pid_starts_nothing
 test_missing_no_mistakes_is_a_clean_no_op
 test_build_without_a_daemon_surface_is_silent
+test_unrecognized_status_failure_is_reported_not_filed_absent
 test_hung_status_is_bounded_and_starts_nothing
 test_failed_start_is_reported_not_fatal
 test_start_directory_avoids_a_linked_worktree
