@@ -229,6 +229,8 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-trace-context-lib.sh
 . "$SCRIPT_DIR/fm-trace-context-lib.sh"
+# shellcheck source=bin/fm-quota-axi-lib.sh
+. "$SCRIPT_DIR/fm-quota-axi-lib.sh"
 # shellcheck source=bin/fm-remote-readiness-lib.sh
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
 # Fail closed before any fleet mutation: a no-mistakes gate agent must never spawn
@@ -2174,6 +2176,15 @@ fi
 
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
+# Ship and scout dispatches take one unavoidable quota snapshot at the spawn
+# boundary. Secondmates are persistent supervisors, not candidates selected by
+# config/crew-dispatch.json, so their launches deliberately remain outside this
+# reading. The helper always returns data, including an explicit unavailable
+# marker, and never makes quota availability a spawn gate.
+QUOTA_READING=
+case "$KIND" in
+  ship|scout) QUOTA_READING=$(fm_quota_axi_reading) ;;
+esac
 {
   echo "window=$META_WINDOW"
   echo "endpoint_task_id=$ID"
@@ -2189,6 +2200,7 @@ META_WINDOW=$T
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
+  [ -z "$QUOTA_READING" ] || echo "quota_reading=$QUOTA_READING"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   # Default-off writes no traceparent= line (meta stays byte-identical).
   # backend= is written only for a non-default (non-tmux) backend, so the
