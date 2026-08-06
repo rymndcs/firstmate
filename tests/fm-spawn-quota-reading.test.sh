@@ -11,6 +11,11 @@ set -u
 # shellcheck source=bin/fm-backend.sh
 . "$ROOT/bin/fm-backend.sh"
 
+# This file owns the reading contract, so it opts back in to the real code path
+# that tests/lib.sh neutralizes for the suite, and supplies its own quota-axi
+# stub and per-case cache instead.
+unset FM_QUOTA_AXI_READING_DISABLE
+
 SPAWN="$ROOT/bin/fm-spawn.sh"
 TMP_ROOT=$(fm_test_tmproot fm-spawn-quota-reading)
 

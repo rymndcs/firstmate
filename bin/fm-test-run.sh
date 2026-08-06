@@ -73,6 +73,14 @@ set -eu
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
 
+# Runner-level floor for the dispatch quota reading (bin/fm-quota-axi-lib.sh):
+# every ship/scout fm-spawn takes one, and the real-environment e2e tests that
+# drive fm-spawn.sh directly do not all source tests/lib.sh, where the same
+# neutralizer is set for the sourcing suite. Without this those runs would reach
+# the machine's real quota-axi and the operator's real ~/.cache/quota-axi state.
+# The test that owns the reading contract unsets this and supplies its own stub.
+export FM_QUOTA_AXI_READING_DISABLE=${FM_QUOTA_AXI_READING_DISABLE:-1}
+
 MODE=
 LIST_ONLY=0
 LIST_FAMILIES=0
@@ -190,6 +198,7 @@ family_for_basename() {
     fm-tmux-agent-liveness.test.sh|\
     fm-herdr-session-cleanup.test.sh|fm-send-strict.test.sh|fm-spawn-batch.test.sh|\
     fm-spawn-crew-limit.test.sh|fm-spawn-dispatch-profile.test.sh|\
+    fm-spawn-quota-reading.test.sh|\
     fm-trace-context-spawn.test.sh|fm-spawn-worktree-settle.test.sh|\
     fm-teardown-endpoint-safety.test.sh)
       printf '%s\n' backend-dispatch
@@ -896,8 +905,14 @@ families_for_changed_path() {
       ;;
     bin/fm-session-start.sh|bin/fm-bootstrap.sh|bin/fm-fleet-sync.sh|\
     bin/fm-sessionstart-nudge.sh|bin/fm-tangle*|bin/fm-update.sh|\
-    bin/fm-gate-refuse*|bin/fm-lock*|bin/fm-quota-axi-lib.sh)
+    bin/fm-gate-refuse*|bin/fm-lock*)
       printf '%s\n' session-bootstrap
+      ;;
+    # The quota library is read by bootstrap's version diagnostic and by the
+    # spawn-boundary reading, so a change to it must select both owners.
+    bin/fm-quota-axi-lib.sh)
+      printf '%s\n' session-bootstrap
+      printf '%s\n' backend-dispatch
       ;;
     # The shared no-mistakes daemon contract is exercised from both of its
     # callers: bootstrap's prevention sweep and teardown's post-return recovery.
