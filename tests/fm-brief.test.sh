@@ -354,6 +354,33 @@ test_no_mistakes_dod_wording() {
   pass "fm-brief.sh: no-mistakes DOD keeps its apostrophe prose, now parse-safe"
 }
 
+test_pr_description_summarize_wiring() {
+  local home id brief
+  home="$TMP_ROOT/pr-description-summarize-home"
+  mkdir -p "$home/data"
+
+  id="brief-pr-desc-nm1"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "no-mistakes brief was not scaffolded"
+  assert_grep "$ROOT/.agents/skills/pr-description-summarize/SKILL.md" "$brief" \
+    "no-mistakes DOD did not load the pr-description-summarize skill"
+  assert_grep "outcome: checks-passed" "$brief" \
+    "no-mistakes DOD did not tie the PR-body edit to the checks-passed outcome"
+
+  id="brief-pr-desc-dp1"
+  FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+  brief="$home/data/$id/brief.md"
+  assert_present "$brief" "direct-PR brief was not scaffolded"
+  assert_grep "$ROOT/.agents/skills/pr-description-summarize/SKILL.md" "$brief" \
+    "direct-PR DOD did not load the pr-description-summarize skill"
+  assert_grep "Before opening the PR" "$brief" \
+    "direct-PR DOD did not apply the skill before gh-axi pr create"
+  pass "fm-brief.sh: both ship modes load pr-description-summarize at their reachable hook point"
+}
+
 test_ship_project_memory_wording() {
   local home id brief
   home="$TMP_ROOT/project-memory-home"
@@ -808,6 +835,7 @@ test_branch_is_validated_and_refused_where_it_does_not_apply
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
 test_no_mistakes_dod_wording
+test_pr_description_summarize_wiring
 test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path

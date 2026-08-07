@@ -4,8 +4,8 @@ description: >-
   Agent-only procedure for turning a ship task's full intent into a short human-facing PR
   description instead of publishing the raw intent verbatim.
   Use for a direct-PR task immediately before running `gh-axi pr create`, and for a
-  no-mistakes task immediately after the pipeline opens the PR but before reporting
-  `done: PR <url> checks green`.
+  no-mistakes task once the run reaches the CI-ready `checks-passed` outcome but before
+  reporting `done: PR <url> checks green`.
 user-invocable: false
 metadata:
   internal: true
@@ -27,54 +27,51 @@ A direct-PR worker can make the identical mistake by pasting the brief or the ac
 requirement list into `gh-axi pr create --body`.
 Either way the reader gets an unreadable blob instead of a description.
 
-This skill produces the replacement: a short, human-facing summary that stands in for that
-blob at the top of the PR.
-It is a summary in place of the blob, not a second blob with a nicer heading - if the
-result is proportional in length to the intent, it has failed.
+This skill produces the replacement.
+The captain's own bar: *"a 1-2 sentence description should be max for a very complicated
+change"* and *"the what changed section is totally unnecessary, you can just define a
+bulleted list of what changed - the code should speak for itself."*
+A result proportional in length to the intent has failed, no matter how well-organized.
 
 ## What stays untouched
 
-Never touch a collapsed `<details>` evidence block, and never touch a no-mistakes-generated
-section below the top summary (`Risk Assessment`, `Testing`, `Pipeline`, `Document`,
-`Lint`, `Push`, or any other pipeline step report).
-Those carry proof a reviewer may need and are not the complaint.
-This skill only replaces the lead section - the part a reader meets before scrolling.
+Never touch a no-mistakes-generated section below the top summary (`Risk Assessment`,
+`Testing`, `Pipeline`, `Document`, `Lint`, `Push`, or any other pipeline step report),
+including any collapsed `<details>` evidence block inside them - those carry proof a
+reviewer may need and are not the complaint.
+This skill only replaces the lead section - the part a reader meets before scrolling - and
+never introduces a `<details>` block of its own: test output, screenshots, and narrowing
+transcripts belong in CI and the pipeline's own run, not in a block this skill writes.
 
 ## Writing the summary
 
 Read the full intent (the exact string passed to `--intent`, or the equivalent accepted
 requirement set for a direct-PR task) and the actual diff or commits.
-Write two sections, in this order, using this repo's own PR style as the shape to match
-(`## Why` then `## What Changed` - `gh pr view <n> --repo rymndcs/racingr-wms --json body`
-on a merged PR shows worked examples):
+Write exactly two parts, nothing else:
 
-1. **`## Why`** - the situation before the change, in enough words that a reader who has
-   never seen the intent understands what problem existed and what the change does about
-   it.
-   Fold in, as prose rather than a checklist: constraints that were deliberate rather than
-   oversights, and anything that changed on purpose that a reader would otherwise flag as a
-   mistake (an unrelated-looking file touched, a behavior altered as a side effect, scope
-   deliberately held back for a later PR).
-   This is the section that answers "why does this PR look the way it does."
-2. **`## What Changed`** - what the change actually does, oriented around the reader's
-   next action (what to look at, what changed and why it's structured that way), not a
-   diff-shaped file-by-file list.
-   A short bulleted list is fine when the change has genuinely separate pieces; prose is
-   fine when it does not.
+1. **One to two sentences.** State what the change does. That is the ceiling for the most
+   complicated change in the repository, not a target that grows with difficulty - a
+   seventy-file rollout gets the same one or two sentences as a one-line fix. The reader
+   gets everything else from the diff and the bullets below.
+2. **A plain bulleted list of what changed.** One line per change, in the reader's own
+   terms, telling them where to look - not restating the diff in prose, not a sub-narrative
+   per bullet.
+   A deliberate constraint, an intentional exclusion, or a change that would otherwise read
+   as a mistake still gets exactly one bullet, not a paragraph.
+   Every requirement in the intent still has to be satisfied by the work; it does not follow
+   that every requirement earns its own line here - fold siblings into one bullet when they
+   are the same kind of change.
 
-Target a few short paragraphs and, where useful, a short bulleted list per section - not a
-paragraph per accepted requirement.
-Every requirement in the intent still has to be satisfied by the work; it does not follow
-that every requirement earns its own sentence in the description.
-Compress ruthlessly: keep what changes the reader's understanding of the diff or their
-review priorities, drop restated acceptance criteria, scaffold boilerplate, and process
-narration (status protocol, delivery mode, escalation mechanics) that the intent had to
-carry for the pipeline but that means nothing to a PR reader.
+Compress ruthlessly.
+Drop restated acceptance criteria, scaffold boilerplate, and process narration (status
+protocol, delivery mode, escalation mechanics) that the intent had to carry for the pipeline
+but that means nothing to a PR reader.
+If something genuinely cannot be conveyed inside that budget, say so plainly in your task
+report rather than quietly widening the description to fit it in.
 
-If the intent's own exclusions or omissions are substantial and structured (for example,
-one reason per skipped item across many files), a collapsed `<details>` block under
-`## What Changed` is the right place for that table - it is exactly the kind of evidence
-this skill leaves alone once written, not something to inline into the prose.
+For the current-shape calibration, read a few recently-merged PRs in this repo with
+`gh-axi pr view <n> --full`; do not assume any specific PR is still representative, since
+this shape has been tightened before and may be again.
 
 ## Applying it, per delivery mode
 
@@ -84,15 +81,31 @@ There is no pipeline-generated body to preserve underneath it; do not paste the 
 the accepted-requirement list into the body at any point.
 This is a literal pre-post hook - the summary is the first and only body the PR ever gets.
 
-**no-mistakes**: the pipeline opens the PR itself once a run reaches the CI-ready point, and
-`no-mistakes axi run --help`'s current mechanics are the authority for exactly when that
-happens - this skill does not restate them.
-There is no reachable point before the pipeline posts, so the point that matters is
-immediately after: once the PR exists and before reporting `done: PR <url> checks green`,
-fetch the current body (`gh-axi pr view <n> --full`), replace only the lead `## Intent`
-section with the `## Why` / `## What Changed` summary, leave every section from
-`## Risk Assessment` onward byte-identical, and push the merged body back with
-`gh-axi pr edit <n> --body-file <path>`.
+**no-mistakes**: the pipeline opens the PR itself and keeps re-assembling its body as later
+steps (test, document, lint, push, ci) report in, so there is no reachable point before the
+pipeline posts, and editing right after PR creation risks the pipeline's own next step
+silently overwriting the edit.
+Apply the edit once, at the last point the mechanics above return `outcome: checks-passed`
+and before reporting `done: PR <url> checks green` - by then the pipeline has finished
+assembling every section it owns and only its background merge monitor remains, which does
+not rewrite the body.
+
+To read the pipeline-assembled body, `gh-axi pr view <n> --full` prints it as a single
+double-quoted, backslash-escaped scalar (e.g. `body: "## Why\n\nLinear issues are ..."`),
+not raw markdown - decode it before editing rather than pasting the escaped text back, for
+example:
+```sh
+gh-axi pr view <n> --full > /tmp/pr-view.txt
+python3 -c "
+import re
+raw = open('/tmp/pr-view.txt').read()
+m = re.search(r'^  body: \"(.*)\"$', raw, re.S | re.M)
+print(m.group(1).encode().decode('unicode_escape'))
+" > /tmp/pr-body.md
+```
+Replace only the lead `## Intent` section in that decoded body with the new summary, leave
+every section from `## Risk Assessment` onward byte-identical, and push the merged body back
+with `gh-axi pr edit <n> --body-file <path>`.
 This still lands before any human reads the PR - the captain's actual requirement - even
 though it is "before reading" rather than a literal "before posting" hook, because no such
 hook exists on this path.
