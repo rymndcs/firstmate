@@ -42,6 +42,16 @@ export FM_GATE_REFUSE_BYPASS=1
 # and supply their own `no-mistakes` PATH stub, so the behavior is still proven.
 export FM_NOMISTAKES_DAEMON_DISABLE=1
 
+# Neutralize the dispatch quota reading (bin/fm-quota-axi-lib.sh) for the suite
+# at large, for the same reason. Every ship/scout spawn takes one, and dozens of
+# tests drive the real fm-spawn.sh while overriding FM_HOME rather than HOME - so
+# without this they would each run the machine's real quota-axi against live
+# provider APIs and read the operator's real ~/.cache/quota-axi state, adding
+# seconds per spawn and nondeterminism to the parallel lanes. Tests that cover
+# the reading contract itself unset this and supply their own quota-axi PATH stub
+# plus a tmproot FM_QUOTA_AXI_CACHE, so the behavior is still proven.
+export FM_QUOTA_AXI_READING_DISABLE=1
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034
