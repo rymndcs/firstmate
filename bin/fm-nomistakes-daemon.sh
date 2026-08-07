@@ -73,9 +73,11 @@
 # advisory line rather than inventing routed surface for nobody to act on.
 #
 # FM_NOMISTAKES_DAEMON_DISABLE=1 makes `ensure` an immediate silent no-op. It
-# exists for firstmate's own test suite (tests/lib.sh exports it), which drives
-# the real teardown and bootstrap paths repeatedly and must never touch the
-# shared daemon; `status` ignores it and stays truthful.
+# exists for firstmate's own test suite, which drives the real teardown and
+# bootstrap paths repeatedly and must never touch the shared daemon:
+# bin/fm-test-run.sh floors it for every script it runs, and tests/lib.sh plus
+# tests/herdr-test-safety.sh export it for the suites that source them.
+# `status` ignores it and stays truthful.
 #
 # Neither subcommand may ever fail a caller's own work: teardown's unlanded-work
 # guarantees take absolute precedence over any daemon problem, so callers invoke

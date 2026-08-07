@@ -350,6 +350,122 @@ test_exclude_family() {
   pass "exclude-family drops the named primary family after selection"
 }
 
+test_runner_offline_neutralizer_floors() {
+  local tmp fixture out
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-floors.XXXXXX")
+  fixture="$tmp/env.test.sh"
+  cat >"$fixture" <<'SH'
+#!/usr/bin/env bash
+echo "ok - fixture"
+echo "reading=${FM_QUOTA_AXI_READING_DISABLE:-unset}"
+echo "daemon=${FM_NOMISTAKES_DAEMON_DISABLE:-unset}"
+SH
+  chmod +x "$fixture"
+
+  # A run that inherits neither neutralizer still never reaches the operator's
+  # real quota-axi state or the machine's one shared no-mistakes daemon: the
+  # runner floors both for every script it executes, sourcing suite or not.
+  out=$(env -u FM_QUOTA_AXI_READING_DISABLE -u FM_NOMISTAKES_DAEMON_DISABLE \
+    "$RUNNER" "$fixture" 2>"$tmp/err.txt") \
+    || { rm -rf "$tmp"; fail "runner should pass on the env fixture"; }
+  assert_contains "$out" "reading=1" "runner must floor FM_QUOTA_AXI_READING_DISABLE"
+  assert_contains "$out" "daemon=1" "runner must floor FM_NOMISTAKES_DAEMON_DISABLE"
+
+  # Both floors stay overridable, so the tests that own each contract can still
+  # unset the neutralizer and prove the real behavior against their own stub.
+  out=$(FM_QUOTA_AXI_READING_DISABLE=0 FM_NOMISTAKES_DAEMON_DISABLE=0 \
+    "$RUNNER" "$fixture" 2>>"$tmp/err.txt") \
+    || { rm -rf "$tmp"; fail "runner should pass with explicit neutralizer overrides"; }
+  assert_contains "$out" "reading=0" "explicit FM_QUOTA_AXI_READING_DISABLE must win"
+  assert_contains "$out" "daemon=0" "explicit FM_NOMISTAKES_DAEMON_DISABLE must win"
+  rm -rf "$tmp"
+  pass "runner floors both offline neutralizers without pinning them"
+}
+
+test_ci_workflow_offline_guards() {
+  local workflow
+  workflow="$ROOT/.github/workflows/ci.yml"
+  assert_present "$workflow" ".github/workflows/ci.yml is missing"
+  python3 - "$workflow" <<'PY' || fail "CI workflow offline guards are not intact"
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+lines = text.splitlines()
+problems = []
+
+# 1. Workflow-level env, so every job inherits the neutralizer by default.
+top_env = None
+for i, line in enumerate(lines):
+    if line == "env:":
+        top_env = i
+        break
+if top_env is None:
+    problems.append("ci.yml has no workflow-level env: block")
+else:
+    block = []
+    for line in lines[top_env + 1:]:
+        if line.strip() and not line.startswith(" "):
+            break
+        block.append(line)
+    if not re.search(r'^\s+FM_QUOTA_AXI_READING_DISABLE:\s*"?1"?\s*$', "\n".join(block), re.M):
+        problems.append("workflow-level env must set FM_QUOTA_AXI_READING_DISABLE to 1")
+
+# 2. Nothing anywhere may set the neutralizer to another value.
+for i, line in enumerate(lines, 1):
+    m = re.match(r'^\s*FM_QUOTA_AXI_READING_DISABLE:\s*"?([^"\s]*)"?\s*$', line)
+    if m and m.group(1) != "1":
+        problems.append("line %d sets FM_QUOTA_AXI_READING_DISABLE to %r" % (i, m.group(1)))
+
+# 3. Every run: block that actually executes tests re-asserts the neutralizer,
+#    so a later job- or step-level override fails the lane instead of quietly
+#    taking it online. Inspection-only calls (--check-coverage, --aggregate-json,
+#    --list) execute no test and need no guard.
+guard = 'FM_QUOTA_AXI_READING_DISABLE:-'
+blocks = []
+i = 0
+while i < len(lines):
+    m = re.match(r'^(\s*)(?:-\s+)?run:\s*\|', lines[i])
+    if not m:
+        i += 1
+        continue
+    indent = len(m.group(1)) + 2
+    body = []
+    i += 1
+    while i < len(lines):
+        line = lines[i]
+        if line.strip() and (len(line) - len(line.lstrip())) < indent:
+            break
+        body.append(line)
+        i += 1
+    blocks.append("\n".join(body))
+
+executing = 0
+for body in blocks:
+    runs_suite = bool(
+        re.search(r'fm-test-run\.sh\s+(?!--check-coverage|--aggregate-json|--list)', body)
+        or re.search(r'\btests/[A-Za-z0-9._-]+\.test\.sh\b', body)
+    )
+    if not runs_suite:
+        continue
+    executing += 1
+    if guard not in body:
+        problems.append(
+            "a run: block executing tests has no FM_QUOTA_AXI_READING_DISABLE guard: %s"
+            % " ".join(body.split())[:120]
+        )
+
+if executing < 4:
+    problems.append("expected at least 4 test-executing CI run blocks, found %d" % executing)
+
+if problems:
+    for p in problems:
+        print(p, file=sys.stderr)
+    sys.exit(1)
+PY
+  pass "CI inherits the offline neutralizer and every test lane re-asserts it"
+}
+
 test_portable_shard_union_and_coverage_guard() {
   local s1 s2 proven serial herdr all_count union_count overlap out first
   s1=$("$RUNNER" --list --lane portable-parallel-1)
@@ -680,6 +796,8 @@ test_aggregate_exit_behavior
 test_gate_skip_accounting
 test_fail_on_gate_skip_token
 test_exclude_family
+test_runner_offline_neutralizer_floors
+test_ci_workflow_offline_guards
 test_portable_shard_union_and_coverage_guard
 test_portable_serial_shards_partition_the_serial_lane
 test_portable_serial_shard_lane_refusals
