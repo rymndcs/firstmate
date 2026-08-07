@@ -51,6 +51,10 @@
 #   (w) index.lock mtime read failure                         -> lock kept, REFUSE
 #   (x) transient lock cleared after first failed return      -> retry ALLOW
 #   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+#
+# And the durability of the wedge context stuck-crewmate-recovery captures before it
+# terminates a crewmate:
+#   (z) data/<id>/recovery-context.md across a completed teardown -> survives
 set -u
 
 # shellcheck source=tests/lib.sh disable=SC1091
@@ -2072,6 +2076,92 @@ test_herdr_projection_teardown_retains_journal_when_close_unconfirmed() {
   pass "herdr projection teardown retains every record when post-close presence is unknown"
 }
 
+# --- captured wedge context outlives the terminated crewmate -----------------
+#
+# `stuck-crewmate-recovery` writes why a worker failed to data/<id>/recovery-context.md
+# BEFORE exiting the wedged agent, because the pane dies with the process and is the
+# only other place that context exists. That choice of location is only sound if the
+# file survives teardown the way a scout's data/<id>/report.md does - state/<id>.* and
+# anything left inside the worktree do not.
+
+# `treehouse return --force <wt>`: give the working copy back to the pool, so the
+# directory the crewmate was living in is gone once teardown completes. The default
+# mock in make_case just exits 0, which would leave the worktree standing and let a
+# survives-teardown assertion pass for the wrong reason.
+add_returning_treehouse() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = return ]; then
+  shift
+  wt=""
+  for a in "$@"; do
+    case "$a" in
+      --force) ;;
+      *) wt=$a ;;
+    esac
+  done
+  [ -n "$wt" ] && [ -d "$wt" ] && rm -rf -- "$wt"
+  exit 0
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+# Run teardown with the case's own data dir, so data/<id>/ writes stay in the sandbox.
+run_teardown_with_data() {
+  local case_dir=$1; shift
+  FM_ROOT_OVERRIDE="$ROOT" \
+  FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
+  PATH="$case_dir/fakebin:$PATH" \
+    "$TEARDOWN" task-x1 "$@"
+}
+
+test_captured_recovery_context_survives_teardown() {
+  local case_dir rc wt_head
+  case_dir=$(make_case recovery-context-survives)
+  write_meta "$case_dir" local-only ship
+  add_returning_treehouse "$case_dir"
+  printf '%s\n' 'working: rerunning the migration' > "$case_dir/state/task-x1.status"
+
+  # What the recovery playbook captures before it exits the wedged agent.
+  mkdir -p "$case_dir/data/task-x1"
+  cat > "$case_dir/data/task-x1/recovery-context.md" <<'MD'
+Attempt 1: tried rerunning the schema migration twice after a redirect; got as far as
+dumping the pre-migration schema; kept hitting `PG::UndefinedTable: relation
+"shipments" does not exist`.
+MD
+  # The same note committed inside the worktree instead - the location the playbook
+  # rejects, because the worktree goes back to the pool with the task.
+  wt_commit_file "$case_dir" recovery-context.md \
+    'Attempt 1: same note, parked in the worktree' "park note in worktree"
+
+  wt_commit "$case_dir" "work so far"
+  wt_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  git -C "$case_dir/project" update-ref refs/heads/main "$wt_head"
+
+  set +e
+  run_teardown_with_data "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "recovery-context-survives: teardown should succeed on landed work"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "recovery-context-survives: state/<id>.meta outlived teardown"
+  [ ! -e "$case_dir/state/task-x1.status" ] \
+    || fail "recovery-context-survives: state/<id>.status outlived teardown"
+  [ ! -e "$case_dir/wt/recovery-context.md" ] \
+    || fail "recovery-context-survives: worktree copy outlived the return (regression is not exercised)"
+  [ -f "$case_dir/data/task-x1/recovery-context.md" ] \
+    || fail "recovery-context-survives: data/<id>/recovery-context.md was discarded by teardown"
+  assert_grep 'PG::UndefinedTable' "$case_dir/data/task-x1/recovery-context.md" \
+    "recovery-context-survives: the captured failure reason did not survive intact"
+  pass "captured data/<id>/recovery-context.md survives teardown that erases state and the worktree"
+}
+
 test_shared_daemon_restored_after_a_successful_return
 test_shared_daemon_left_untouched_when_healthy
 test_shared_daemon_absent_is_a_clean_no_op
@@ -2117,3 +2207,4 @@ test_transient_index_lock_clears_after_first_attempt_and_retry_succeeds
 test_persistent_index_lock_exhausts_retries_and_refuses_loudly
 test_empty_retry_wait_uses_default_without_aborting
 test_fractional_legacy_retry_wait_refuses_without_arithmetic_error
+test_captured_recovery_context_survives_teardown
