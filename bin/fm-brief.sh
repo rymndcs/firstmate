@@ -443,6 +443,9 @@ Firstmate will then instruct you to run /no-mistakes to validate and ship a PR.
 You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, make \`--intent\` preserve all relevant content from this brief's \`# Task\` section plus every later accepted Firstmate requirement, clarification, constraint, exclusion, and supersession, carrying only each requirement's current accepted form; retain direct requirements instead of substituting a diff summary, and exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific.
+The active run's recorded \`--intent\` cannot be updated after the run starts.
+If Firstmate accepts a clarification or supersession during the run, make it durable at the next gate with a \`no-mistakes axi respond --action fix\` response: select the affected finding when one exists, otherwise use that gate's \`help\` to supply a supported \`--add-finding\`, and pass \`--instructions\` that identifies the superseded requirement, states its current accepted replacement, and tells the pipeline and reviewers that the replacement is authoritative over the stale recorded intent.
+Do not abort or restart solely to refresh \`--intent\`.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
 Two firstmate-specific rules layer on top of that guidance:

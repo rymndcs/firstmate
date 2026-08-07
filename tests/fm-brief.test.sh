@@ -345,6 +345,16 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD must keep direct requirements and exclude generic scaffold boilerplate from --intent"
   assert_grep "exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific" "$brief" \
     "no-mistakes DOD must exclude non-task-specific scaffold boilerplate from --intent"
+  assert_grep "active run's recorded \`--intent\` cannot be updated after the run starts" "$brief" \
+    "no-mistakes DOD must state that an active run's recorded intent is immutable"
+  assert_grep "next gate with a \`no-mistakes axi respond --action fix\` response" "$brief" \
+    "no-mistakes DOD must carry a mid-run supersession through the next gate response"
+  assert_grep "otherwise use that gate's \`help\` to supply a supported \`--add-finding\`" "$brief" \
+    "no-mistakes DOD must create a finding when no existing finding carries the reconciliation"
+  assert_grep "replacement is authoritative over the stale recorded intent" "$brief" \
+    "no-mistakes DOD must make the accepted replacement authoritative over stale intent"
+  assert_grep "Do not abort or restart solely to refresh \`--intent\`" "$brief" \
+    "no-mistakes DOD must not discard an active run merely to refresh recorded intent"
   # The apostrophe in "firstmate's authority check" is now structurally safe
   # (no `$(...)` wrapper around the heredoc), so it renders verbatim instead of
   # being reworded or escaped away. test_no_heredoc_in_command_substitution
