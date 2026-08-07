@@ -230,6 +230,7 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+DECISION_HOLD_CMD="FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-decision-hold.sh")"
 
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
@@ -446,7 +447,8 @@ When starting no-mistakes, make \`--intent\` preserve all relevant content from 
 The active run's recorded \`--intent\` cannot be updated after the run starts.
 If Firstmate accepts a clarification or supersession during the run, make it durable at the next gate with a \`no-mistakes axi respond --action fix\` response: select the affected finding when one exists, otherwise use that gate's \`help\` to supply a supported \`--add-finding\`, and pass \`--instructions\` that identifies the superseded requirement, states its current accepted replacement, and tells the pipeline and reviewers that the replacement is authoritative over the stale recorded intent.
 If that next gate is an ask-user gate, the escalation rule below wins: escalate to firstmate and stop first, then carry the reconciliation inside the decision firstmate returns. A pending reconciliation never authorizes you to answer an ask-user finding yourself.
-If the run reaches the CI-ready point or a final outcome with no further gate while an accepted clarification or supersession is still unreconciled, append \`needs-decision: {the unreconciled requirement, in enough detail for firstmate to act}\` (rule 6) and stop - name the PR URL and its green checks in that same line when they exist, but do not append \`done:\`, never report the unreconciled requirement as validated, and never choose follow-up work versus re-validation yourself: firstmate owns that call.
+If the run reaches the CI-ready point or a final outcome with no further gate while an accepted clarification or supersession is still unreconciled, make it durable outside the run before you stop: read and follow \`$FM_ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md\`, give that unreconciled requirement a stable privacy-safe key, register it in this task's originating home with \`$DECISION_HOLD_CMD hold $ID {key} --title {title} --reason {reason}\`, and pass that skill's completion gate for this review pass with that key still unresolved - the hold is what survives a terminal run state and teardown.
+Then append \`needs-decision: {the unreconciled requirement, in enough detail for firstmate to act}\` (rule 6) and stop, which is the immediate wake - name the PR URL and its green checks in that same line when they exist, but do not append \`done:\`, never report the unreconciled requirement as validated, and never choose follow-up work versus re-validation yourself: firstmate owns that call.
 Do not abort or restart solely to refresh \`--intent\`.
 Do not hand-edit, commit, or fix findings yourself while a run is active - the pipeline applies every fix.
 
@@ -456,9 +458,10 @@ Two firstmate-specific rules layer on top of that guidance:
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
 
-Once the run reports \`outcome: checks-passed\`, before reporting done: read and follow \`$FM_ROOT/.agents/skills/pr-description-summarize/SKILL.md\` and replace the PR's published body from \`## Intent\` up to (not including) \`## Pipeline\` with its summary via \`gh-axi pr edit\`, leaving \`## Pipeline\` byte-identical. This does not change what \`--intent\` received.
+Once the run reports \`outcome: checks-passed\`, before you append your final status line - \`done:\` or the unreconciled-requirement \`needs-decision:\` above, whichever applies: read and follow \`$FM_ROOT/.agents/skills/pr-description-summarize/SKILL.md\` and replace the PR's published body from \`## Intent\` up to (not including) \`## Pipeline\` with its summary via \`gh-axi pr edit\`, leaving \`## Pipeline\` byte-identical. This does not change what \`--intent\` received.
 
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
+That \`done:\` line does not apply while an accepted clarification or supersession is still unreconciled: that path ends at the durable hold and its \`needs-decision:\` line above, and no CI-green result overrides it.
 EOF
     ;;
 esac

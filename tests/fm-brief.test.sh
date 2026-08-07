@@ -359,12 +359,26 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD must not let a pending reconciliation become ask-user authority"
   assert_grep "CI-ready point or a final outcome with no further gate while an accepted clarification or supersession is still unreconciled" "$brief" \
     "no-mistakes DOD must cover a run that ends with no further gate to carry the reconciliation"
+  assert_grep "$ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md" "$brief" \
+    "no-mistakes DOD must route an unreconciled requirement through the durable decision-hold policy"
+  assert_grep "FM_HOME='$home' '$ROOT/bin/fm-decision-hold.sh' hold $id {key} --title {title} --reason {reason}" "$brief" \
+    "no-mistakes DOD must register the hold in the originating home under a stable key"
+  assert_grep "pass that skill's completion gate for this review pass with that key still unresolved" "$brief" \
+    "no-mistakes DOD must complete the review pass with the requirement still unresolved"
+  assert_grep "the hold is what survives a terminal run state and teardown" "$brief" \
+    "no-mistakes DOD must state why the hold outlives the run's own state"
   assert_grep "append \`needs-decision: {the unreconciled requirement, in enough detail for firstmate to act}\` (rule 6) and stop" "$brief" \
     "no-mistakes DOD must escalate an unreconciled requirement instead of dropping it"
   assert_grep "do not append \`done:\`, never report the unreconciled requirement as validated, and never choose follow-up work versus re-validation yourself" "$brief" \
     "no-mistakes DOD must keep the follow-up versus re-validation call with firstmate"
   assert_grep "Do not abort or restart solely to refresh \`--intent\`" "$brief" \
     "no-mistakes DOD must not discard an active run merely to refresh recorded intent"
+  assert_grep "That \`done:\` line does not apply while an accepted clarification or supersession is still unreconciled" "$brief" \
+    "no-mistakes DOD's CI-green done instruction must exclude the unreconciled-requirement path"
+  assert_grep "no CI-green result overrides it" "$brief" \
+    "no-mistakes DOD must keep a green CI result from overriding the durable-hold fallback"
+  assert_grep "before you append your final status line - \`done:\` or the unreconciled-requirement \`needs-decision:\` above, whichever applies" "$brief" \
+    "no-mistakes DOD must replace the PR body on both final-status paths"
   # The apostrophe in "firstmate's authority check" is now structurally safe
   # (no `$(...)` wrapper around the heredoc), so it renders verbatim instead of
   # being reworded or escaped away. test_no_heredoc_in_command_substitution
