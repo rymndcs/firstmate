@@ -123,7 +123,8 @@ printf 'armed: state/%s.check.sh\n' "$ID"
 
 # Recording a PR against the task IS the In Review transition, so it happens
 # here rather than as a step an agent has to remember afterwards.
-# bin/fm-linear.sh is silent for an unconfigured home or a task with no Linear
-# identifier, reports loudly on stderr when a configured update fails, and can
-# never unmake the poll this run already armed.
+# bin/fm-linear.sh is silent for a task with no Linear identifier, nudges on
+# stderr for a resolvable issue with no API key configured, reports loudly on
+# stderr when a configured update fails, and can never unmake the poll this
+# run already armed.
 "$SCRIPT_DIR/fm-linear.sh" transition "$ID" in-review || true
