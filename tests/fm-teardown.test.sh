@@ -2,10 +2,12 @@
 # Tests for bin/fm-teardown.sh's landed-work safety and stale-lock recovery.
 #
 # The check refuses to tear down a worktree whose work has not LANDED, because
-# treehouse return hard-resets the worktree. "Landed" means reachable from a remote
-# OR - for a normal ship task whose commits are not so reachable - its PR is merged
-# and GitHub reports a PR head that contains the current local work, or its content
-# is already in the up-to-date default branch.
+# treehouse return hard-resets the worktree. "Landed" means some durable copy already
+# holds this CONTENT: a remote's copy of the branch (asked of the remote itself, not
+# of stale local remote-tracking refs), the task's pull request head on the forge
+# whether merged or open, or the up-to-date default branch. Content, never commit
+# identity - rebasing, amending, and squash-merging all change hashes without
+# changing what would be lost. bin/fm-teardown.sh's header owns the full contract.
 #
 # Covers three fixes:
 #   - local-only fork-remote: a fork IS a remote, so fork-pushed upstream-
@@ -41,6 +43,16 @@
 #   (q1) supplied branch name + merged PR discoverable only by that name -> ALLOW
 #   (q2) supplied branch name + genuinely unlanded work                  -> REFUSE
 #
+# The false-refusal shapes reproduced on 2026-08-07, plus the true positive from the
+# same day that proves the fix did not simply loosen the check:
+#   (a1) branch pushed to origin, remote-tracking ref never fetched -> ALLOW
+#   (a2) branch republished by a rebase under new hashes           -> ALLOW
+#   (a3) work contained in an OPEN pull request head               -> ALLOW
+#   (a4) one local commit differing from what landed by a line break -> REFUSE
+# And the remedy the refusal prints, which is itself a safety surface:
+#   (a5) proven-unlanded refusal    -> names --force behind the captain's explicit OK
+#   (a6) undecidable refusal        -> reports what could not be checked, never --force
+#
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
 #   (r) provably-stale index.lock (old mtime, no live holder) -> lock removed, ALLOW
@@ -51,6 +63,10 @@
 #   (w) index.lock mtime read failure                         -> lock kept, REFUSE
 #   (x) transient lock cleared after first failed return      -> retry ALLOW
 #   (y) persistent lock (never clears, not provably stale)    -> REFUSE loudly
+# And, separately from the lock path, a return that reports failure with no error
+# text at all - which in production had actually succeeded:
+#   (y1) diagnostic-free return failure -> re-run once, teardown completes
+#   (y2) return failure with a real diagnostic -> abort at once, no re-run
 #
 # And the durability of the wedge context stuck-crewmate-recovery captures before it
 # terminates a crewmate:
@@ -243,6 +259,74 @@ echo "error: pull request not found" >&2
 exit 1
 SH
   chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+# Like add_gh_pr_merged_for_head, but the PR is still OPEN. The forge holds an open
+# PR's head just as durably as a merged one, so it is an equally good answer to
+# "does a copy of this content survive without the worktree?".
+add_gh_pr_open_for_head() {
+  local case_dir=$1 head=$2
+  cat > "$case_dir/fakebin/gh-axi" <<'SH'
+#!/usr/bin/env bash
+case "${1:-} ${2:-}" in
+  "pr list")
+    printf '%s\n' "count: 1 (showing first 1)" "pull_requests[1]{number,state}:" "  7,open" ; exit 0 ;;
+  "pr view")
+    printf '%s\n' "pull_request:" "  number: 7" "  state: open" ; exit 0 ;;
+esac
+exit 0
+SH
+  cat > "$case_dir/fakebin/gh" <<SH
+#!/usr/bin/env bash
+case "\${1:-} \${2:-}" in
+  "pr view")
+    case " \$* " in
+      *"state,headRefOid"*) printf '%s\t%s\n' 'OPEN' '$head' ; exit 0 ;;
+      *"headRefOid"*) printf '%s\n' '$head' ; exit 0 ;;
+    esac
+    ;;
+esac
+echo "error: pull request not found" >&2
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/gh-axi" "$case_dir/fakebin/gh"
+}
+
+# `treehouse return` fails its FIRST attempt with the diagnostic-free signature seen
+# in production - a named git command followed by an empty error - and succeeds on
+# the next one. Counts attempts in $TREEHOUSE_ATTEMPT_FILE.
+add_diagnostic_free_failure_treehouse() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = return ]; then
+  n=$(( $(cat "$TREEHOUSE_ATTEMPT_FILE" 2>/dev/null || echo 0) + 1 ))
+  printf '%s' "$n" > "$TREEHOUSE_ATTEMPT_FILE"
+  if [ "$n" = 1 ]; then
+    echo "failed to return worktree: git checkout --detach --force refs/remotes/origin/main:" >&2
+    exit 1
+  fi
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+# `treehouse return` fails with a real diagnostic every time. Counts attempts in
+# $TREEHOUSE_ATTEMPT_FILE so the test can prove teardown did not retry.
+add_diagnosed_failure_treehouse() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = return ]; then
+  n=$(( $(cat "$TREEHOUSE_ATTEMPT_FILE" 2>/dev/null || echo 0) + 1 ))
+  printf '%s' "$n" > "$TREEHOUSE_ATTEMPT_FILE"
+  echo "failed to return worktree: git checkout --detach --force refs/remotes/origin/main: fatal: not a valid object name" >&2
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
 }
 
 # Like add_gh_pr_merged_for_head, but the PR is only discoverable when the branch
@@ -1094,6 +1178,234 @@ test_content_fallback_refreshes_stale_origin_ref() {
   pass "content fallback refreshes origin default before comparing trees"
 }
 
+test_unfetched_pushed_branch_is_landed() {
+  local case_dir rc
+  case_dir=$(make_case unfetched-remote-ref)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  # The branch IS on origin. Dropping the remote-tracking ref reproduces a worktree
+  # that never fetched its own branch, which is the only state the old check could
+  # see - so it reported pushed work as "not on any remote". No PR exists (default
+  # gh mock), so only asking the remote itself can answer this.
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/wt" update-ref -d refs/remotes/origin/fm/task-x1
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "unfetched-remote-ref: teardown should succeed for work the remote already has"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "unfetched-remote-ref: teardown printed a REFUSED line"
+  pass "work pushed to a remote this worktree never fetched is recognized as landed"
+}
+
+test_rebased_branch_republished_under_new_hashes_is_landed() {
+  local case_dir rc
+  case_dir=$(make_case rebased-new-hashes)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  # origin's copy of the SAME branch carries the same change under a different
+  # commit, exactly as a rebase-and-force-push leaves it. Nothing about commit
+  # identity matches, and there is no PR (default gh mock): only content can answer.
+  land_equivalent_patch_on_origin_branch "$case_dir" fm/task-x1 feature.txt hello \
+    "add feature (replayed by rebase)" >/dev/null
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "rebased-new-hashes: teardown should succeed when the remote branch carries the same patch"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "rebased-new-hashes: teardown printed a REFUSED line"
+  pass "a rebased branch republished under new hashes is recognized as landed"
+}
+
+test_open_pr_head_containing_the_work_is_landed() {
+  local case_dir rc local_head pr_head
+  case_dir=$(make_case open-pr-head)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_url "$case_dir"
+  local_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  pr_head=$(commit_tree_from_wt_head "$case_dir" "$local_head" "pipeline follow-up")
+  # The branch is not on any remote-tracking ref, and the PR has not merged yet. The
+  # forge still holds this content on the PR head, so the worktree is redundant.
+  add_gh_pr_open_for_head "$case_dir" "$pr_head"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "open-pr-head: teardown should succeed when an open PR head already holds the work"
+  ! grep -q REFUSED "$case_dir/stderr" || fail "open-pr-head: teardown printed a REFUSED line"
+  pass "work contained in an open pull request head is recognized as landed"
+}
+
+test_one_line_difference_from_landed_content_still_refuses() {
+  local case_dir rc pr_head
+  case_dir=$(make_case one-line-difference)
+  write_meta "$case_dir" no-mistakes ship
+  # The true positive from 2026-08-07 that the fix must not swallow: the PR landed,
+  # its content is in main, and ONE local commit still differs from it - here by a
+  # single trailing line break. Nothing durable holds that commit.
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  append_pr_meta_url "$case_dir"
+  pr_head=$(git -C "$case_dir/wt" rev-parse HEAD)
+  add_gh_pr_merged_for_head "$case_dir" "$pr_head"
+  land_on_origin_main "$case_dir" feature.txt hello
+  # Written inline rather than through wt_commit_file: the whole point of this case
+  # is that the local file differs from what landed by exactly one line break.
+  printf 'hello\n\n' > "$case_dir/wt/feature.txt"
+  git -C "$case_dir/wt" add -- feature.txt
+  git -C "$case_dir/wt" -c user.email=t@t -c user.name=t \
+    commit -q -m "reformat: trailing blank line"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "one-line-difference: teardown must still refuse work that differs from what landed"
+  assert_grep "unlanded commits" "$case_dir/stderr" \
+    "one-line-difference: refusal did not name the unlanded commits"
+  assert_not_contains "$(cat "$case_dir/stderr")" "cannot establish" \
+    "one-line-difference: teardown reported uncertainty for a case it can decide"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "one-line-difference: teardown erased task records despite refusing"
+  pass "work that differs from what landed by a single line is still refused (true positive kept)"
+}
+
+test_proven_unlanded_refusal_names_force_as_the_captain_s_call() {
+  local case_dir rc
+  case_dir=$(make_case unlanded-remedy)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "unpushed work"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "unlanded-remedy: teardown should refuse genuinely unlanded work"
+  assert_grep "unlanded commits" "$case_dir/stderr" \
+    "unlanded-remedy: refusal did not name the unlanded commits"
+  assert_grep "--force" "$case_dir/stderr" \
+    "unlanded-remedy: a proven-unlanded refusal should still name the captain-authorized discard"
+  assert_grep "captain's explicit OK" "$case_dir/stderr" \
+    "unlanded-remedy: refusal offered --force without naming who must authorize it"
+  pass "a proven-unlanded refusal names --force only behind the captain's explicit OK"
+}
+
+test_undecidable_landing_refuses_without_offering_force() {
+  local case_dir rc
+  case_dir=$(make_case undecidable-remedy)
+  write_meta "$case_dir" no-mistakes ship
+  append_pr_meta_url "$case_dir"
+  # The content is nowhere teardown can see, but the forge cannot be reached, so
+  # "not landed" is not something teardown actually knows.
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  add_gh_axi_error "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "undecidable-remedy: teardown should refuse when it cannot decide"
+  assert_grep "cannot establish" "$case_dir/stderr" \
+    "undecidable-remedy: refusal did not say the landing could not be established"
+  assert_grep "what could not be checked" "$case_dir/stderr" \
+    "undecidable-remedy: refusal did not report which check failed"
+  assert_no_grep "--force" "$case_dir/stderr" \
+    "undecidable-remedy: teardown suggested discarding work it cannot tell apart from safe work"
+  pass "an undecidable landing refuses and never suggests --force"
+}
+
+test_every_failed_check_is_reported_on_its_own_line() {
+  local case_dir rc reasons
+  case_dir=$(make_case undecidable-multi-reason)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  # Nothing teardown would consult is reachable: the remote is gone and the forge
+  # errors. Every one of those failures has to reach the operator, each readable on
+  # its own line, because together they are the reason the verdict is withheld.
+  git -C "$case_dir/project" remote set-url origin "$case_dir/no-such-remote.git"
+  add_gh_axi_error "$case_dir"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "undecidable-multi-reason: teardown should refuse when nothing can be consulted"
+  assert_grep "cannot establish" "$case_dir/stderr" \
+    "undecidable-multi-reason: refusal did not say the landing could not be established"
+  reasons=$(sed -n '/what could not be checked:/,$p' "$case_dir/stderr" | grep -c '^  [a-z]')
+  [ "$reasons" -ge 2 ] \
+    || fail "undecidable-multi-reason: expected each failed check on its own line, got $reasons"
+  assert_no_grep "--force" "$case_dir/stderr" \
+    "undecidable-multi-reason: teardown suggested a discard it cannot justify"
+  pass "every check that could not answer is reported on its own line"
+}
+
+test_diagnostic_free_return_failure_is_rerun_and_completes() {
+  local case_dir rc attempt_file
+  case_dir=$(make_case return-empty-diagnostic)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "shippable work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+
+  add_diagnostic_free_failure_treehouse "$case_dir"
+  attempt_file="$case_dir/treehouse-attempts"
+  : > "$attempt_file"
+
+  set +e
+  TREEHOUSE_ATTEMPT_FILE="$attempt_file" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "return-empty-diagnostic: teardown should finish rather than abort on an unevidenced failure"
+  assert_grep "no error text" "$case_dir/stderr" \
+    "return-empty-diagnostic: teardown did not report why it re-ran the return"
+  assert_grep "teardown task-x1 complete" "$case_dir/stdout" \
+    "return-empty-diagnostic: teardown did not run to completion"
+  [ "$(cat "$attempt_file")" = 2 ] \
+    || fail "return-empty-diagnostic: expected exactly 2 return attempts, got $(cat "$attempt_file")"
+  pass "a return that reports failure with no diagnostic is re-run instead of stranding the worktree"
+}
+
+test_diagnosed_return_failure_still_aborts_without_retrying() {
+  local case_dir rc attempt_file
+  case_dir=$(make_case return-real-diagnostic)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "shippable work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+
+  add_diagnosed_failure_treehouse "$case_dir"
+  attempt_file="$case_dir/treehouse-attempts"
+  : > "$attempt_file"
+
+  set +e
+  TREEHOUSE_ATTEMPT_FILE="$attempt_file" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "return-real-diagnostic: a genuine return failure must still abort"
+  assert_grep "teardown aborted" "$case_dir/stderr" \
+    "return-real-diagnostic: teardown did not abort loudly"
+  [ "$(cat "$attempt_file")" = 1 ] \
+    || fail "return-real-diagnostic: expected exactly 1 return attempt, got $(cat "$attempt_file")"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "return-real-diagnostic: teardown erased task records despite aborting"
+  pass "a return failure that carries a real diagnostic still aborts immediately"
+}
+
 test_dirty_worktree_refuses() {
   local case_dir rc pr_head
   case_dir=$(make_case dirty-wt)
@@ -1136,6 +1448,8 @@ test_gh_error_and_content_absent_refuses() {
 
   expect_code 1 "$rc" "gh-error: teardown should refuse when the PR lookup errors and content is not landed"
   grep -q REFUSED "$case_dir/stderr" || fail "gh-error: no REFUSED line in stderr"
+  assert_no_grep "--force" "$case_dir/stderr" \
+    "gh-error: teardown suggested a discard for a landing it could not determine"
   pass "gh lookup error with content not in default refuses (fail-safe)"
 }
 
@@ -2195,6 +2509,15 @@ test_pr_check_does_not_refresh_stale_pr_head
 test_pr_check_records_remote_head_when_local_lags
 test_content_in_default_fallback_allows
 test_content_fallback_refreshes_stale_origin_ref
+test_unfetched_pushed_branch_is_landed
+test_rebased_branch_republished_under_new_hashes_is_landed
+test_open_pr_head_containing_the_work_is_landed
+test_one_line_difference_from_landed_content_still_refuses
+test_proven_unlanded_refusal_names_force_as_the_captain_s_call
+test_undecidable_landing_refuses_without_offering_force
+test_every_failed_check_is_reported_on_its_own_line
+test_diagnostic_free_return_failure_is_rerun_and_completes
+test_diagnosed_return_failure_still_aborts_without_retrying
 test_dirty_worktree_refuses
 test_gh_error_and_content_absent_refuses
 test_stale_index_lock_cleared_and_teardown_succeeds

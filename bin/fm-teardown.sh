@@ -5,22 +5,65 @@
 # tasks, then print a backlog-refresh reminder for ship and scout teardowns
 # (a secondmate teardown prints none, since secondmates are not backlog items).
 # REFUSES if the worktree holds work that has not LANDED, because cleanup
-# hard-resets/removes the worktree and kills its processes. Work has landed when it is
-# reachable from any remote-tracking branch (a fork counts as a remote, so
-# upstream-contribution PRs pushed to a fork satisfy this in any mode), OR - for a
-# normal ship task whose commits are not so reachable - when its PR is merged and
-# GitHub reports a PR head that contains the current local work, or its content is
-# already present in the up-to-date default branch. This recognizes the common
-# squash-merge-then-delete-branch flow, where the branch's own commits live nowhere
-# on a remote yet the change is fully in main.
-# The PR itself is resolved from the task's recorded pr= when present, or - when
-# no pr= was ever recorded (e.g. a yolo-authorized merge on a repo with no PR CI,
-# where the usual "checks green" fm-pr-check.sh trigger never fires) - by looking
-# up a merged PR whose head branch matches the worktree's branch, fetching its head
-# via refs/pull/<n>/head when the branch itself was deleted. So a missing pr= never
-# by itself causes a false refusal of landed work.
-# A gh lookup error falls back to the content check; if that is also inconclusive,
-# teardown refuses rather than risk discarding unlanded work.
+# hard-resets/removes the worktree and kills its processes.
+#
+# The question the check must answer is "is this CONTENT recoverable without this
+# worktree?", never "do these commit hashes appear somewhere else". Commit identity
+# is not preserved by rebasing, amending, or squash-merging, so an identity test
+# reports safe work as unlanded forever. work_landed_verdict therefore returns one
+# of three answers, and the third one is the whole point:
+#   landed   - PROVEN safe. Some durable copy already holds this content.
+#   unlanded - PROVEN unsafe. Every check ran and none of them found the content.
+#   unknown  - a check could NOT run, so neither claim is available.
+# The proofs, in the order they are tried:
+#   1. Remote truth, not local memory. refs/remotes/* only records what this
+#      worktree last fetched, so a worktree that never fetched its own pushed
+#      branch looks unpushed. Each remote is asked directly with ls-remote (exit 2
+#      means "answered, no such branch" - a real answer; anything else means the
+#      remote could not be consulted) and the branch is fetched into its
+#      remote-tracking ref before anything is judged.
+#   2. Content containment in each remote's copy of the branch: identity first,
+#      then patch-id equivalence, which is what makes a rebased or amended branch
+#      verifiable - the replayed commits carry new hashes and the same patches.
+#   3. The task's pull request head on the forge, MERGED or OPEN: an open PR's head
+#      is already stored remotely, so it is a durable copy like any other. The PR is
+#      resolved from the recorded pr= when present, or - when no pr= was ever
+#      recorded (e.g. a yolo-authorized merge on a repo with no PR CI, where the
+#      usual "checks green" fm-pr-check.sh trigger never fires) - by looking up a PR
+#      whose head branch matches the worktree's branch, fetching its head via
+#      refs/pull/<n>/head when the branch itself was deleted.
+#   4. The up-to-date default branch's content, which covers the common
+#      squash-merge-then-delete-branch flow where the branch's own commits live
+#      nowhere on a remote yet the change is fully in main.
+# A fork counts as a remote throughout, so upstream-contribution PRs pushed to a
+# fork satisfy step 1 in any mode.
+#
+# WHAT THIS TEST CANNOT SEE. It proves CONTENT is recoverable, and nothing more:
+#   - Commit messages, authorship, and commit boundaries are not protected. The same
+#     patch on a remote under a different message counts as landed, and the local
+#     message is then lost with the worktree.
+#   - Merge commits and empty commits have no computable patch, so they can never be
+#     proven landed by content. They fall through to identity and the default-branch
+#     tree comparison, and otherwise land in `unknown` rather than `unlanded`.
+#   - A patch replayed onto a DIFFERENT base can carry a different patch-id, so some
+#     genuinely landed rebases are only caught by the default-branch comparison.
+#   - Content that lives only somewhere teardown does not consult - another clone, a
+#     stash, a remote not configured in this worktree, a forge it cannot resolve -
+#     is invisible. Whether that reads as `unknown` or `unlanded` depends entirely on
+#     whether the configured checks ANSWERED, not on whether they looked everywhere.
+#   - ls-remote proves the remote holds the branch at that instant; a later
+#     force-push or branch deletion can still remove it afterwards.
+#   - Untracked and uncommitted files are outside this test; the separate dirty check
+#     owns them (and deliberately ignores .claude/ and the turn-end markers).
+#
+# REMEDY POLICY. Only a PROVEN-unlanded refusal names --force, because only there
+# can teardown say what would be destroyed. An `unknown` refusal prints what could
+# not be checked and how to restore it, and deliberately does NOT offer --force:
+# suggesting a discard for a condition the tool cannot tell apart from a safe one
+# trains exactly the reflex the unlanded-work rule exists to prevent. --force stays
+# available to a captain who has explicitly authorized the discard; teardown simply
+# never recommends it on a guess.
+#
 # Uncommitted changes are never landed.
 # local-only projects additionally accept work merged into the local default
 # branch (firstmate performs that merge after configured approval) as a fallback
@@ -77,7 +120,8 @@
 #      attempts. Retries key off the error text, not whether the lock file still
 #      exists after the failed attempt - a lock that self-clears mid-check still
 #      deserves a retry of the return.
-#   2. Other treehouse return failures still abort immediately and loudly (no retry).
+#   2. Other treehouse return failures still abort immediately and loudly (no retry),
+#      with one exception below: a reported failure that carries no diagnostic.
 #   3. If every retry still hits the lock signature and the lock remains, it is removed
 #      and the return tried once more ONLY when the lock is provably stale per
 #      bin/fm-lock-lib.sh's fm_lock_is_provably_stale, passing the worktree dir as the
@@ -92,6 +136,15 @@
 # is present; teardown clears only a provably stale lock, then re-runs the safety
 # checks before any destructive return. Teardown output notes every wait, retry, and
 # removal so the operator can see what happened.
+#
+# Diagnostic-free return failure: separately from the lock path, a return that reports
+# a failed command with NOTHING after it (the "...: <command>:" shape) is re-run once.
+# Observed 2026-08-07 as `failed to return worktree: git checkout --detach --force
+# refs/remotes/origin/main:` with an empty error, where the checkout had in fact
+# succeeded and an identical second run completed. The worker is already killed by
+# this point, so believing an unevidenced failure strands a half-returned worktree
+# with a dead agent. The re-run IS the verification: if it succeeds the return is
+# done, and if it fails with any real diagnostic teardown aborts on that instead.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -583,15 +636,87 @@ remove_pr_poll_artifacts() {
   fi
 }
 
-# Resolve the PR number for a worktree branch via gh-axi. Echoes the number on a
-# single match and returns 0; returns non-zero on no match or any lookup failure,
-# so the caller treats it as "no PR found" (fail-safe).
+# Landed-work verdict state, reset by every work_landed_verdict call.
+# LANDED_VERDICT is landed|unlanded|unknown; LANDED_UNCERTAIN is set by any check
+# that could not reach an answer, and LANDED_UNCERTAIN_REASONS collects one
+# operator-readable line per such check. Keeping "could not tell" separate from
+# "not there" is what lets the refusal message stay honest about --force.
+LANDED_VERDICT=
+LANDED_UNCERTAIN=0
+LANDED_UNCERTAIN_REASONS=
+LANDED_REMAINING=
+LANDED_PR_HEAD=
+
+landed_note_uncertain() {
+  LANDED_UNCERTAIN=1
+  if [ -n "$LANDED_UNCERTAIN_REASONS" ]; then
+    LANDED_UNCERTAIN_REASONS=$(printf '%s\n  %s' "$LANDED_UNCERTAIN_REASONS" "$1")
+  else
+    LANDED_UNCERTAIN_REASONS="  $1"
+  fi
+}
+
+# Run a git command that talks to a remote. Teardown is non-interactive, so a
+# missing credential must fail immediately instead of blocking a fleet operation
+# on a prompt nobody will ever answer.
+git_remote_op() {
+  GIT_TERMINAL_PROMPT=0 git -C "$WT" "$@"
+}
+
+# Bring every remote's copy of <branch> into its remote-tracking ref, so the
+# "not on any remote" question is answered by the remote rather than by whatever
+# this worktree happened to fetch last. ls-remote's exit 2 is a real answer ("that
+# remote does not have this branch"); every other failure means the remote could
+# not be consulted, which is uncertainty, not absence.
+refresh_remote_branch_refs() {
+  local branch=$1 remote rc remotes
+  [ -n "$branch" ] && [ "$branch" != HEAD ] || return 0
+  if ! remotes=$(git -C "$WT" remote 2>/dev/null); then
+    landed_note_uncertain "this worktree's remotes could not be listed"
+    return 0
+  fi
+  while IFS= read -r remote; do
+    [ -n "$remote" ] || continue
+    if git_remote_op ls-remote --exit-code --heads "$remote" "$branch" >/dev/null 2>&1; then
+      git_remote_op fetch --quiet "$remote" \
+        "+refs/heads/$branch:refs/remotes/$remote/$branch" >/dev/null 2>&1 \
+        || landed_note_uncertain "remote $remote has $branch but it could not be fetched for comparison"
+    else
+      rc=$?
+      [ "$rc" -eq 2 ] \
+        || landed_note_uncertain "remote $remote could not be reached to ask whether it already has this work"
+    fi
+  done <<EOF
+$remotes
+EOF
+}
+
+# Each remote's copy of <branch> that exists locally after the refresh.
+remote_branch_refs() {
+  local branch=$1 remote ref remotes
+  [ -n "$branch" ] && [ "$branch" != HEAD ] || return 0
+  remotes=$(git -C "$WT" remote 2>/dev/null) || return 0
+  while IFS= read -r remote; do
+    [ -n "$remote" ] || continue
+    ref="refs/remotes/$remote/$branch"
+    if git -C "$WT" rev-parse --quiet --verify "$ref^{commit}" >/dev/null 2>&1; then
+      printf '%s\n' "$ref"
+    fi
+  done <<EOF
+$remotes
+EOF
+}
+
+# Resolve the PR number for a worktree branch via gh-axi. Echoes the number and
+# returns 0 on a single match. Returns 2 when gh-axi answered and there is no such
+# PR (a real answer) and 1 when the lookup itself failed (no answer at all), so the
+# caller can tell "no PR" apart from "could not ask".
 pr_number_from_branch() {
   local branch=$1 out n
-  [ -n "$branch" ] && [ "$branch" != HEAD ] || return 1
+  [ -n "$branch" ] && [ "$branch" != HEAD ] || return 2
   out=$( cd "$WT" && gh-axi pr list --state all --head "$branch" --limit 1 2>/dev/null ) || return 1
   n=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1)
-  [ -n "$n" ] || return 1
+  [ -n "$n" ] || return 2
   printf '%s' "$n"
 }
 
@@ -628,57 +753,89 @@ patch_id_for_commit() {
     | awk 'NR == 1 { print $1 }'
 }
 
-unpushed_patches_are_in_pr_head() {
-  local pr_head=$1 current base pr_patch_ids commit patch_id unpushed
+# Does <ref> already carry every commit this worktree holds that no remote-tracking
+# branch reaches? Compared by patch-id, so a commit replayed under a new hash by a
+# rebase or an amend still counts as the same change. A commit whose patch-id
+# cannot be computed at all (a merge, or an empty commit) is uncertainty rather
+# than proof of absence.
+unpushed_patches_are_in_ref() {
+  local ref=$1 current base ref_patch_ids commit patch_id unpushed
   current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
-  base=$(git -C "$WT" merge-base "$current" "$pr_head" 2>/dev/null) || return 1
-  pr_patch_ids=$(
-    git -C "$WT" log --format=%H "$base..$pr_head" -- 2>/dev/null \
+  base=$(git -C "$WT" merge-base "$current" "$ref" 2>/dev/null) || return 1
+  ref_patch_ids=$(
+    git -C "$WT" log --format=%H "$base..$ref" -- 2>/dev/null \
       | while IFS= read -r commit; do
           patch_id_for_commit "$commit"
         done \
       | sed '/^$/d' \
       | sort -u
   ) || return 1
-  [ -n "$pr_patch_ids" ] || return 1
+  [ -n "$ref_patch_ids" ] || return 1
   unpushed=$(git -C "$WT" log --format=%H HEAD --not --remotes -- 2>/dev/null) || return 1
   [ -n "$unpushed" ] || return 1
   while IFS= read -r commit; do
     [ -n "$commit" ] || continue
-    patch_id=$(patch_id_for_commit "$commit") || return 1
-    [ -n "$patch_id" ] || return 1
-    printf '%s\n' "$pr_patch_ids" | grep -qxF "$patch_id" || return 1
+    patch_id=$(patch_id_for_commit "$commit") || patch_id=
+    if [ -z "$patch_id" ]; then
+      landed_note_uncertain "commit $commit carries no comparable patch (a merge or an empty commit), so its content could not be matched"
+      return 1
+    fi
+    printf '%s\n' "$ref_patch_ids" | grep -qxF "$patch_id" || return 1
   done <<EOF
 $unpushed
 EOF
 }
 
-# Is the worktree's PR merged for local work contained in that PR? Resolves the
-# PR from the recorded pr= URL first, then from the branch name, and asks GitHub
-# for both the PR state and head. Returns non-zero when the PR is not merged, the
-# current work is not contained in the PR head, no PR is found, or any gh error
-# occurs - the caller then falls back to the content check.
-pr_is_merged() {
-  local branch=$1 target view state head current
+# Is this worktree's work already present in <ref>? Identity first, because that
+# is the cheap common case, then content equivalence.
+work_content_is_in_ref() {
+  local ref=$1 current
+  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
+  git -C "$WT" merge-base --is-ancestor "$current" "$ref" 2>/dev/null && return 0
+  unpushed_patches_are_in_ref "$ref"
+}
+
+# Put the forge's copy of this task's PR head into LANDED_PR_HEAD, fetched locally,
+# and return 0; return non-zero when there is none. MERGED and OPEN both count: an
+# open PR's head lives on the forge, so it is a durable copy of the content just
+# like a pushed branch. Resolves the PR from the recorded pr= URL first, then from
+# the branch name. A lookup that FAILS is recorded as uncertainty; a lookup that
+# answers "no such PR", or a PR that is closed without merging, is a real answer and
+# is not. The answer travels through a variable rather than stdout precisely so that
+# uncertainty is recorded in THIS shell instead of a command substitution's subshell.
+pr_head_commit() {
+  local branch=$1 target view state head rc
+  LANDED_PR_HEAD=
   if [ -n "$PR_URL" ]; then
     target=$PR_URL
+  elif target=$(pr_number_from_branch "$branch"); then
+    :
   else
-    target=$(pr_number_from_branch "$branch") || return 1
+    rc=$?
+    [ "$rc" -eq 2 ] \
+      || landed_note_uncertain "the pull request lookup for $branch failed, so the forge could not be asked whether it already has this work"
+    return 1
   fi
   [ -n "$target" ] || return 1
-  view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null) || return 1
+  if ! view=$(cd "$WT" && gh pr view "$target" --json state,headRefOid -q '.state + "\t" + .headRefOid' 2>/dev/null); then
+    landed_note_uncertain "pull request $target could not be read, so the forge could not be asked whether it already has this work"
+    return 1
+  fi
   state=${view%%$'\t'*}
   head=${view#*$'\t'}
-  [ "$state" != "$view" ] || return 1
+  if [ "$state" = "$view" ] || [ -z "$head" ]; then
+    landed_note_uncertain "pull request $target answered without a usable head commit"
+    return 1
+  fi
   case "$state" in
-    MERGED|merged) ;;
+    MERGED|merged|OPEN|open) ;;
     *) return 1 ;;
   esac
-  [ -n "$head" ] || return 1
-  ensure_commit_object "$target" "$head" || return 1
-  current=$(git -C "$WT" rev-parse --verify HEAD 2>/dev/null) || return 1
-  git -C "$WT" merge-base --is-ancestor "$current" "$head" 2>/dev/null && return 0
-  unpushed_patches_are_in_pr_head "$head"
+  if ! ensure_commit_object "$target" "$head"; then
+    landed_note_uncertain "pull request $target reports head $head, which could not be fetched for comparison"
+    return 1
+  fi
+  LANDED_PR_HEAD=$head
 }
 
 # Is the branch's content already present in the up-to-date default branch? Fetches
@@ -686,35 +843,100 @@ pr_is_merged() {
 # the default branch does not already contain (e.g. its change landed via squash) the
 # merged tree equals the default branch's tree. This isolates branch-only changes, so
 # unrelated commits the default branch gained past the merge-base do not count as
-# "added". Returns non-zero when inconclusive (no default ref, or a merge conflict),
-# so the caller refuses rather than guesses.
+# "added". A merge CONFLICT is a real answer - the branch changes something the
+# default branch changed differently, so its content is not in there - while a
+# missing default ref, a failed fetch, or a merge-tree error is uncertainty.
 content_in_default() {
-  local name ref default_tree merged_tree
-  name=$(default_branch) || return 1
+  local name ref default_tree merged_tree rc
+  if ! name=$(default_branch); then
+    landed_note_uncertain "the project's default branch could not be determined, so its content could not be compared"
+    return 1
+  fi
   if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
-    git -C "$WT" fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1 || return 1
+    if ! git_remote_op fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1; then
+      landed_note_uncertain "origin/$name could not be fetched, so the default branch could not be compared"
+      return 1
+    fi
     ref="refs/remotes/origin/$name"
   elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
     ref="refs/heads/$name"
   else
+    landed_note_uncertain "no copy of $name is reachable locally or on a remote, so its content could not be compared"
     return 1
   fi
-  default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || return 1
-  [ -n "$default_tree" ] || return 1
-  merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null) || return 1
-  merged_tree=$(printf '%s\n' "$merged_tree" | head -1)
-  [ "$merged_tree" = "$default_tree" ]
+  default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || default_tree=
+  if [ -z "$default_tree" ]; then
+    landed_note_uncertain "$name has no readable tree, so its content could not be compared"
+    return 1
+  fi
+  if merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null); then
+    merged_tree=$(printf '%s\n' "$merged_tree" | head -1)
+    [ "$merged_tree" = "$default_tree" ]
+    return
+  else
+    rc=$?
+  fi
+  # merge-tree exits 1 for a conflicting merge, which answers the question; any
+  # other status means the comparison itself did not run.
+  [ "$rc" -eq 1 ] \
+    || landed_note_uncertain "the content comparison against $name could not be completed"
+  return 1
 }
 
-# Has the worktree's committed work actually LANDED, though its commits are not
-# reachable from any remote-tracking branch? True when a merged PR proves the
-# current local work is contained in the PR head, OR the content is already in the
-# default branch (fallback, which also covers the no-PR and gh-error paths). False
-# only for genuinely unlanded work.
-work_is_landed() {
-  local branch=$1
-  pr_is_merged "$branch" && return 0
-  content_in_default
+# Decide whether this worktree's work is recoverable without this worktree, and
+# say so in LANDED_VERDICT: landed (proven safe), unlanded (proven unsafe), or
+# unknown (a check could not run). LANDED_REMAINING holds the commits still
+# unaccounted for after the remote refresh, and LANDED_UNCERTAIN_REASONS explains
+# every check that could not answer. The proofs and their order are described in
+# the script header. Always returns 0; the verdict is the result.
+work_landed_verdict() {
+  local branch=$1 ref remaining
+  LANDED_VERDICT=
+  LANDED_UNCERTAIN=0
+  LANDED_UNCERTAIN_REASONS=
+  LANDED_REMAINING=
+
+  refresh_remote_branch_refs "$branch"
+
+  if remaining=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null); then
+    # The refresh alone settles the commonest false refusal: a worktree that
+    # simply never fetched its own pushed branch.
+    if [ -z "$remaining" ]; then
+      LANDED_VERDICT=landed
+      return 0
+    fi
+    LANDED_REMAINING=$(printf '%s\n' "$remaining" | head -5)
+  else
+    landed_note_uncertain "this worktree's commits could not be listed against its remote-tracking branches"
+  fi
+
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    if work_content_is_in_ref "$ref"; then
+      LANDED_VERDICT=landed
+      return 0
+    fi
+  done <<EOF
+$(remote_branch_refs "$branch")
+EOF
+
+  if pr_head_commit "$branch" && [ -n "$LANDED_PR_HEAD" ] \
+    && work_content_is_in_ref "$LANDED_PR_HEAD"; then
+    LANDED_VERDICT=landed
+    return 0
+  fi
+
+  if content_in_default; then
+    LANDED_VERDICT=landed
+    return 0
+  fi
+
+  if [ "$LANDED_UNCERTAIN" -eq 0 ]; then
+    LANDED_VERDICT=unlanded
+  else
+    LANDED_VERDICT=unknown
+  fi
+  return 0
 }
 
 backlog_refresh_reminder() {
@@ -829,6 +1051,18 @@ treehouse_return_is_index_lock_error() {
   printf '%s\n' "$text" | grep -Eq "Unable to create ['\"].*index\\.lock['\"]: File exists"
 }
 
+# True when the return reported a failed command but produced NO diagnostic for it
+# - the "...: <command>:" shape with nothing after the final colon. Observed
+# 2026-08-07: `failed to return worktree: git checkout --detach --force
+# refs/remotes/origin/main:` while that checkout had in fact succeeded, and an
+# identical second run completed. A failure that carries no error text is not
+# evidence that anything failed, and by this point the worker has already been
+# killed, so aborting on it strands a half-returned worktree.
+treehouse_return_reported_failure_without_diagnostic() {
+  local text=$1
+  printf '%s\n' "$text" | grep -Eq 'failed to return worktree:.*[^[:space:]]:[[:space:]]*$'
+}
+
 # Absolute path to the git index lock for a worktree/repo dir, or empty when it
 # cannot be resolved (dir missing or not a git worktree at all).
 worktree_git_lock_path() {
@@ -908,6 +1142,18 @@ teardown_treehouse_return() {
     return 0
   fi
   [ -n "$out" ] && printf '%s\n' "$out" >&2
+
+  # A failure with no diagnostic proves nothing, and the return is idempotent, so
+  # re-run it once before believing it rather than aborting mid-cleanup.
+  if treehouse_return_reported_failure_without_diagnostic "$out"; then
+    echo "teardown: $label return reported a failed command with no error text, so the operation may already have completed; re-running the return once before deciding" >&2
+    if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
+      [ -n "$out" ] && printf '%s\n' "$out"
+      echo "teardown: $label return completed on the re-run; the first failure carried no diagnostic and did not hold" >&2
+      return 0
+    fi
+    [ -n "$out" ] && printf '%s\n' "$out" >&2
+  fi
 
   if ! treehouse_return_is_index_lock_error "$out"; then
     return 1
@@ -1030,12 +1276,29 @@ validate_worktree_teardown_safety() {
       branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
       TEARDOWN_WORKTREE_BRANCH_FOR_SAFETY=$branch
     fi
-    if ! work_is_landed "$branch"; then
-      echo "REFUSED: worktree $WT has work not on any remote and not landed." >&2
-      printf 'unpushed commits:\n%s\n' "$unpushed" >&2
-      echo "Push the branch, land its PR, or get the captain's explicit OK to discard, then --force." >&2
-      return 1
-    fi
+    work_landed_verdict "$branch"
+    [ -n "$LANDED_REMAINING" ] || LANDED_REMAINING=$unpushed
+    case "$LANDED_VERDICT" in
+      landed) ;;
+      unlanded)
+        echo "REFUSED: worktree $WT has work that is on no remote, in no pull request, and not in the default branch." >&2
+        printf 'unlanded commits:\n%s\n' "$LANDED_REMAINING" >&2
+        echo "Push the branch or land its PR. Discarding this work would destroy it, so that needs the captain's explicit OK first, then --force." >&2
+        return 1
+        ;;
+      *)
+        # unknown, and any state that is somehow neither: deliberately no --force,
+        # because teardown cannot tell this apart from work that would be
+        # destroyed, and recommending a discard on a guess is the whole defect.
+        [ -n "$LANDED_UNCERTAIN_REASONS" ] \
+          || LANDED_UNCERTAIN_REASONS="  the landing checks did not run to a verdict"
+        echo "REFUSED: cannot establish whether worktree $WT's work has already landed." >&2
+        printf 'commits no remote is known to carry:\n%s\n' "$LANDED_REMAINING" >&2
+        printf 'what could not be checked:\n%s\n' "$LANDED_UNCERTAIN_REASONS" >&2
+        echo "Restore access to the remote or the pull request and rerun teardown, or push the branch so the work is provably safe." >&2
+        return 1
+        ;;
+    esac
   fi
 }
 
