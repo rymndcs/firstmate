@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# Keep every test job offline from the operator's shared daemon and live quota
+# providers, including tests that do not source tests/lib.sh.
+env:
+  FM_NOMISTAKES_DAEMON_DISABLE: "1"
+  FM_QUOTA_AXI_READING_DISABLE: "1"
+
 jobs:
   lint:
     name: Lint shell scripts
@@ -32,6 +38,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - name: Verify offline suite guards
+        run: |
+          set -eu
+          [ "$FM_NOMISTAKES_DAEMON_DISABLE" = 1 ]
+          [ "$FM_QUOTA_AXI_READING_DISABLE" = 1 ]
       - name: Prove complete regression partition
         run: bin/fm-test-run.sh --check-coverage
 
