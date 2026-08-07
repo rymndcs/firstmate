@@ -36,14 +36,30 @@ If the worktree or ownership cannot be reconciled safely, leave all state intact
 
 ## Live-endpoint escalation
 
-Escalate in order:
+Diagnose first, then remedy the cause on the SAME process before ever considering termination; only terminate once remedy is genuinely exhausted.
+An unresponsive or truly dead endpoint has no cause to remedy - skip straight to termination for those rather than stretching this into a slower loop.
 
-1. Peek the pane.
-2. If the crewmate is waiting on a question its brief already answers, answer in one line via `FM_HOME=<this-firstmate-home> bin/fm-send.sh` from an active firstmate session unless `FM_HOME` is already set to the active firstmate home.
-3. If the crewmate is confused or looping, interrupt with the adapter's interrupt key, then redirect with one corrective line.
+### 1. Diagnose
+
+Peek the pane and work out why it stalled: waiting on a question, confused or looping, or genuinely unresponsive/dead.
+
+### 2. Remedy (keep the same process running)
+
+1. If the crewmate is waiting on a question its brief already answers, answer in one line via `FM_HOME=<this-firstmate-home> bin/fm-send.sh` from an active firstmate session unless `FM_HOME` is already set to the active firstmate home.
+2. If the crewmate is confused or looping, interrupt with the adapter's interrupt key, then redirect with one corrective line.
    For example, for a single-Escape adapter: `FM_HOME=<this-firstmate-home> bin/fm-send.sh <window> --key Escape`.
-4. If the crewmate is genuinely wedged after redirection, exit the agent with the adapter's exit command and relaunch with the same brief plus a `progress so far` note appended to it.
-   Genuine wedging means looping, unresponsive, repeating the same obstacle, or truly dead.
+3. Peek again after answering or redirecting: if the crewmate resumed making progress, the cause was remedied - the same process continues, so stop the escalation here and do not proceed to `### 3. Terminate` below or to any other escalation step.
    A low context reading is not wedging; modern harnesses auto-compact and keep going.
+
+### 3. Terminate (only once remedy failed to unstick it, or the endpoint is unresponsive/dead)
+
+Genuine wedging means still looping, unresponsive, or repeating the same obstacle after step 2, or an endpoint that was never reachable.
+
+1. Capture why it failed before every exit, not only the first: note what it tried, how far it got, and the error(s) it kept hitting, and append that short summary to `data/<id>/recovery-context.md` (outside the worktree, so it survives teardown same as a scout's `report.md`; the pane, worktree, and `state/` do not).
+   Append rather than overwrite, and label each block with the termination it belongs to (`Attempt 1:`, `Attempt 2:`), so a reader can tell what killed the latest attempt from what killed the earlier one.
+   Read the pane when there is one; when there is no readable pane - an endpoint that was never reachable, or otherwise dead - source the block from recorded state instead, using `bin/fm-crew-state.sh <id>` and its last-known reading as in the reconciliation section above.
+   If even that yields nothing capturable, say so in the block (`Attempt N: no context available, endpoint never reachable`) rather than writing nothing; silence must never be indistinguishable from a skipped step.
+   This is the only record of what the process learned - it cannot be reconstructed once the pane is gone.
+2. Exit the agent with the adapter's exit command and relaunch with the same brief plus a `progress so far` note drawn from the captured context.
    The worktree and commits persist, so relaunch is cheap.
-5. If a second relaunch fails too, write `failed` to the backlog and tell the captain the plain failure, preserved work, and consequence using `AGENTS.md` section 9; do not mention metadata, harness, window, or worktree unless the path itself is needed for action.
+3. If a second relaunch fails too, write `failed` to the backlog and tell the captain the plain failure, preserved work, consequence, and the captured recovery context - citing the latest attempt's block for what actually killed it - using `AGENTS.md` section 9; do not mention metadata, harness, window, or worktree unless the path itself is needed for action.
