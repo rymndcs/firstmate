@@ -411,6 +411,7 @@ case "$MODE" in
 Delivery contract: mode=direct-PR$BRANCH_CONTRACT
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
+Before opening the PR, read and follow \`$FM_ROOT/.agents/skills/pr-description-summarize/SKILL.md\` and use its summary as the PR body - never paste this brief or the accepted requirement list into the body.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\`, then append \`done: PR {url}\` to the status file and stop.
 Do NOT run /no-mistakes. The configured merge authority decides whether to merge the PR; firstmate relays the outcome.
 EOF
@@ -449,6 +450,8 @@ Two firstmate-specific rules layer on top of that guidance:
   Firstmate applies the authority contract in its \`AGENTS.md\` and obtains any required captain decision.
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
+
+Once the pipeline opens the PR, before reporting done: read and follow \`$FM_ROOT/.agents/skills/pr-description-summarize/SKILL.md\` and replace the PR's published \`## Intent\` section with its summary via \`gh-axi pr edit\`, leaving every section from Risk Assessment onward untouched. This does not change what \`--intent\` received.
 
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
 EOF
