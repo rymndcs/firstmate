@@ -81,6 +81,15 @@ cd "$ROOT" || exit 1
 # The test that owns the reading contract unsets this and supplies its own stub.
 export FM_QUOTA_AXI_READING_DISABLE=${FM_QUOTA_AXI_READING_DISABLE:-1}
 
+# Runner-level floor for the shared no-mistakes daemon ensure
+# (bin/fm-nomistakes-daemon.sh), symmetric with the reading floor above: the
+# real-environment tests that drive fm-teardown.sh and fm-bootstrap.sh directly
+# do not all source tests/lib.sh, where the same neutralizer is set for the
+# sourcing suite. Without this those runs would reach the machine's ONE real
+# shared daemon - the very daemon serving the gate that runs this suite. The
+# tests that own the daemon contract unset this and supply their own stub.
+export FM_NOMISTAKES_DAEMON_DISABLE=${FM_NOMISTAKES_DAEMON_DISABLE:-1}
+
 MODE=
 LIST_ONLY=0
 LIST_FAMILIES=0

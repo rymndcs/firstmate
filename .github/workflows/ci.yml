@@ -9,10 +9,12 @@ on:
 permissions:
   contents: read
 
-# Keep every test job offline from the operator's shared daemon and live quota
-# providers, including tests that do not source tests/lib.sh.
+# Inherited by every job: no lane may reach a live quota provider, including the
+# real-environment tests that drive fm-spawn.sh directly and so never source
+# tests/lib.sh, where the same neutralizer is set for the sourcing suite. Every
+# lane that executes tests re-asserts this in its own run step, so a later job-
+# or step-level override fails the lane instead of quietly taking it online.
 env:
-  FM_NOMISTAKES_DAEMON_DISABLE: "1"
   FM_QUOTA_AXI_READING_DISABLE: "1"
 
 jobs:
@@ -38,11 +40,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Verify offline suite guards
-        run: |
-          set -eu
-          [ "$FM_NOMISTAKES_DAEMON_DISABLE" = 1 ]
-          [ "$FM_QUOTA_AXI_READING_DISABLE" = 1 ]
       - name: Prove complete regression partition
         run: bin/fm-test-run.sh --check-coverage
 
@@ -71,6 +68,10 @@ jobs:
       - name: Run portable parallel shard 1
         run: |
           set -eu
+          [ "${FM_QUOTA_AXI_READING_DISABLE:-}" = 1 ] || {
+            echo "::error::FM_QUOTA_AXI_READING_DISABLE must be 1 in this step; refusing to run the suite against live quota providers"
+            exit 1
+          }
           mkdir -p "$RUNNER_TEMP/fm-test"
           bin/fm-test-run.sh --lane portable-parallel-1 \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-1.json"
@@ -103,6 +104,10 @@ jobs:
       - name: Run portable parallel shard 2
         run: |
           set -eu
+          [ "${FM_QUOTA_AXI_READING_DISABLE:-}" = 1 ] || {
+            echo "::error::FM_QUOTA_AXI_READING_DISABLE must be 1 in this step; refusing to run the suite against live quota providers"
+            exit 1
+          }
           mkdir -p "$RUNNER_TEMP/fm-test"
           bin/fm-test-run.sh --lane portable-parallel-2 \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-parallel-2.json"
@@ -163,6 +168,10 @@ jobs:
           FM_SERIAL_SHARD: ${{ matrix.shard }}
         run: |
           set -eu
+          [ "${FM_QUOTA_AXI_READING_DISABLE:-}" = 1 ] || {
+            echo "::error::FM_QUOTA_AXI_READING_DISABLE must be 1 in this step; refusing to run the suite against live quota providers"
+            exit 1
+          }
           mkdir -p "$RUNNER_TEMP/fm-test"
           bin/fm-test-run.sh --lane "$FM_SERIAL_LANE" \
             --json "$RUNNER_TEMP/fm-test/fm-test-timing-portable-serial-${FM_SERIAL_SHARD}.json"
@@ -265,6 +274,10 @@ jobs:
       - name: Run real-Herdr family (serial, required)
         run: |
           set -eu
+          [ "${FM_QUOTA_AXI_READING_DISABLE:-}" = 1 ] || {
+            echo "::error::FM_QUOTA_AXI_READING_DISABLE must be 1 in this step; refusing to run the suite against live quota providers"
+            exit 1
+          }
           mkdir -p "$RUNNER_TEMP/fm-test"
           # Serial only. Fail if any script reports herdr not found. Live
           # harness credential tests stay outside this family (opt-in env only).
@@ -343,6 +356,10 @@ jobs:
           PATH: /bin:/usr/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin
         run: |
           set -eu
+          [ "${FM_QUOTA_AXI_READING_DISABLE:-}" = 1 ] || {
+            echo "::error::FM_QUOTA_AXI_READING_DISABLE must be 1 in this step; refusing to run the suite against live quota providers"
+            exit 1
+          }
           case "$BASH_VERSION" in
             3.2.57*) ;;
             *) echo "::error::expected stock macOS Bash 3.2.57, got $BASH_VERSION"; exit 1 ;;
