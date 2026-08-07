@@ -451,7 +451,7 @@ Two firstmate-specific rules layer on top of that guidance:
   When the decision comes back, feed it to the gate with \`no-mistakes axi respond\` and let the pipeline apply it - do not route the question to "the user" or implement the fix yourself.
 - Avoid \`--yes\`: it would silently bypass firstmate's authority check and any required captain escalation.
 
-Once the run reports \`outcome: checks-passed\`, before reporting done: read and follow \`$FM_ROOT/.agents/skills/pr-description-summarize/SKILL.md\` and replace the PR's published \`## Intent\` section with its summary via \`gh-axi pr edit\`, leaving every section from Risk Assessment onward untouched. This does not change what \`--intent\` received.
+Once the run reports \`outcome: checks-passed\`, before reporting done: read and follow \`$FM_ROOT/.agents/skills/pr-description-summarize/SKILL.md\` and replace the PR's published body from \`## Intent\` up to (not including) \`## Pipeline\` with its summary via \`gh-axi pr edit\`, leaving \`## Pipeline\` byte-identical. This does not change what \`--intent\` received.
 
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), append \`done: PR {url} checks green\` and stop. You are finished.
 EOF
