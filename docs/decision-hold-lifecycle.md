@@ -5,7 +5,7 @@ This document records the deterministic mechanism, structured surfaces, and priv
 
 ## Mechanism
 
-`bin/fm-decision-hold.sh` is the only lifecycle command for an investigation or visual review's unresolved captain decisions.
+`bin/fm-decision-hold.sh` is the only lifecycle command for every unresolved captain decision the policy owner scopes to it: an investigation's or visual review's, and a no-mistakes ship run's requirement left unreconciled against its recorded intent.
 The command runs tasks-axi in the active `FM_HOME`, so the existing backlog remains the only durable work database and a secondmate-owned decision stays in the secondmate home.
 It never reads report bodies, review artifacts, terminal output, or chat.
 
@@ -43,11 +43,13 @@ The projection remains read-only and does not inspect historical prose.
 Verification date: 2026-07-14.
 Additional quoted `blocked_by` regression verification date: 2026-07-17.
 Plural blocker-readiness and mixed-home projection verification date: 2026-07-22.
+Ship reconciliation wake keying verification date: 2026-08-08.
 
 The focused end-to-end regression uses only synthetic `sample` identities and decision text.
 It begins with a completed investigation and visual review whose genuine unresolved choice exists only in the report.
 The initial Bearings snapshot correctly has no open decision, and the new teardown gate refuses to erase the source.
 A later regression covers tasks-axi's quoted multi-entry `blocked_by` output so `resolve` matches the first, middle, and last ids and rejects a genuinely absent id.
+A further regression covers a ship worker's unreconciled-requirement wake: the keyed status line opens the same key its durable hold already owns instead of an unowned `default`, so the completion gate still passes on the next review pass and the hold stays open.
 
 The final verification commands and their exact summarized outputs follow.
 
@@ -60,6 +62,7 @@ ok - completion and verification validate origins before constructing paths
 ok - ended visual review follows the same decision-hold completion owner
 ok - resolved findings and decision-like prose do not create false holds
 ok - terminal single-owner stale status decisions do not block empty inventory
+ok - a ship reconciliation wake stays on the identity its durable hold owns
 ok - main-home and secondmate-home captain holds remain correctly routed
 ok - resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id
 

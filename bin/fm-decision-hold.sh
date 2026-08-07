@@ -25,7 +25,9 @@
 #   fm-decision-hold.sh resolve <origin-id> <decision-key> \
 #     --decision-file <path> --routed-to <task-id> [--routed-to <task-id>...]
 #
-# `complete` is the shared investigation and visual-review completion gate.
+# `complete` is the shared completion gate for every review pass the policy owner
+# scopes here: investigations, visual reviews, and a ship run's requirement left
+# unreconciled against its recorded intent.
 # `--none` is an explicit semantic attestation that the just-reviewed surface has
 # no unresolved captain decision. Later review passes may add keys; a live task's
 # metadata inventory is unioned idempotently. A post-teardown visual review can
