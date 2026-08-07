@@ -98,10 +98,11 @@ gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${mer
   || MERGE_STATUS=$?
 
 # A confirmed merge IS the Done transition, so it happens here rather than as a
-# step an agent has to remember afterwards. bin/fm-linear.sh is silent for an
-# unconfigured home or a task with no Linear identifier, reports loudly on
-# stderr when a configured update fails, and can never unmake a merge that
-# already landed. fm-pr-check.sh above owns the In Review transition.
+# step an agent has to remember afterwards. bin/fm-linear.sh is silent for a
+# task with no Linear identifier, nudges on stderr for a resolvable issue with
+# no API key configured, reports loudly on stderr when a configured update
+# fails, and can never unmake a merge that already landed. fm-pr-check.sh above
+# owns the In Review transition.
 if [ "$MERGE_STATUS" -eq 0 ] && ! caller_defers_merge "$@"; then
   "$SCRIPT_DIR/fm-linear.sh" transition "$ID" 'done' || true
 fi

@@ -18,10 +18,16 @@
 # CREDENTIAL
 # The key is the first line of the effective home's local, gitignored
 # config/linear-api-key (FM_CONFIG_OVERRIDE, else $FM_HOME/config), a Linear
-# API key. Absent, unreadable, or empty means the feature is OFF: exit 0, no
-# output, no network, firstmate behaves exactly as it did before. The key is
-# never printed: it reaches curl only through a 0600 temp header file rather
-# than argv, and any Linear-supplied message is redacted before it is reported.
+# API key. Absent, unreadable, or empty means the feature is OFF: no network,
+# exit 0, firstmate behaves exactly as it did before. A task with no resolvable
+# issue stays completely silent even then, since most firstmate tasks are not
+# Linear-tracked. A task that DOES resolve to an issue instead prints one
+# `LINEAR: no API key configured - move <identifier> to <state> yourself` line
+# to stderr and still exits 0, so the transition that would have happened is
+# never silently lost - firstmate sees the line and can make the move itself
+# through its own Linear connection. The key is never printed: it reaches curl
+# only through a 0600 temp header file rather than argv, and any Linear-supplied
+# message is redacted before it is reported.
 # This file is local to its home and is NOT part of secondmate inherited
 # configuration, because pushing a credential to another host is a decision for
 # the captain rather than a side effect of provisioning.
@@ -61,9 +67,11 @@
 # A completed transition prints one `LINEAR: <identifier> -> <state>` line and
 # exits 0. A configured key that then fails - missing curl or jq, rejected
 # auth, network error, unknown issue, no matching workflow state, refused
-# update - prints one `LINEAR: ...` line and exits 1. Callers must invoke it so
-# that failure never blocks their own operation: a spawn still spawns and a
-# merge still merges while Linear is unreachable.
+# update - prints one `LINEAR: ...` line and exits 1. An unconfigured key with
+# a resolvable issue prints one `LINEAR: no API key configured - move
+# <identifier> to <state> yourself` line and exits 0; see CREDENTIAL. Callers
+# must invoke it so that failure never blocks their own operation: a spawn
+# still spawns and a merge still merges while Linear is unreachable or unset.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -87,6 +95,7 @@ ISSUE_NUMBER=
 STATE_NAMES=
 STATE_FALLBACK_TYPE=
 TARGET_RANK=
+TARGET_LABEL=
 WORK=
 AUTH_HEADER=
 
@@ -159,16 +168,19 @@ transition_targets() {  # <transition>
       STATE_NAMES='["In Progress","Started"]'
       STATE_FALLBACK_TYPE=started
       TARGET_RANK=1
+      TARGET_LABEL='In Progress'
       ;;
     in-review)
       STATE_NAMES='["In Review","Code Review"]'
       STATE_FALLBACK_TYPE=
       TARGET_RANK=2
+      TARGET_LABEL='In Review'
       ;;
     done)
       STATE_NAMES='["Done","Completed","Merged"]'
       STATE_FALLBACK_TYPE=completed
       TARGET_RANK=3
+      TARGET_LABEL='Done'
       ;;
     *) return 1 ;;
   esac
@@ -282,10 +294,25 @@ cmd_transition() {  # <task-id> <transition>
   transition_targets "$transition" \
     || { echo "error: unknown transition '$transition'" >&2; exit 2; }
 
-  # Unconfigured and not-Linear-tracked are both ordinary, silent, and free.
-  read_api_key || exit 0
-  resolve_identifier "$id" || exit 0
-  IDENT="$TEAM_KEY-$ISSUE_NUMBER"
+  # Resolve the identifier before the key check, since the key check needs to
+  # know whether it is silent (not Linear-tracked) or worth a nudge (Linear-
+  # tracked but unconfigured); resolution alone is local and does no network.
+  if resolve_identifier "$id"; then
+    IDENT="$TEAM_KEY-$ISSUE_NUMBER"
+  else
+    IDENT=
+  fi
+
+  # Not-Linear-tracked is always silent. Unconfigured with a resolvable issue
+  # is no longer silent: say so, so the transition that would have happened is
+  # not just forgotten.
+  read_api_key || {
+    [ -z "$IDENT" ] \
+      || printf 'LINEAR: no API key configured - move %s to %s yourself\n' \
+        "$IDENT" "$TARGET_LABEL" >&2
+    exit 0
+  }
+  [ -n "$IDENT" ] || exit 0
 
   for tool in curl jq; do
     command -v "$tool" >/dev/null 2>&1 \

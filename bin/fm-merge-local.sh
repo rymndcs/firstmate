@@ -73,8 +73,8 @@ after=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
 echo "merged $BRANCH into local $DEFAULT ($before -> $after) in $PROJ"
 
 # The approved landing IS the Done transition, so it happens here rather than as
-# a step an agent has to remember afterwards. bin/fm-linear.sh is silent for an
-# unconfigured home or a task with no Linear identifier, reports loudly on
-# stderr when a configured update fails, and can never unmake the fast-forward
-# that already landed.
+# a step an agent has to remember afterwards. bin/fm-linear.sh is silent for a
+# task with no Linear identifier, nudges on stderr for a resolvable issue with
+# no API key configured, reports loudly on stderr when a configured update
+# fails, and can never unmake the fast-forward that already landed.
 "$SCRIPT_DIR/fm-linear.sh" transition "$ID" 'done' || true

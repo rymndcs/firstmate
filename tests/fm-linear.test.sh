@@ -5,9 +5,13 @@
 #
 # The binding exists so the issue transition happens as part of the lifecycle
 # step rather than as something an agent remembers afterwards, which means the
-# three properties worth pinning are:
-#   - it is INVISIBLE when unconfigured or when the task is not Linear-tracked,
-#     so every home that never configures Linear behaves exactly as before;
+# properties worth pinning are:
+#   - it is INVISIBLE when unconfigured AND the task is not Linear-tracked, so
+#     every home that never configures Linear and never touches Linear work
+#     behaves exactly as before;
+#   - it is a NAMED NUDGE, never a network call, when unconfigured but the task
+#     DOES resolve to a Linear issue, so the transition that would have
+#     happened is never just forgotten;
 #   - it is LOUD but NEVER blocking when a configured update fails, so a Linear
 #     outage cannot stop a spawn, a PR record, or a merge;
 #   - it only ever moves an issue FORWARD, so re-running a lifecycle step
@@ -182,9 +186,28 @@ write_argv_log() {  # <home>
 
 # ---------------------------------------------------------------------------
 
-test_no_configured_key_is_a_clean_noop() {
+test_no_configured_key_and_no_identifier_is_a_clean_noop() {
   local home out rc
-  home=$(make_home no-key)
+  home=$(make_home no-key-no-identifier)
+  fm_write_meta "$home/state/fm-linear-status-binding.meta" \
+    "kind=ship" "branch=fm/fm-linear-status-binding"
+
+  set +e
+  out=$(run_linear "$home" transition fm-linear-status-binding in-progress 2>&1)
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "no-key-no-identifier: an unconfigured home must succeed"
+  [ -z "$out" ] \
+    || fail "no-key-no-identifier: a non-Linear task must print nothing, got: $out"
+  [ ! -s "$home/linear.log" ] \
+    || fail "no-key-no-identifier: an unconfigured home must not reach the network"
+  pass "an unconfigured home with a task that is not Linear-tracked makes no Linear call, says nothing, and succeeds"
+}
+
+test_no_configured_key_but_a_resolvable_issue_warns_without_calling_linear() {
+  local home out rc
+  home=$(make_home no-key-resolvable)
   write_linear_meta "$home" rac125-font
 
   set +e
@@ -192,10 +215,16 @@ test_no_configured_key_is_a_clean_noop() {
   rc=$?
   set -e
 
-  expect_code 0 "$rc" "no-key: an unconfigured home must succeed"
-  [ -z "$out" ] || fail "no-key: an unconfigured home must print nothing, got: $out"
-  [ ! -s "$home/linear.log" ] || fail "no-key: an unconfigured home must not reach the network"
-  pass "an unconfigured home makes no Linear call, says nothing, and succeeds"
+  expect_code 0 "$rc" "no-key-resolvable: an unconfigured home must still succeed"
+  assert_contains "$out" "LINEAR: no API key configured" \
+    "no-key-resolvable: a resolvable issue with no key must be named, not silent"
+  assert_contains "$out" "RAC-125" \
+    "no-key-resolvable: the diagnostic must name the issue"
+  assert_contains "$out" "In Progress" \
+    "no-key-resolvable: the diagnostic must name the target state"
+  [ ! -s "$home/linear.log" ] \
+    || fail "no-key-resolvable: an unconfigured home must never call Linear"
+  pass "an unconfigured home with a resolvable issue names it instead of staying silent, and still calls no network"
 }
 
 test_task_without_identifier_is_a_clean_noop() {
@@ -831,7 +860,8 @@ test_spawn_without_any_linear_issue_stays_silent() {
   pass "a task with no Linear issue anywhere spawns silently and calls nothing"
 }
 
-test_no_configured_key_is_a_clean_noop
+test_no_configured_key_and_no_identifier_is_a_clean_noop
+test_no_configured_key_but_a_resolvable_issue_warns_without_calling_linear
 test_task_without_identifier_is_a_clean_noop
 test_identifier_is_read_from_the_recorded_branch
 test_task_without_a_recorded_branch_is_a_clean_noop
