@@ -97,12 +97,19 @@ example:
 ```sh
 gh-axi pr view <n> --full > /tmp/pr-view.txt
 python3 -c "
-import re
-raw = open('/tmp/pr-view.txt').read()
-m = re.search(r'^  body: \"(.*)\"$', raw, re.S | re.M)
-print(m.group(1).encode().decode('unicode_escape'))
-" > /tmp/pr-body.md
+import json, re
+raw = open('/tmp/pr-view.txt', encoding='utf-8').read()
+m = re.search(r'^  body: (\".*\")$', raw, re.M)
+open('/tmp/pr-body.md', 'w', encoding='utf-8').write(json.loads(m.group(1)))
+"
 ```
+The escaping is JSON-compatible, so decode the whole quoted scalar with `json.loads`
+rather than `unicode_escape`: the latter latin-1-decodes UTF-8 bytes and turns every em
+dash, arrow, and check mark below the summary into mojibake, which would break the
+byte-identical guarantee above. Match without `re.S` so the pattern stays anchored to the
+single `body:` line and cannot swallow a later TOON field that happens to end in a quote,
+and read and write with an explicit `utf-8` encoding so a C locale cannot corrupt or fail
+on non-ASCII.
 Replace only the lead `## Intent` section in that decoded body with the new summary, leave
 every section from `## Risk Assessment` onward byte-identical, and push the merged body back
 with `gh-axi pr edit <n> --body-file <path>`.
