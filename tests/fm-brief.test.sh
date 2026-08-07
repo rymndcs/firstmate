@@ -353,6 +353,16 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD must create a finding when no existing finding carries the reconciliation"
   assert_grep "replacement is authoritative over the stale recorded intent" "$brief" \
     "no-mistakes DOD must make the accepted replacement authoritative over stale intent"
+  assert_grep "escalate to firstmate and stop first, then carry the reconciliation inside the decision firstmate returns" "$brief" \
+    "no-mistakes DOD must order ask-user escalation ahead of a self-issued reconciliation response"
+  assert_grep "A pending reconciliation never authorizes you to answer an ask-user finding yourself." "$brief" \
+    "no-mistakes DOD must not let a pending reconciliation become ask-user authority"
+  assert_grep "CI-ready point or a final outcome with no further gate while an accepted clarification or supersession is still unreconciled" "$brief" \
+    "no-mistakes DOD must cover a run that ends with no further gate to carry the reconciliation"
+  assert_grep "append \`needs-decision: {the unreconciled requirement, in enough detail for firstmate to act}\` (rule 6) and stop" "$brief" \
+    "no-mistakes DOD must escalate an unreconciled requirement instead of dropping it"
+  assert_grep "do not append \`done:\`, never report the unreconciled requirement as validated, and never choose follow-up work versus re-validation yourself" "$brief" \
+    "no-mistakes DOD must keep the follow-up versus re-validation call with firstmate"
   assert_grep "Do not abort or restart solely to refresh \`--intent\`" "$brief" \
     "no-mistakes DOD must not discard an active run merely to refresh recorded intent"
   # The apostrophe in "firstmate's authority check" is now structurally safe
