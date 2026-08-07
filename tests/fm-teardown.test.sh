@@ -52,6 +52,8 @@
 # And the remedy the refusal prints, which is itself a safety surface:
 #   (a5) proven-unlanded refusal    -> names --force behind the captain's explicit OK
 #   (a6) undecidable refusal        -> reports what could not be checked, never --force
+#   (a7) detached HEAD, no pr=, content not in default -> undecidable, never --force
+#        (no branch means no remote and no branch-discovered PR was ever asked)
 #
 # Also covers backlog teardown-lock-race: a git index.lock left in the worktree by a
 # killed crew process (bin/fm-teardown.sh's teardown_treehouse_return).
@@ -67,6 +69,7 @@
 # text at all - which in production had actually succeeded:
 #   (y1) diagnostic-free return failure -> re-run once, teardown completes
 #   (y2) return failure with a real diagnostic -> abort at once, no re-run
+#   (y3) return failure whose diagnostic is on the NEXT line -> abort at once, no re-run
 #
 # And the durability of the wedge context stuck-crewmate-recovery captures before it
 # terminates a crewmate:
@@ -322,6 +325,25 @@ if [ "${1:-}" = return ]; then
   n=$(( $(cat "$TREEHOUSE_ATTEMPT_FILE" 2>/dev/null || echo 0) + 1 ))
   printf '%s' "$n" > "$TREEHOUSE_ATTEMPT_FILE"
   echo "failed to return worktree: git checkout --detach --force refs/remotes/origin/main: fatal: not a valid object name" >&2
+  exit 1
+fi
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+# Like add_diagnosed_failure_treehouse, but the diagnostic arrives on the line AFTER
+# the failed command - the same words, wrapped differently. It is still a real
+# diagnostic, so it must not be mistaken for the diagnostic-free shape.
+add_next_line_diagnosed_failure_treehouse() {
+  local case_dir=$1
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = return ]; then
+  n=$(( $(cat "$TREEHOUSE_ATTEMPT_FILE" 2>/dev/null || echo 0) + 1 ))
+  printf '%s' "$n" > "$TREEHOUSE_ATTEMPT_FILE"
+  echo "failed to return worktree: git checkout --detach --force refs/remotes/origin/main:" >&2
+  echo "fatal: not a valid object name" >&2
   exit 1
 fi
 exit 0
@@ -1350,6 +1372,34 @@ test_every_failed_check_is_reported_on_its_own_line() {
   pass "every check that could not answer is reported on its own line"
 }
 
+test_detached_head_refuses_without_offering_force() {
+  local case_dir rc
+  case_dir=$(make_case detached-head-remedy)
+  write_meta "$case_dir" no-mistakes ship
+  # A crewmate worktree left detached mid-rebase: HEAD is on no named branch, so no
+  # remote and no branch-discovered PR can be asked about this work at all. With no
+  # pr= recorded either, the default-branch comparison is the ONLY check that ran,
+  # and it cannot by itself prove the work would not be destroyed.
+  wt_commit_file "$case_dir" feature.txt hello "add feature"
+  git -C "$case_dir/wt" checkout -q --detach HEAD
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "detached-head-remedy: teardown should refuse work it never managed to check"
+  assert_grep "cannot establish" "$case_dir/stderr" \
+    "detached-head-remedy: refusal claimed a verdict it never reached"
+  assert_grep "detached HEAD" "$case_dir/stderr" \
+    "detached-head-remedy: refusal did not name the check that could not run"
+  assert_no_grep "--force" "$case_dir/stderr" \
+    "detached-head-remedy: teardown suggested discarding work whose remotes were never consulted"
+  [ -f "$case_dir/state/task-x1.meta" ] \
+    || fail "detached-head-remedy: teardown erased task records despite refusing"
+  pass "a detached worktree whose checks could not run refuses without suggesting --force"
+}
+
 test_diagnostic_free_return_failure_is_rerun_and_completes() {
   local case_dir rc attempt_file
   case_dir=$(make_case return-empty-diagnostic)
@@ -1404,6 +1454,35 @@ test_diagnosed_return_failure_still_aborts_without_retrying() {
   [ -f "$case_dir/state/task-x1.meta" ] \
     || fail "return-real-diagnostic: teardown erased task records despite aborting"
   pass "a return failure that carries a real diagnostic still aborts immediately"
+}
+
+test_return_failure_diagnosed_on_the_next_line_still_aborts_without_retrying() {
+  local case_dir rc attempt_file
+  case_dir=$(make_case return-wrapped-diagnostic)
+  write_meta "$case_dir" no-mistakes ship
+  wt_commit "$case_dir" "shippable work"
+  git -C "$case_dir/wt" push -q origin fm/task-x1
+  git -C "$case_dir/project" fetch -q origin
+
+  # The diagnostic is on the line after the failed command. Judged line by line that
+  # command line looks diagnostic-free and would earn a destructive re-run; the
+  # boundary is that ANY real diagnostic aborts at once.
+  add_next_line_diagnosed_failure_treehouse "$case_dir"
+  attempt_file="$case_dir/treehouse-attempts"
+  : > "$attempt_file"
+
+  set +e
+  TREEHOUSE_ATTEMPT_FILE="$attempt_file" \
+    run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 1 "$rc" "return-wrapped-diagnostic: a genuine return failure must still abort"
+  assert_grep "teardown aborted" "$case_dir/stderr" \
+    "return-wrapped-diagnostic: teardown did not abort loudly"
+  [ "$(cat "$attempt_file")" = 1 ] \
+    || fail "return-wrapped-diagnostic: expected exactly 1 return attempt, got $(cat "$attempt_file")"
+  pass "a return failure whose diagnostic lands on the next line still aborts without a re-run"
 }
 
 test_dirty_worktree_refuses() {
@@ -2516,8 +2595,10 @@ test_one_line_difference_from_landed_content_still_refuses
 test_proven_unlanded_refusal_names_force_as_the_captain_s_call
 test_undecidable_landing_refuses_without_offering_force
 test_every_failed_check_is_reported_on_its_own_line
+test_detached_head_refuses_without_offering_force
 test_diagnostic_free_return_failure_is_rerun_and_completes
 test_diagnosed_return_failure_still_aborts_without_retrying
+test_return_failure_diagnosed_on_the_next_line_still_aborts_without_retrying
 test_dirty_worktree_refuses
 test_gh_error_and_content_absent_refuses
 test_stale_index_lock_cleared_and_teardown_succeeds

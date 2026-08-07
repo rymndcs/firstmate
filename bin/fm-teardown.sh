@@ -53,6 +53,15 @@
 #     whether the configured checks ANSWERED, not on whether they looked everywhere.
 #   - ls-remote proves the remote holds the branch at that instant; a later
 #     force-push or branch deletion can still remove it afterwards.
+#   - Only the worktree's OWN branch is refreshed from its remote, so the `landed`
+#     fast path (nothing left once HEAD is measured against refs/remotes/*) still
+#     trusts local remote-tracking refs for every OTHER branch. A stale ref for a
+#     branch since renamed or deleted on the remote can therefore still read as
+#     landed.
+#   - A worktree on no named branch (a detached HEAD) has nothing to ask the remotes
+#     or the branch-based PR lookup about, so those checks cannot answer. A recorded
+#     pr= and the default-branch comparison can still PROVE landed there; when they
+#     do not, the verdict is `unknown` rather than `unlanded`.
 #   - Untracked and uncommitted files are outside this test; the separate dirty check
 #     owns them (and deliberately ignores .claude/ and the turn-end markers).
 #
@@ -145,6 +154,8 @@
 # this point, so believing an unevidenced failure strands a half-returned worktree
 # with a dead agent. The re-run IS the verification: if it succeeds the return is
 # done, and if it fails with any real diagnostic teardown aborts on that instead.
+# The shape is judged over the whole captured output, so a diagnostic printed on the
+# following line still counts as one and still aborts on the first attempt.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -646,14 +657,21 @@ LANDED_UNCERTAIN=0
 LANDED_UNCERTAIN_REASONS=
 LANDED_REMAINING=
 LANDED_PR_HEAD=
+LANDED_NO_BRANCH_REASON="this worktree is on no named branch (a detached HEAD), so no remote and no branch-discovered pull request could be consulted about this work"
 
 landed_note_uncertain() {
   LANDED_UNCERTAIN=1
-  if [ -n "$LANDED_UNCERTAIN_REASONS" ]; then
-    LANDED_UNCERTAIN_REASONS=$(printf '%s\n  %s' "$LANDED_UNCERTAIN_REASONS" "$1")
-  else
+  if [ -z "$LANDED_UNCERTAIN_REASONS" ]; then
     LANDED_UNCERTAIN_REASONS="  $1"
+    return 0
   fi
+  # One line per DISTINCT failed check: the same unmatchable commit is retried
+  # against every candidate ref, and repeating its line once per ref would read to
+  # the operator as several different checks having failed.
+  if printf '%s\n' "$LANDED_UNCERTAIN_REASONS" | grep -qxF "  $1"; then
+    return 0
+  fi
+  LANDED_UNCERTAIN_REASONS=$(printf '%s\n  %s' "$LANDED_UNCERTAIN_REASONS" "$1")
 }
 
 # Run a git command that talks to a remote. Teardown is non-interactive, so a
@@ -668,9 +686,15 @@ git_remote_op() {
 # this worktree happened to fetch last. ls-remote's exit 2 is a real answer ("that
 # remote does not have this branch"); every other failure means the remote could
 # not be consulted, which is uncertainty, not absence.
+# A worktree with no resolvable branch (a detached HEAD, e.g. one left mid-rebase)
+# gives the remotes nothing to be asked ABOUT, which is uncertainty of the same
+# kind: no remote answered, so "on no remote" was never established.
 refresh_remote_branch_refs() {
   local branch=$1 remote rc remotes
-  [ -n "$branch" ] && [ "$branch" != HEAD ] || return 0
+  if [ -z "$branch" ] || [ "$branch" = HEAD ]; then
+    landed_note_uncertain "$LANDED_NO_BRANCH_REASON"
+    return 0
+  fi
   if ! remotes=$(git -C "$WT" remote 2>/dev/null); then
     landed_note_uncertain "this worktree's remotes could not be listed"
     return 0
@@ -709,11 +733,12 @@ EOF
 
 # Resolve the PR number for a worktree branch via gh-axi. Echoes the number and
 # returns 0 on a single match. Returns 2 when gh-axi answered and there is no such
-# PR (a real answer) and 1 when the lookup itself failed (no answer at all), so the
-# caller can tell "no PR" apart from "could not ask".
+# PR (a real answer), 1 when the lookup itself failed (no answer at all), and 3 when
+# there is no branch to look one up by, so the caller can tell "no PR" apart from
+# "could not ask" apart from "there was nothing to ask about".
 pr_number_from_branch() {
   local branch=$1 out n
-  [ -n "$branch" ] && [ "$branch" != HEAD ] || return 2
+  [ -n "$branch" ] && [ "$branch" != HEAD ] || return 3
   out=$( cd "$WT" && gh-axi pr list --state all --head "$branch" --limit 1 2>/dev/null ) || return 1
   n=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*\([0-9][0-9]*\),.*/\1/p' | head -1)
   [ -n "$n" ] || return 2
@@ -742,7 +767,7 @@ ensure_commit_object() {
   git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null && return 0
   n=$(pr_number_from_target "$target") || return 1
   git -C "$WT" remote get-url origin >/dev/null 2>&1 || return 1
-  git -C "$WT" fetch --quiet origin "refs/pull/$n/head" >/dev/null 2>&1 || return 1
+  git_remote_op fetch --quiet origin "refs/pull/$n/head" >/dev/null 2>&1 || return 1
   git -C "$WT" cat-file -e "$commit^{commit}" 2>/dev/null
 }
 
@@ -799,9 +824,11 @@ work_content_is_in_ref() {
 # and return 0; return non-zero when there is none. MERGED and OPEN both count: an
 # open PR's head lives on the forge, so it is a durable copy of the content just
 # like a pushed branch. Resolves the PR from the recorded pr= URL first, then from
-# the branch name. A lookup that FAILS is recorded as uncertainty; a lookup that
-# answers "no such PR", or a PR that is closed without merging, is a real answer and
-# is not. The answer travels through a variable rather than stdout precisely so that
+# the branch name. A lookup that FAILS - or that has no branch to look one up by -
+# is recorded as uncertainty; a lookup that answers "no such PR", or a PR that is
+# closed without merging, is a real answer and is not. A recorded pr= still resolves
+# without a branch, so a detached worktree can still be PROVEN landed by its PR.
+# The answer travels through a variable rather than stdout precisely so that
 # uncertainty is recorded in THIS shell instead of a command substitution's subshell.
 pr_head_commit() {
   local branch=$1 target view state head rc
@@ -812,8 +839,11 @@ pr_head_commit() {
     :
   else
     rc=$?
-    [ "$rc" -eq 2 ] \
-      || landed_note_uncertain "the pull request lookup for $branch failed, so the forge could not be asked whether it already has this work"
+    case "$rc" in
+      2) ;;
+      3) landed_note_uncertain "$LANDED_NO_BRANCH_REASON" ;;
+      *) landed_note_uncertain "the pull request lookup for $branch failed, so the forge could not be asked whether it already has this work" ;;
+    esac
     return 1
   fi
   [ -n "$target" ] || return 1
@@ -1058,9 +1088,14 @@ treehouse_return_is_index_lock_error() {
 # identical second run completed. A failure that carries no error text is not
 # evidence that anything failed, and by this point the worker has already been
 # killed, so aborting on it strands a half-returned worktree.
+# Matched against the WHOLE captured output, not line by line: a diagnostic printed
+# on the line AFTER the failed command is still a real diagnostic, so the shape only
+# counts when nothing but blank space follows it.
 treehouse_return_reported_failure_without_diagnostic() {
-  local text=$1
-  printf '%s\n' "$text" | grep -Eq 'failed to return worktree:.*[^[:space:]]:[[:space:]]*$'
+  local text=$1 last
+  last=$(printf '%s\n' "$text" | sed -e 's/[[:space:]]*$//' -e '/^$/d' | tail -1)
+  [ -n "$last" ] || return 1
+  printf '%s\n' "$last" | grep -Eq 'failed to return worktree:.*[^[:space:]]:$'
 }
 
 # Absolute path to the git index lock for a worktree/repo dir, or empty when it
