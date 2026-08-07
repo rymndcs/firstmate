@@ -11,6 +11,7 @@ metadata:
 # Durable unresolved-decision lifecycle
 
 This skill is the single policy owner for unresolved captain decisions discovered by an investigation or visual review.
+A no-mistakes ship worker whose run reaches the CI-ready point or a final outcome while an accepted mid-run requirement is still unreconciled against that run's recorded intent is inside this scope too, and registers and completes that reconciliation here under the same key discipline.
 
 ## Policy
 

@@ -363,12 +363,16 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD must route an unreconciled requirement through the durable decision-hold policy"
   assert_grep "FM_HOME='$home' '$ROOT/bin/fm-decision-hold.sh' hold $id {key} --title {title} --reason {reason}" "$brief" \
     "no-mistakes DOD must register the hold in the originating home under a stable key"
+  assert_grep "keeping {title} and {reason} each on one line and {reason} free of parentheses" "$brief" \
+    "no-mistakes DOD must state the hold argument constraints the script enforces"
   assert_grep "pass that skill's completion gate for this review pass with that key still unresolved" "$brief" \
     "no-mistakes DOD must complete the review pass with the requirement still unresolved"
   assert_grep "the hold is what survives a terminal run state and teardown" "$brief" \
     "no-mistakes DOD must state why the hold outlives the run's own state"
-  assert_grep "append \`needs-decision: {the unreconciled requirement, in enough detail for firstmate to act}\` (rule 6) and stop" "$brief" \
-    "no-mistakes DOD must escalate an unreconciled requirement instead of dropping it"
+  assert_grep "append \`needs-decision [key={key}]: {the unreconciled requirement, in enough detail for firstmate to act}\` (rule 6) under that same key" "$brief" \
+    "no-mistakes DOD must escalate an unreconciled requirement under the key its hold already carries"
+  assert_grep "so the wake and the hold are one decision rather than two" "$brief" \
+    "no-mistakes DOD must keep the status wake and the durable hold on one identity"
   assert_grep "do not append \`done:\`, never report the unreconciled requirement as validated, and never choose follow-up work versus re-validation yourself" "$brief" \
     "no-mistakes DOD must keep the follow-up versus re-validation call with firstmate"
   assert_grep "Do not abort or restart solely to refresh \`--intent\`" "$brief" \

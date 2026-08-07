@@ -410,6 +410,41 @@ test_terminal_single_owner_status_decision_does_not_block_empty_inventory() {
   pass "terminal single-owner stale status decisions do not block empty inventory"
 }
 
+# The no-mistakes ship brief has a worker register a hold for an accepted mid-run
+# requirement it could not reconcile, then append the wake as its last status line.
+# An unkeyed wake opens fold key `default`, which no hold owns: the completion gate
+# then hard-fails on the next review pass and the same item lives in two surfaces.
+test_ship_reconciliation_wake_shares_its_hold_key() {
+  local home id open show
+  home=$(make_home ship-reconcile)
+  id=sample-ship-reconcile
+  mkdir -p "$home/data/$id"
+  tasks_in "$home" add "$id" "Ship a sample change" --kind scout --repo sample --start >/dev/null \
+    || fail "could not create ship backlog fixture"
+  write_origin_meta "$home" "$id" ship
+  printf 'working: pipeline running\n' > "$home/state/$id.status"
+
+  run_decisions "$home" hold "$id" stale-intent \
+    --title "Reconcile a superseded sample requirement" \
+    --reason "an accepted mid-run requirement is unreconciled against recorded intent" \
+    --repo sample >/dev/null || fail "could not register the reconciliation hold"
+  run_decisions "$home" complete "$id" stale-intent >/dev/null \
+    || fail "completion gate rejected the reconciliation inventory"
+
+  printf 'needs-decision [key=stale-intent]: superseded sample requirement unreconciled; PR checks green\n' \
+    >> "$home/state/$id.status"
+  open=$(bash -c '. "$1"; status_open_decisions "$2"' _ \
+    "$ROOT/bin/fm-classify-lib.sh" "$home/state/$id.status")
+  assert_contains "$open" "stale-intent" "the wake must open the same key the hold carries"
+  assert_not_contains "$open" "default" "the wake must not open an unowned default decision"
+
+  run_decisions "$home" complete "$id" stale-intent >/dev/null \
+    || fail "a keyed reconciliation wake poisoned the completion gate on the next review pass"
+  show=$(tasks_in "$home" show "$id-decision-stale-intent" --full)
+  assert_contains "$show" "held: yes" "the reconciliation hold must stay open after the wake"
+  pass "a ship reconciliation wake stays on the identity its durable hold owns"
+}
+
 test_secondmate_hold_stays_in_authoritative_home() {
   local parent mate origin hold json
   parent=$(make_home main-routing)
@@ -558,5 +593,6 @@ test_origin_slug_validation_precedes_path_construction
 test_visual_review_uses_shared_completion_owner
 test_none_inventory_and_resolved_prose_do_not_create_holds
 test_terminal_single_owner_status_decision_does_not_block_empty_inventory
+test_ship_reconciliation_wake_shares_its_hold_key
 test_secondmate_hold_stays_in_authoritative_home
 test_resolve_matches_quoted_blocked_by_edges
