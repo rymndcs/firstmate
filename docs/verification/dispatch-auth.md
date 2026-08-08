@@ -6,7 +6,8 @@ This record supports the dispatch judgment rules in `.agents/skills/quota-array-
 It records only facts that must be re-established when a producer or vendor version changes.
 Task chronology, incident transcripts, and credential metadata stay in private reports or PR evidence.
 
-Firstmate resolves a candidate's provider family, credential surface, and applicable quota by reading the evidence below and reasoning in the open.
+Firstmate resolves a candidate's provider family, credential surface, and applicable capacity by reading the evidence below and reasoning in the open.
+Capacity itself is read from `dispatch-axi`, which carries `quota-axi` as one of its sources; the `quota-axi` facts recorded here are the shape that source supplies and the credential surface `dispatch-axi` does not expose.
 No script maps a model to a provider, a provider to a credential store, or a name prefix to a family, so the facts here are what that reasoning rests on.
 Credential paths below are shown with the home directory replaced by `<home>`.
 
@@ -143,10 +144,244 @@ Observed source statuses are `available`, `expired` (with an `error` slug), and 
 - A `pi:`-prefixed source exists only where Pi holds its own credential for that family (`pi:xai`, `pi:kimi-coding`). Pi's `openai-codex` family has none, because it authenticates through the Codex store that the `codex` provider already lists. A missing `pi:` source is therefore never evidence against a Pi candidate.
 
 Neither this per-source shape nor `state.authStatus` exists before quota-axi 0.1.16.
-`bin/fm-bootstrap.sh` enforces that floor through `bin/fm-quota-axi-lib.sh`.
+`bin/fm-bootstrap.sh` enforces that floor through `bin/fm-dispatch-axi-lib.sh`.
 
 Grok also reports `credits.remaining: 0` alongside `percentRemaining: 41` on a healthy account.
 That zero is a prepaid balance, not the subscription window, and is never headroom.
+
+## The dispatch tool's own surface
+
+Verified 2026-08-08 against the installed dispatch-axi and quota-axi 0.1.17.
+dispatch-axi publishes no version string, so its contract is identified here by the `schemaVersion: 1` it reports in `--json`.
+
+The two commands below record the producer shape without persisting account-specific capacity values:
+
+```sh
+dispatch-axi --json | jq '{schemaVersion, candidateKeys: ([.candidates[0] | keys]), runwayKeys: ([.candidates[0].runway | keys]), rankingKeys: ([.rankings[0] | keys]), top: [.candidates[].evidence | keys] | unique}'
+```
+
+```json
+{
+  "schemaVersion": 1,
+  "candidateKeys": [
+    [
+      "errors",
+      "evidence",
+      "label",
+      "provider",
+      "runway",
+      "source",
+      "warnings"
+    ]
+  ],
+  "runwayKeys": [
+    [
+      "limitingWindow",
+      "projectedExhaustedAt",
+      "projectionBasis",
+      "projectionConfidence",
+      "resetsAt",
+      "runwayHuman",
+      "runwaySeconds",
+      "status"
+    ]
+  ],
+  "rankingKeys": [
+    [
+      "provider",
+      "rank",
+      "runway_human"
+    ]
+  ],
+  "top": [
+    [
+      "balance_usd",
+      "daily_burn_usd",
+      "granted_balance",
+      "history_days",
+      "history_note",
+      "is_available",
+      "topped_up_balance"
+    ],
+    [
+      "effectiveAvailability"
+    ],
+    [
+      "effectivePercentRemaining",
+      "liveWindows",
+      "worstReservePercentPoints"
+    ]
+  ]
+}
+```
+
+```sh
+dispatch-axi --json | jq '{topLevelKeys: keys, degradedSources, unrankedProviders: [.rankings[] | select(.rank == null) | .provider], rankedProviders: [.rankings[] | select(.rank != null) | .provider]}'
+```
+
+```json
+{
+  "topLevelKeys": [
+    "candidates",
+    "degradedSources",
+    "generatedAt",
+    "rankings",
+    "schemaVersion",
+    "warnings"
+  ],
+  "degradedSources": [],
+  "unrankedProviders": [
+    "cursor",
+    "copilot",
+    "grok",
+    "kimi"
+  ],
+  "rankedProviders": [
+    "deepseek",
+    "claude",
+    "codex"
+  ]
+}
+```
+
+```sh
+dispatch-axi --json | jq '[.candidates[] | {provider, source, evidence: (.evidence|keys), runwayStatus: .runway.status, errors}]'
+```
+
+```json
+[
+  {
+    "provider": "deepseek",
+    "source": "balance",
+    "evidence": [
+      "balance_usd",
+      "daily_burn_usd",
+      "granted_balance",
+      "history_days",
+      "history_note",
+      "is_available",
+      "topped_up_balance"
+    ],
+    "runwayStatus": "low_confidence_balance",
+    "errors": []
+  },
+  {
+    "provider": "claude",
+    "source": "window",
+    "evidence": [
+      "effectivePercentRemaining",
+      "liveWindows",
+      "worstReservePercentPoints"
+    ],
+    "runwayStatus": "through_reset",
+    "errors": []
+  },
+  {
+    "provider": "codex",
+    "source": "window",
+    "evidence": [
+      "effectivePercentRemaining",
+      "liveWindows",
+      "worstReservePercentPoints"
+    ],
+    "runwayStatus": "projected_exhaustion",
+    "errors": []
+  },
+  {
+    "provider": "cursor",
+    "source": "unknown",
+    "evidence": [
+      "effectiveAvailability"
+    ],
+    "runwayStatus": "unknown",
+    "errors": [
+      "sqlite3_unavailable",
+      "No effectiveAvailability entries"
+    ]
+  },
+  {
+    "provider": "copilot",
+    "source": "unknown",
+    "evidence": [
+      "effectiveAvailability"
+    ],
+    "runwayStatus": "unknown",
+    "errors": [
+      "GitHub Copilot sign-in required",
+      "No effectiveAvailability entries"
+    ]
+  },
+  {
+    "provider": "grok",
+    "source": "unknown",
+    "evidence": [
+      "effectiveAvailability"
+    ],
+    "runwayStatus": "unknown",
+    "errors": [
+      "Grok sign-in required",
+      "No effectiveAvailability entries"
+    ]
+  },
+  {
+    "provider": "kimi",
+    "source": "unknown",
+    "evidence": [
+      "effectiveAvailability"
+    ],
+    "runwayStatus": "unknown",
+    "errors": [
+      "kimi_credential_unavailable",
+      "No effectiveAvailability entries"
+    ]
+  }
+]
+```
+
+The runway field name differs by container and the difference is load-bearing: `candidates[].runway.runwayHuman` is camelCase, while the parallel `rankings[].runway_human` is snake_case.
+`bin/fm-dispatch-axi-lib.sh` reads the camelCase `candidates[].runway.runwayHuman` and nothing else from `runway`, so that key is the one this record exists to pin.
+`rankings[]` carries a `rank` of `null` for every provider `dispatch-axi` could not measure, which is what the reading records as an unranked candidate rather than dropping it.
+
+The remaining observations are ones no command output can express:
+
+- There is no `--version` and no `--help`. An unrecognized flag is ignored and the human report prints anyway, so any version probe reads a report as a version string. Both `dispatch-axi --version` and `dispatch-axi auth` were run and each printed the ranked report under its `═══ DISPATCH AXI ═══` heading and exited `0`. `bin/fm-bootstrap.sh` therefore presence-checks the tool and `bin/fm-dispatch-axi-lib.sh` validates `schemaVersion` where the tool is read.
+- There is no auth subcommand and no credential field anywhere in the output. `quota-axi auth --json` remains the only per-provider credential surface, which is why the sections above stay authoritative and why `quota-axi` stays a required tool.
+- Per-window percentages, per-window resets, `quotaSemantics.description`, and the named unmeasurable-window lists recorded above are consumed inside `dispatch-axi` and are not passed through on any shape. `liveWindows` still names a model-scoped window such as `model:fable`, which is the granularity signal the selection procedure relies on.
+
+### Evidence shapes
+
+`candidates[].evidence` is not one shape with optional keys, so it must be read by the keys actually present.
+Three shapes appear in the snapshot pasted above.
+
+- Balance, with `source: balance`, observed for `deepseek`: `balance_usd`, `granted_balance`, `topped_up_balance`, `daily_burn_usd`, `is_available`, `history_days`, and an optional `history_note`.
+- Window, with `source: window`, observed for `claude` and `codex`: `effectivePercentRemaining`, `worstReservePercentPoints`, and `liveWindows`. This is the only shape carrying a headroom figure.
+- Sentinel, with `source: unknown` and `runway.status: unknown`, observed for `cursor`, `copilot`, `grok`, and `kimi`: the single key `effectiveAvailability` whose value is the literal string `empty`, alongside an `errors` entry `No effectiveAvailability entries`.
+
+Every command above projects keys only, which drops the one value the selection procedure branches on.
+So the sentinel's value is recorded as output rather than described:
+
+```sh
+dispatch-axi --json | jq -c '[.candidates[] | select(.source == "unknown") | {provider, evidence}]'
+```
+
+```json
+[{"provider":"cursor","evidence":{"effectiveAvailability":"empty"}},{"provider":"copilot","evidence":{"effectiveAvailability":"empty"}},{"provider":"grok","evidence":{"effectiveAvailability":"empty"}},{"provider":"kimi","evidence":{"effectiveAvailability":"empty"}}]
+```
+
+That sentinel is a diagnostic marker meaning `quota-axi` returned no effective-availability entries for that provider.
+It shares a key name with the rich `quotaSemantics.effectiveAvailability` array pinned at the top of this record and nothing else: it carries no `boundedBy`, no `limitingWindowIds`, no `pace`, and no per-scope `runway`.
+Reading it as that array is the inference this paragraph exists to prevent.
+
+The following variants did not occur in this snapshot and are recorded as code-derived claims, not as observed output.
+They were read from `dispatch_axi/normalizer.py` in the `dispatch-axi` project at commit `9d1daa9590d80d88d20ffa7a03701e3cc6230af2`, dated 2026-08-08, against a clean tree.
+That repository has no remote by design, so this SHA is local to this home and resolves on no forge; re-checking these three claims means reading that file in the local clone at that commit.
+It is pinned anyway because it is the only anchor available: `dispatch-axi` publishes no version string, and the `schemaVersion: 1` recorded above does not move when the normalizer changes.
+
+- Window fallback, with `source: window`, `runway.status: window_fallback`, and `runway.projectionBasis: window_fallback`: `liveWindows` only, with no `effectivePercentRemaining` and no `worstReservePercentPoints`, alongside an `errors` entry `No effectiveAvailability entries; using window fallback`. It half-matches the window shape while carrying no headroom figure, which is why the selection procedure must test for the key rather than the `source`.
+- Two further sentinels beside the observed one, each also `source: unknown` with `runway.status: unknown`: `raw_has_quota_semantics` set to `false` with an `errors` entry `No quotaSemantics in provider data`, and the key `effectiveAvailability[0]` set to `not a dict`.
+- An entirely empty `evidence` object for a provider that is neither balance-shaped nor window-shaped, which carries only whatever `errors` the source supplied.
+
+`.agents/skills/quota-array-dispatch/SKILL.md` owns how each shape is handled during selection; this record owns only what the shapes are.
 
 ## Standalone Grok discovery probe
 
@@ -173,6 +408,28 @@ Re-run the two commands above and update this section and the pinned version tog
 `tests/fm-vendor-auth-probe.test.sh` drives the real script against a fake vendor CLI that records every invocation's argv and anything readable on stdin.
 It asserts that the script accepts no harness, model, or provider input, never calls `quota-axi`, exits alike for every probe result because it renders no verdict, invokes only the two fixed non-destructive argv forms with stdin closed, holds a real bound even when the configured bound is zero or malformed, and never echoes raw vendor output.
 `tests/fm-spawn-dispatch-profile.test.sh` owns spawn's deterministic profile and harness refusals.
-`tests/fm-bootstrap.test.sh` owns the quota-axi version-floor diagnostic.
-`tests/fm-quota-array-dispatch-live-e2e.test.sh` drives the public Pi skill-loading interface against one fake `quota-axi --json` snapshot per case.
-It covers the Claude 1 percent versus Codex 55 percent reserve regression, explicit accounting for unmeasurable runway, and the strongest-reasoning constraint.
+`tests/fm-bootstrap.test.sh` owns the quota-axi version-floor diagnostic and the dispatch-axi presence diagnostic, including that bootstrap never invokes dispatch-axi.
+`tests/fm-spawn-dispatch-reading.test.sh` owns the spawn-boundary reading, including that an unrecognized `dispatch-axi` schema records `unavailable` rather than a guessed line, and that a snapshot with no usable candidate still records its named degraded source instead of collapsing to `unavailable`.
+
+That same file also owns the credential-free half of the selection procedure's coverage: the data contract the procedure reads.
+It carries one fixture per evidence shape recorded above and asserts what the reading records for each.
+Shape 1 balance and shape 2 window each record their ranked candidate and its runway.
+Shape 3 window fallback keeps its runway rather than being emptied out, which is the assertion that stops a shape carrying no headroom figure from being read as a figure of zero.
+Shape 4 is covered once per sentinel value, for `effectiveAvailability` holding `empty`, for `raw_has_quota_semantics` holding `false`, and for the key `effectiveAvailability[0]` holding `not a dict`; each is recorded unranked rather than dropped, scored, or allowed to cost the measurable candidate beside it.
+A pair of fixtures pins the camelCase/snake_case split that this record exists to guard: a candidate whose `runway` carries the documented `runwayHuman` records that runway, and an otherwise identical candidate whose `runway` carries only the `runway_human` spelling records `unknown` and does not fall back to the `rankings[]` sibling.
+Without that pair, swapping to the wrong sibling would degrade every provider to `unknown` while `schemaVersion: 1` still validated.
+These cases run on every pull request with no credentials, no network, and no real `dispatch-axi` or `quota-axi` invocation.
+`bin/fm-test-run.sh` maps `.agents/skills/quota-array-dispatch/SKILL.md` to the `backend-dispatch` family for this reason, so editing the selection procedure re-runs them under `--changed`.
+
+`tests/fm-quota-array-dispatch-live-e2e.test.sh` drives the public Pi skill-loading interface against one fake `dispatch-axi --json` snapshot per case, with a fake `quota-axi` beside it that fails and records any call, so a direct capacity read is caught.
+It covers the Claude 1 percent versus Codex 55 percent reserve regression, explicit accounting for an unranked candidate, the strongest-reasoning constraint, and a stated override of a low-confidence cross-shape top rank.
+
+It stays opt-in, and what it covers cannot be reached without credentials.
+The credential-free regression above pins the data the selection rules read; only this one exercises the reasoning over that data.
+That reasoning is the agent's own judgment: reading the ranking together with the evidence printed beside it, applying the rule 5 and rule 6 override contract including a stated override of a low-confidence cross-shape top rank, naming both the rank not taken and the exact field that overrides it, and escalating a genuine tie to the captain instead of breaking it by list order.
+No fixture can assert any of that, because the thing under test is a model's stated reasoning rather than a value in a file.
+
+Running it requires all of the following machine state: `FM_QUOTA_ARRAY_DISPATCH_LIVE_E2E=1`, a `pi` binary on `PATH`, and a working credential for the pinned model `openai-codex/gpt-5.6-sol`.
+It could not be executed in the authoring environment.
+Attempted 2026-08-08; `pi` reports `No API key found for openai-codex.` on this machine, so the third requirement is unmet here and the test gate-skips.
+The pinned model is deliberately not changed to make it run, because the pin is what makes a pass comparable across runs.
