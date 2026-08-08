@@ -27,9 +27,12 @@
 #
 # FM_QUOTA_AXI_READING_DISABLE=1 short-circuits to that same `unavailable`
 # without touching the cache or spawning a process. It exists for firstmate's
-# own test suite (tests/lib.sh), where dozens of tests drive the real fm-spawn
-# and would otherwise reach the machine's real quota-axi and the operator's real
-# ~/.cache/quota-axi state. Nothing in the dispatch path sets it, so the reading
+# own test suite, where dozens of tests drive the real fm-spawn and would
+# otherwise reach the machine's real quota-axi and the operator's real
+# ~/.cache/quota-axi state: bin/fm-test-run.sh floors it for every script it
+# runs, tests/lib.sh plus tests/herdr-test-safety.sh export it for the suites
+# that source them, and .github/workflows/ci.yml sets it workflow-wide so every
+# CI lane inherits it. Nothing in the dispatch path sets it, so the reading
 # stays unavoidable in production; the tests that own this contract unset it and
 # supply their own stub.
 

@@ -10,6 +10,17 @@ set -u
 # which the no-mistakes gate runs from a gate worktree, must be exempt).
 export FM_GATE_REFUSE_BYPASS=1
 
+# Same exemption, same reason, for the two neutralizers tests/lib.sh sets for the
+# sourcing suite. These suites drive the real fm-spawn.sh and fm-teardown.sh, and
+# teardown calls bin/fm-nomistakes-daemon.sh ensure while ship/scout spawns take a
+# dispatch quota reading - so run directly (docs/herdr-backend.md lists them as
+# regression entry points) they would otherwise reach the machine's ONE real
+# shared daemon and the operator's real quota-axi state. The tests that own those
+# two contracts do not source this file; they unset the neutralizer themselves and
+# supply their own stub, so the behavior is still proven.
+export FM_NOMISTAKES_DAEMON_DISABLE=1
+export FM_QUOTA_AXI_READING_DISABLE=1
+
 HERDR_TEST_SAFETY_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$HERDR_TEST_SAFETY_DIR/bin/fm-herdr-lab.sh"
