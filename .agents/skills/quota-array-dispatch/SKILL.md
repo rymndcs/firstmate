@@ -43,8 +43,8 @@ Then, from the snapshot, record against the candidate's provider:
 - `rankings[].rank`, or unranked, and `runway.runwayHuman` with `runway.runwaySeconds`
 - `runway.status`, `runway.projectionConfidence`, `runway.projectionBasis`, `runway.limitingWindow`, `runway.resetsAt`, and `runway.projectedExhaustedAt`
 - `source`, which is `window`, `balance`, or `unknown` - the measurement shape
-- `evidence.effectivePercentRemaining` and `evidence.liveWindows` for a window provider, or `evidence.balance_usd`, `evidence.daily_burn_usd`, and `evidence.history_days` for a balance provider
-- `evidence.worstReservePercentPoints` for later diagnostic tie-breaking
+- `evidence`, read by the keys actually present rather than by an assumed shape, per "Evidence shapes" below
+- `evidence.worstReservePercentPoints` for later diagnostic tie-breaking, where present
 - every entry in that candidate's `warnings` and `errors`
 - the task-completion horizon and the evidence and confidence used to estimate it
 - top-level `degradedSources` and `warnings`, which apply to the whole snapshot
@@ -52,13 +52,35 @@ Then, from the snapshot, record against the candidate's provider:
 `degradedSources` naming a source means the providers that source feeds are absent or unmeasured, not healthy and not empty.
 Grok's prepaid credit balance is unrelated to a percentage window; never read one as the other.
 
+### Evidence shapes
+
+`evidence` is not one shape with optional keys, and `source` alone does not tell you which keys are there.
+Test for the key you are about to read; a candidate carries one of four shapes and two of them half-match another.
+`docs/verification/dispatch-auth.md` records what the shapes are, including which were observed and which are code-derived; the handling below is what binds selection.
+
+1. Balance, with `source: balance`: `evidence.balance_usd`, `evidence.granted_balance`, `evidence.topped_up_balance`, `evidence.daily_burn_usd`, `evidence.is_available`, and `evidence.history_days`.
+   `history_days` is the projection basis, so a small value is a thin basis under rule 5 rather than a reason to discard the candidate.
+2. Window, with `source: window`: `evidence.effectivePercentRemaining`, `evidence.worstReservePercentPoints`, and `evidence.liveWindows`.
+   This is the only shape that carries a headroom figure.
+3. Window fallback, with `source: window` and `runway.status: window_fallback`: `evidence.liveWindows` only, with no `effectivePercentRemaining` and no `worstReservePercentPoints`.
+   It is the shape most easily misread, because `source: window` invites the shape 2 reading of a headroom figure that is not there.
+   Treat that absent headroom as unmeasured disclosed uncertainty under rule 7: never zero, never healthy, and the candidate stays eligible.
+   Its runway is derived from raw window resets rather than the provider's own projection, which is a stated limit under rule 5 on how far its rank can be relied on.
+4. Sentinel, with `source: unknown` and `runway.status: unknown`: one diagnostic key with a matching `errors` entry, either `evidence.effectiveAvailability` holding the literal string `empty`, or `evidence.raw_has_quota_semantics` holding `false`, or the key `effectiveAvailability[0]` holding `not a dict`.
+   An entirely empty `evidence` object is read the same way.
+   `evidence.effectiveAvailability` here means the provider supplied no effective-availability entries at all.
+   It shares a key name with `quota-axi`'s own `effectiveAvailability` array and nothing else: no `boundedBy`, no `limitingWindowIds`, no `pace`, and no per-scope `runway`.
+   A sentinel candidate is disclosed uncertainty under rule 7: it stays eligible and unranked, is never blocked on the sentinel itself, and is never assumed sustainable.
+   Judge its `errors` entry on its own terms, since a sign-in message is uncertainty while an authoritative catalog refusal is rule 1.
+
 ### What the snapshot does not carry
 
 `dispatch-axi` reports one effective figure per provider, not per window.
-`evidence.effectivePercentRemaining` is already the bounded result across that provider's live windows, and `evidence.liveWindows` names which windows produced it, including a model-scoped one such as `model:fable`.
-It does not carry per-window percentages, per-window reset times, `quotaSemantics.description`, or the named unmeasurable-window lists.
+Where `evidence.effectivePercentRemaining` is present it is already the bounded result across that provider's live windows, and `evidence.liveWindows` names which windows produced it, including a model-scoped one such as `model:fable`.
+It does not carry per-window percentages, per-window reset times, `quotaSemantics.description`, or the named unmeasurable-window lists on any shape.
 
-So apply the granularity rule in the form the snapshot supports:
+So apply the granularity rule in the form the snapshot supports.
+Steps 1 and 3 apply to every candidate; step 2 applies only where `evidence.liveWindows` is present, and it bounds a headroom figure only on shape 2, since shape 3 names its live windows while carrying no figure for them to bound.
 
 1. Confirm the candidate's authoritative catalog lists its model and record the provider family the catalog reports.
    A model the authoritative catalog does not list is concrete contradictory evidence: block that candidate and quote the catalog result.

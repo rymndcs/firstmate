@@ -244,6 +244,100 @@ dispatch-axi --json | jq '{topLevelKeys: keys, degradedSources, unrankedProvider
 }
 ```
 
+```sh
+dispatch-axi --json | jq '[.candidates[] | {provider, source, evidence: (.evidence|keys), runwayStatus: .runway.status, errors}]'
+```
+
+```json
+[
+  {
+    "provider": "deepseek",
+    "source": "balance",
+    "evidence": [
+      "balance_usd",
+      "daily_burn_usd",
+      "granted_balance",
+      "history_days",
+      "history_note",
+      "is_available",
+      "topped_up_balance"
+    ],
+    "runwayStatus": "low_confidence_balance",
+    "errors": []
+  },
+  {
+    "provider": "claude",
+    "source": "window",
+    "evidence": [
+      "effectivePercentRemaining",
+      "liveWindows",
+      "worstReservePercentPoints"
+    ],
+    "runwayStatus": "through_reset",
+    "errors": []
+  },
+  {
+    "provider": "codex",
+    "source": "window",
+    "evidence": [
+      "effectivePercentRemaining",
+      "liveWindows",
+      "worstReservePercentPoints"
+    ],
+    "runwayStatus": "projected_exhaustion",
+    "errors": []
+  },
+  {
+    "provider": "cursor",
+    "source": "unknown",
+    "evidence": [
+      "effectiveAvailability"
+    ],
+    "runwayStatus": "unknown",
+    "errors": [
+      "sqlite3_unavailable",
+      "No effectiveAvailability entries"
+    ]
+  },
+  {
+    "provider": "copilot",
+    "source": "unknown",
+    "evidence": [
+      "effectiveAvailability"
+    ],
+    "runwayStatus": "unknown",
+    "errors": [
+      "GitHub Copilot sign-in required",
+      "No effectiveAvailability entries"
+    ]
+  },
+  {
+    "provider": "grok",
+    "source": "unknown",
+    "evidence": [
+      "effectiveAvailability"
+    ],
+    "runwayStatus": "unknown",
+    "errors": [
+      "Grok sign-in required",
+      "No effectiveAvailability entries"
+    ]
+  },
+  {
+    "provider": "kimi",
+    "source": "unknown",
+    "evidence": [
+      "effectiveAvailability"
+    ],
+    "runwayStatus": "unknown",
+    "errors": [
+      "kimi_credential_unavailable",
+      "No effectiveAvailability entries"
+    ]
+  }
+]
+```
+
 The runway field name differs by container and the difference is load-bearing: `candidates[].runway.runwayHuman` is camelCase, while the parallel `rankings[].runway_human` is snake_case.
 `bin/fm-dispatch-axi-lib.sh` reads the camelCase `candidates[].runway.runwayHuman` and nothing else from `runway`, so that key is the one this record exists to pin.
 `rankings[]` carries a `rank` of `null` for every provider `dispatch-axi` could not measure, which is what the reading records as an unranked candidate rather than dropping it.
@@ -252,7 +346,28 @@ The remaining observations are ones no command output can express:
 
 - There is no `--version` and no `--help`. An unrecognized flag is ignored and the human report prints anyway, so any version probe reads a report as a version string. Both `dispatch-axi --version` and `dispatch-axi auth` were run and each printed the ranked report under its `═══ DISPATCH AXI ═══` heading and exited `0`. `bin/fm-bootstrap.sh` therefore presence-checks the tool and `bin/fm-dispatch-axi-lib.sh` validates `schemaVersion` where the tool is read.
 - There is no auth subcommand and no credential field anywhere in the output. `quota-axi auth --json` remains the only per-provider credential surface, which is why the sections above stay authoritative and why `quota-axi` stays a required tool.
-- `candidates[].evidence` for a window provider is `effectivePercentRemaining`, `worstReservePercentPoints`, and `liveWindows` only, as the third `top` entry above shows. Per-window percentages, per-window resets, `quotaSemantics.description`, and the named unmeasurable-window lists recorded above are consumed inside `dispatch-axi` and are not passed through. `liveWindows` still names a model-scoped window such as `model:fable`, which is the granularity signal the selection procedure relies on.
+- Per-window percentages, per-window resets, `quotaSemantics.description`, and the named unmeasurable-window lists recorded above are consumed inside `dispatch-axi` and are not passed through on any shape. `liveWindows` still names a model-scoped window such as `model:fable`, which is the granularity signal the selection procedure relies on.
+
+### Evidence shapes
+
+`candidates[].evidence` is not one shape with optional keys, so it must be read by the keys actually present.
+Three shapes appear in the snapshot pasted above.
+
+- Balance, with `source: balance`, observed for `deepseek`: `balance_usd`, `granted_balance`, `topped_up_balance`, `daily_burn_usd`, `is_available`, `history_days`, and an optional `history_note`.
+- Window, with `source: window`, observed for `claude` and `codex`: `effectivePercentRemaining`, `worstReservePercentPoints`, and `liveWindows`. This is the only shape carrying a headroom figure.
+- Sentinel, with `source: unknown` and `runway.status: unknown`, observed for `cursor`, `copilot`, `grok`, and `kimi`: the single key `effectiveAvailability` whose value is the literal string `empty`, alongside an `errors` entry `No effectiveAvailability entries`.
+
+That sentinel is a diagnostic marker meaning `quota-axi` returned no effective-availability entries for that provider.
+It shares a key name with the rich `quotaSemantics.effectiveAvailability` array pinned at the top of this record and nothing else: it carries no `boundedBy`, no `limitingWindowIds`, no `pace`, and no per-scope `runway`.
+Reading it as that array is the inference this paragraph exists to prevent.
+
+The following variants did not occur in this snapshot and are recorded as code-derived claims, not as observed output, from the producing path `dispatch_axi/normalizer.py` in the `dispatch-axi` project.
+
+- Window fallback, with `source: window`, `runway.status: window_fallback`, and `runway.projectionBasis: window_fallback`: `liveWindows` only, with no `effectivePercentRemaining` and no `worstReservePercentPoints`, alongside an `errors` entry `No effectiveAvailability entries; using window fallback`. It half-matches the window shape while carrying no headroom figure, which is why the selection procedure must test for the key rather than the `source`.
+- Two further sentinels beside the observed one, each also `source: unknown` with `runway.status: unknown`: `raw_has_quota_semantics` set to `false` with an `errors` entry `No quotaSemantics in provider data`, and the key `effectiveAvailability[0]` set to `not a dict`.
+- An entirely empty `evidence` object for a provider that is neither balance-shaped nor window-shaped, which carries only whatever `errors` the source supplied.
+
+`.agents/skills/quota-array-dispatch/SKILL.md` owns how each shape is handled during selection; this record owns only what the shapes are.
 
 ## Standalone Grok discovery probe
 
