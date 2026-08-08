@@ -6,8 +6,9 @@
 # Coverage:
 #   - absent-file markers vs empty-but-present files in the context digest
 #   - the lock-refusal read-only path: banner leads, every mutating step is
-#     skipped (including bootstrap's five mutating sweeps, verified by their
-#     ABSENCE), the digest still completes
+#     skipped (including bootstrap's MUTATING sweeps, verified by their
+#     ABSENCE; bin/fm-bootstrap.sh's header owns their enumeration under
+#     FM_BOOTSTRAP_DETECT_ONLY), the digest still completes
 #   - output section ordering: diagnostics/banners lead, bulk file dumps follow
 #   - context-aware next-step guidance for read-only, AFK, X mode, and normal
 #     watcher ownership
