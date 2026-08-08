@@ -80,6 +80,7 @@ cd "$ROOT" || exit 1
 # the machine's real dispatch-axi and, through it, live provider APIs.
 # The test that owns the reading contract unsets this and supplies its own stub.
 export FM_DISPATCH_AXI_READING_DISABLE=${FM_DISPATCH_AXI_READING_DISABLE:-1}
+export FM_QUOTA_AXI_READING_DISABLE=${FM_QUOTA_AXI_READING_DISABLE:-1}
 
 # Runner-level floor for the shared no-mistakes daemon ensure
 # (bin/fm-nomistakes-daemon.sh), symmetric with the reading floor above: the
