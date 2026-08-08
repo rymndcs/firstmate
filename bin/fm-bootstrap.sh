@@ -672,8 +672,10 @@ install_cmd() {
     gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks" ;;
     tasks-axi|quota-axi) echo "npm install -g $1" ;;
     # dispatch-axi has no published distribution: it lives as a local project in
-    # this home, so the install is an editable install of that clone.
-    dispatch-axi) echo "pip install -e $PROJECTS/dispatch-axi" ;;
+    # this home, so the install is an editable install of that clone. This is the
+    # only install command carrying a filesystem path, and `install` runs it
+    # through eval, so the path is quoted to survive a home directory with a space.
+    dispatch-axi) echo "pip install -e \"$PROJECTS/dispatch-axi\"" ;;
     *) return 1 ;;
   esac
 }

@@ -154,18 +154,105 @@ That zero is a prepaid balance, not the subscription window, and is never headro
 Verified 2026-08-08 against the installed dispatch-axi and quota-axi 0.1.17.
 dispatch-axi publishes no version string, so its contract is identified here by the `schemaVersion: 1` it reports in `--json`.
 
+The two commands below record the producer shape without persisting account-specific capacity values:
+
 ```sh
 dispatch-axi --json | jq '{schemaVersion, candidateKeys: ([.candidates[0] | keys]), runwayKeys: ([.candidates[0].runway | keys]), rankingKeys: ([.rankings[0] | keys]), top: [.candidates[].evidence | keys] | unique}'
-dispatch-axi --version   # not a version surface: prints the ranked report
-dispatch-axi auth        # not an auth surface: prints the ranked report
 ```
 
-Observed:
+```json
+{
+  "schemaVersion": 1,
+  "candidateKeys": [
+    [
+      "errors",
+      "evidence",
+      "label",
+      "provider",
+      "runway",
+      "source",
+      "warnings"
+    ]
+  ],
+  "runwayKeys": [
+    [
+      "limitingWindow",
+      "projectedExhaustedAt",
+      "projectionBasis",
+      "projectionConfidence",
+      "resetsAt",
+      "runwayHuman",
+      "runwaySeconds",
+      "status"
+    ]
+  ],
+  "rankingKeys": [
+    [
+      "provider",
+      "rank",
+      "runway_human"
+    ]
+  ],
+  "top": [
+    [
+      "balance_usd",
+      "daily_burn_usd",
+      "granted_balance",
+      "history_days",
+      "history_note",
+      "is_available",
+      "topped_up_balance"
+    ],
+    [
+      "effectiveAvailability"
+    ],
+    [
+      "effectivePercentRemaining",
+      "liveWindows",
+      "worstReservePercentPoints"
+    ]
+  ]
+}
+```
 
-- `--json` carries `schemaVersion: 1`, one `candidates[]` entry per provider with `provider`, `label`, `source`, `runway`, `evidence`, `warnings`, and `errors`, a parallel `rankings[]` of `{provider, rank, runway_human}` where an unmeasured provider has `rank: null`, plus top-level `warnings` and `degradedSources`.
-- There is no `--version` and no `--help`. An unrecognized flag is ignored and the human report prints anyway, so any version probe reads a report as a version string. `bin/fm-bootstrap.sh` therefore presence-checks the tool and `bin/fm-dispatch-axi-lib.sh` validates `schemaVersion` where the tool is read.
+```sh
+dispatch-axi --json | jq '{topLevelKeys: keys, degradedSources, unrankedProviders: [.rankings[] | select(.rank == null) | .provider], rankedProviders: [.rankings[] | select(.rank != null) | .provider]}'
+```
+
+```json
+{
+  "topLevelKeys": [
+    "candidates",
+    "degradedSources",
+    "generatedAt",
+    "rankings",
+    "schemaVersion",
+    "warnings"
+  ],
+  "degradedSources": [],
+  "unrankedProviders": [
+    "cursor",
+    "copilot",
+    "grok",
+    "kimi"
+  ],
+  "rankedProviders": [
+    "deepseek",
+    "claude",
+    "codex"
+  ]
+}
+```
+
+The runway field name differs by container and the difference is load-bearing: `candidates[].runway.runwayHuman` is camelCase, while the parallel `rankings[].runway_human` is snake_case.
+`bin/fm-dispatch-axi-lib.sh` reads the camelCase `candidates[].runway.runwayHuman` and nothing else from `runway`, so that key is the one this record exists to pin.
+`rankings[]` carries a `rank` of `null` for every provider `dispatch-axi` could not measure, which is what the reading records as an unranked candidate rather than dropping it.
+
+The remaining observations are ones no command output can express:
+
+- There is no `--version` and no `--help`. An unrecognized flag is ignored and the human report prints anyway, so any version probe reads a report as a version string. Both `dispatch-axi --version` and `dispatch-axi auth` were run and each printed the ranked report under its `═══ DISPATCH AXI ═══` heading and exited `0`. `bin/fm-bootstrap.sh` therefore presence-checks the tool and `bin/fm-dispatch-axi-lib.sh` validates `schemaVersion` where the tool is read.
 - There is no auth subcommand and no credential field anywhere in the output. `quota-axi auth --json` remains the only per-provider credential surface, which is why the sections above stay authoritative and why `quota-axi` stays a required tool.
-- `candidates[].evidence` for a window provider is `effectivePercentRemaining`, `worstReservePercentPoints`, and `liveWindows` only. Per-window percentages, per-window resets, `quotaSemantics.description`, and the named unmeasurable-window lists recorded above are consumed inside `dispatch-axi` and are not passed through. `liveWindows` still names a model-scoped window such as `model:fable`, which is the granularity signal the selection procedure relies on.
+- `candidates[].evidence` for a window provider is `effectivePercentRemaining`, `worstReservePercentPoints`, and `liveWindows` only, as the third `top` entry above shows. Per-window percentages, per-window resets, `quotaSemantics.description`, and the named unmeasurable-window lists recorded above are consumed inside `dispatch-axi` and are not passed through. `liveWindows` still names a model-scoped window such as `model:fable`, which is the granularity signal the selection procedure relies on.
 
 ## Standalone Grok discovery probe
 
@@ -193,6 +280,6 @@ Re-run the two commands above and update this section and the pinned version tog
 It asserts that the script accepts no harness, model, or provider input, never calls `quota-axi`, exits alike for every probe result because it renders no verdict, invokes only the two fixed non-destructive argv forms with stdin closed, holds a real bound even when the configured bound is zero or malformed, and never echoes raw vendor output.
 `tests/fm-spawn-dispatch-profile.test.sh` owns spawn's deterministic profile and harness refusals.
 `tests/fm-bootstrap.test.sh` owns the quota-axi version-floor diagnostic and the dispatch-axi presence diagnostic, including that bootstrap never invokes dispatch-axi.
-`tests/fm-spawn-dispatch-reading.test.sh` owns the spawn-boundary reading, including that an unrecognized `dispatch-axi` schema records `unavailable` rather than a guessed line.
+`tests/fm-spawn-dispatch-reading.test.sh` owns the spawn-boundary reading, including that an unrecognized `dispatch-axi` schema records `unavailable` rather than a guessed line, and that a snapshot with no usable candidate still records its named degraded source instead of collapsing to `unavailable`.
 `tests/fm-quota-array-dispatch-live-e2e.test.sh` drives the public Pi skill-loading interface against one fake `dispatch-axi --json` snapshot per case, with a fake `quota-axi` beside it that fails and records any call, so a direct capacity read is caught.
 It covers the Claude 1 percent versus Codex 55 percent reserve regression, explicit accounting for an unranked candidate, the strongest-reasoning constraint, and a stated override of a low-confidence cross-shape top rank.

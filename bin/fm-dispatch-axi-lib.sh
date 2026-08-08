@@ -152,7 +152,6 @@ for (const candidate of data.candidates) {
     : "unknown";
   fields.push(`${name}=${rank}/${runway}`);
 }
-if (fields.length === 1) process.exit(1);
 // Provenance, not prose: a degraded source is recorded by name so a later
 // reader can tell a genuinely empty provider from one whose source never ran.
 const degraded = Array.isArray(data.degradedSources)
@@ -161,6 +160,11 @@ const degraded = Array.isArray(data.degradedSources)
       .map((source) => safe(source.split(":")[0]).slice(0, 40))
       .filter(Boolean))]
   : [];
+// A snapshot carrying no usable candidate is still worth recording when it
+// names a failed source, because that is the case the provenance exists for: a
+// home of window-shaped providers with a broken quota-axi would otherwise read
+// exactly like dispatch-axi never running.
+if (fields.length === 1 && !degraded.length) process.exit(1);
 if (degraded.length) fields.push(`degraded=${degraded.join(",")}`);
 process.stdout.write(fields.join(";"));
 ' 2>/dev/null

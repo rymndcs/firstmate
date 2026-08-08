@@ -335,7 +335,7 @@ When `config/crew-dispatch.json` exists, bootstrap also requires `jq` for dispat
 When X mode is opted in, bootstrap also requires `curl` and `jq` before arming the relay poll shim.
 `tasks-axi`, `dispatch-axi`, and `quota-axi` are required bootstrap tools in every profile, the same class as `lavish-axi`.
 An absent or incompatible `tasks-axi` reports `MISSING: tasks-axi (install: npm install -g tasks-axi)`; when `config/backlog-backend` is not `manual` and compatible `tasks-axi` is on `PATH`, bootstrap stays silent and firstmate uses its verbs for routine backlog mutations, otherwise it hand-edits `data/backlog.md` until installation is approved and completed.
-An absent `dispatch-axi` reports `MISSING: dispatch-axi (install: pip install -e <home>/projects/dispatch-axi)`; firstmate cannot resolve a profile array without it.
+An absent `dispatch-axi` reports `MISSING: dispatch-axi (install: pip install -e "<home>/projects/dispatch-axi")`; firstmate cannot resolve a profile array without it.
 It is presence-checked rather than version-gated because it exposes no `--version` and no `--help`, so a probe would read its ranked report as a version string; `bin/fm-dispatch-axi-lib.sh` owns that reasoning and validates the real contract version where the tool is read.
 An absent or too-old `quota-axi` reports `MISSING: quota-axi (install: npm install -g quota-axi)`.
 That floor exists because 0.1.16 is the first build reporting per-credential auth sources, without which a candidate cannot be judged against the authentication surface it actually uses.

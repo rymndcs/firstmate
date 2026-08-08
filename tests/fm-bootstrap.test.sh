@@ -381,7 +381,7 @@ test_dispatch_axi_is_required_and_not_version_probed() {
   fakebin=$(make_fake_toolchain "$case_dir")
   rm -f "$fakebin/dispatch-axi"
 
-  expected="MISSING: dispatch-axi (install: pip install -e $case_dir/home/projects/dispatch-axi)"
+  expected="MISSING: dispatch-axi (install: pip install -e \"$case_dir/home/projects/dispatch-axi\")"
   out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
     FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
   [ "$out" = "$expected" ] || fail "missing dispatch-axi: expected '$expected', got: $out"

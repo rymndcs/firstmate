@@ -3,8 +3,8 @@
 #
 # These tests drive the public spawn interface through a fake tmux endpoint and
 # a real isolated git worktree. The dispatch-axi stub proves that successful,
-# degraded, failed, timed-out, and unrecognized-schema observations become
-# metadata without changing spawn success.
+# degraded, wholly-degraded, failed, timed-out, and unrecognized-schema
+# observations become metadata without changing spawn success.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -45,6 +45,9 @@ case "${FM_FAKE_DISPATCH_MODE:-success}" in
     ;;
   degraded)
     printf '%s\n' '{"generatedAt":"2026-08-07T22:05:00Z","schemaVersion":1,"candidates":[{"provider":"deepseek","runway":{"runwayHuman":"10d 3h"}}],"rankings":[{"provider":"deepseek","rank":1}],"degradedSources":["quota-axi: quota-axi not found on PATH"]}'
+    ;;
+  all-degraded)
+    printf '%s\n' '{"generatedAt":"2026-08-07T22:05:30Z","schemaVersion":1,"candidates":[],"rankings":[],"degradedSources":["quota-axi: quota-axi not found on PATH"]}'
     ;;
   future-schema)
     printf '%s\n' '{"generatedAt":"2026-08-07T22:06:00Z","schemaVersion":99,"candidates":[{"provider":"claude","runway":{"runwayHuman":"17h 57m"}}],"rankings":[{"provider":"claude","rank":1}],"degradedSources":[]}'
@@ -140,6 +143,25 @@ test_degraded_source_is_named_in_the_reading() {
   pass "a degraded source is recorded by name so an empty provider is distinguishable"
 }
 
+test_degraded_source_survives_a_snapshot_with_no_usable_candidate() {
+  local id rec out status meta reading
+  id=dispatch-all-degraded-d8
+  rec=$(make_case dispatch-all-degraded "$id")
+  read_case "$rec"
+
+  out=$(run_spawn all-degraded "$id")
+  status=$?
+  meta="$HOME_DIR/state/$id.meta"
+  expect_code 0 "$status" "a snapshot with no usable candidate must not fail spawn"
+  assert_contains "$out" "spawned $id" "spawn failed on a snapshot with no usable candidate"
+  assert_grep 'dispatch_reading=at=2026-08-07T22:05:30Z;degraded=quota-axi' "$meta" \
+    "a snapshot with no usable candidate collapsed to unavailable and lost its named degraded source"
+  reading=$(fm_meta_get "$meta" dispatch_reading)
+  [ "$reading" != unavailable ] \
+    || fail "an all-degraded snapshot is indistinguishable from dispatch-axi never running"
+  pass "a snapshot with no usable candidate still records its named degraded source"
+}
+
 test_unrecognized_schema_records_unavailable() {
   local id rec out status meta
   id=dispatch-schema-d4
@@ -220,6 +242,7 @@ test_older_metadata_is_absent_safe() {
 test_success_records_timestamped_ranking
 test_unranked_candidate_is_kept_not_dropped
 test_degraded_source_is_named_in_the_reading
+test_degraded_source_survives_a_snapshot_with_no_usable_candidate
 test_unrecognized_schema_records_unavailable
 test_reading_cannot_forge_a_second_metadata_key
 test_failed_reading_records_unavailable_and_spawns
