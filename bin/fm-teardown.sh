@@ -1833,7 +1833,13 @@ $TEARDOWN_HERDR_LOCK_RECORDS
 FMEOF
   fi
   attempt=0
-  while [ "$attempt" -lt 50 ]; do
+  # A concurrent teardown holds this same session lock across its whole
+  # destructive sequence, including the treehouse worktree return, which is
+  # seconds of real work on a loaded runner. Waiting only as long as a spawn
+  # does would refuse a teardown that is merely queued behind another one, so
+  # the wait covers a full concurrent teardown (30s) before declaring
+  # contention. The refusal itself stays bounded and fail-closed.
+  while [ "$attempt" -lt 300 ]; do
     if fm_lock_try_acquire "$lock_path"; then
       if ! verified_lock_path=$(fm_backend_herdr_presentation_session_lock_path "$session") \
         || [ "$verified_lock_path" != "$lock_path" ]; then
