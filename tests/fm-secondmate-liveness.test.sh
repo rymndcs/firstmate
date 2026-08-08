@@ -244,6 +244,11 @@ SH
 exit 0
 SH
   chmod +x "$fakebin/quota-axi"
+  cat > "$fakebin/dispatch-axi" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/dispatch-axi"
   printf '%s\n' "$fakebin"
 }
 

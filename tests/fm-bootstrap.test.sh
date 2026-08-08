@@ -4,8 +4,9 @@
 # Bootstrap prints one block or line per actionable problem, optional verbose
 # BOOTSTRAP_INFO fact, or completed bootstrap no-action fact and is silent when
 # all is well. firstmate consumes the exact 'MISSING: treehouse (install: ...)',
-# 'MISSING: tasks-axi (install: ...)', 'MISSING: quota-axi (install: ...)', and
-# 'BOOTSTRAP_INFO: ...' lines, so those contracts are pinned verbatim. The cases
+# 'MISSING: tasks-axi (install: ...)', 'MISSING: quota-axi (install: ...)',
+# 'MISSING: dispatch-axi (install: ...)', and 'BOOTSTRAP_INFO: ...' lines, so
+# those contracts are pinned verbatim. The cases
 # are table-driven over the inputs that vary: whether `treehouse get --help`
 # advertises --lease, which (if any) tasks-axi version is on PATH, whether
 # tasks-axi update advertises --archive-body, whether its mv help advertises
@@ -71,6 +72,9 @@ SH
   chmod +x "$fakebin/no-mistakes"
   add_tasks_axi "$fakebin" "0.1.1"
   add_quota_axi "$fakebin"
+  # dispatch-axi is presence-checked only, so an exit-0 stub is the whole
+  # contract: it has no --version surface for bootstrap to probe.
+  fm_fake_exit0 "$fakebin" dispatch-axi
   printf '%s\n' "$fakebin"
 }
 
@@ -361,6 +365,42 @@ much older quota-axi minor reports an upgrade^0.0.9^missing
 unparseable quota-axi version reports an upgrade^quota-axi development build^missing
 ROWS
   pass "bootstrap enforces quota-axi minimum version"
+}
+
+# dispatch-axi is the tool firstmate reads before choosing a worker runtime, so
+# an absent one is the same class of blocker as an absent quota-axi. It is
+# presence-checked rather than version-gated because it exposes no --version and
+# no --help: an unrecognized flag is ignored and the ranked report prints anyway,
+# so a probe would read a report as a version. bin/fm-dispatch-axi-lib.sh owns
+# that reasoning and validates the real contract version where it is read.
+test_dispatch_axi_is_required_and_not_version_probed() {
+  local case_dir fakebin out expected probe_log
+  case_dir="$TMP_ROOT/dispatch-axi-required"
+  mkdir -p "$case_dir/home/config"
+  printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
+  fakebin=$(make_fake_toolchain "$case_dir")
+  rm -f "$fakebin/dispatch-axi"
+
+  expected="MISSING: dispatch-axi (install: pip install -e $case_dir/home/projects/dispatch-axi)"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ "$out" = "$expected" ] || fail "missing dispatch-axi: expected '$expected', got: $out"
+
+  # Present dispatch-axi: silent, and bootstrap must never invoke it. Probing it
+  # would mean paying a live provider refresh on every session start.
+  probe_log="$case_dir/dispatch-probe.log"
+  cat > "$fakebin/dispatch-axi" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$probe_log"
+exit 0
+SH
+  chmod +x "$fakebin/dispatch-axi"
+  out=$(PATH="$fakebin:$BASE_PATH" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+    FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+  [ -z "$out" ] || fail "present dispatch-axi: expected silence, got: $out"
+  [ ! -s "$probe_log" ] \
+    || fail "bootstrap invoked dispatch-axi instead of presence-checking it: $(tr '\n' '|' < "$probe_log")"
+  pass "bootstrap requires dispatch-axi by presence and never invokes it"
 }
 
 test_git_is_required_with_supported_install_instruction() {
@@ -835,6 +875,7 @@ ROWS
 test_bootstrap_reporting
 test_no_mistakes_min_version
 test_quota_axi_min_version
+test_dispatch_axi_is_required_and_not_version_probed
 test_git_is_required_with_supported_install_instruction
 test_orca_backend_gates_orca_tool_only_when_selected
 test_session_provider_backends_do_not_require_tmux

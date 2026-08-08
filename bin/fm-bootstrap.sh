@@ -52,16 +52,23 @@
 #          "treehouse get --lease" support.
 #          no-mistakes is also MISSING when its installed version is older than
 #          1.31.2.
-#          tasks-axi and quota-axi are required bootstrap tools (same class as
-#          lavish-axi). tasks-axi is also version and feature gated (0.1.1+
-#          with update --archive-body and mv [<id>...]); an installed but
-#          incompatible build reports MISSING like no-mistakes. A compatible
-#          tasks-axi default backend is silent. quota-axi is required for the
-#          agent-owned dispatch-profile array procedure in AGENTS.md section 4
-#          and .agents/skills/quota-array-dispatch/SKILL.md, and is also version
-#          gated by fm-quota-axi-lib.sh, which owns that floor and its rationale.
-#          An older build reports MISSING like no-mistakes rather than passing
-#          silently while emitting auth semantics dispatch cannot scope.
+#          tasks-axi, dispatch-axi, and quota-axi are required bootstrap tools
+#          (same class as lavish-axi). tasks-axi is also version and feature
+#          gated (0.1.1+ with update --archive-body and mv [<id>...]); an
+#          installed but incompatible build reports MISSING like no-mistakes. A
+#          compatible tasks-axi default backend is silent.
+#          dispatch-axi is what firstmate actually reads for the agent-owned
+#          dispatch-profile array procedure in AGENTS.md section 4 and
+#          .agents/skills/quota-array-dispatch/SKILL.md. It is checked for
+#          presence only; fm-dispatch-axi-lib.sh owns why it has no version gate
+#          and where its contract version is validated instead.
+#          quota-axi stays required alongside it because dispatch-axi reads it
+#          for every window provider and firstmate reads `quota-axi auth --json`
+#          for per-provider credentials, a surface dispatch-axi does not expose.
+#          It is version gated by fm-dispatch-axi-lib.sh, which owns that floor
+#          and its rationale. An older build reports MISSING like no-mistakes
+#          rather than passing silently while emitting auth semantics dispatch
+#          cannot scope.
 #          On a primary home, the locked mutable path materializes the visible
 #          default config/startup-memory-budget=7500 when absent. It never
 #          guesses at malformed or unsafe existing files, and secondmate homes
@@ -112,8 +119,8 @@ STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-tasks-axi-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
-# shellcheck source=bin/fm-quota-axi-lib.sh disable=SC1091
-. "$SCRIPT_DIR/fm-quota-axi-lib.sh"
+# shellcheck source=bin/fm-dispatch-axi-lib.sh disable=SC1091
+. "$SCRIPT_DIR/fm-dispatch-axi-lib.sh"
 # shellcheck source=bin/fm-tangle-lib.sh disable=SC1091
 . "$SCRIPT_DIR/fm-tangle-lib.sh"
 # shellcheck source=bin/fm-ff-lib.sh disable=SC1091
@@ -664,6 +671,9 @@ install_cmd() {
     no-mistakes) echo "curl -fsSL https://raw.githubusercontent.com/kunchenguid/no-mistakes/main/docs/install.sh | sh" ;;
     gh-axi|chrome-devtools-axi|lavish-axi) echo "npm install -g $1 && $1 setup hooks" ;;
     tasks-axi|quota-axi) echo "npm install -g $1" ;;
+    # dispatch-axi has no published distribution: it lives as a local project in
+    # this home, so the install is an editable install of that clone.
+    dispatch-axi) echo "pip install -e $PROJECTS/dispatch-axi" ;;
     *) return 1 ;;
   esac
 }
@@ -689,7 +699,7 @@ missing_tool_diagnostic() {
 # fm_backend_required_tools (bin/fm-backend.sh). So a herdr/zellij/cmux home is
 # never told tmux is missing, and only orca drops treehouse. A backend value with
 # no verified dependency set is reported before the universal checks continue.
-COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi quota-axi"
+COMMON_TOOLS="node git gh no-mistakes gh-axi chrome-devtools-axi lavish-axi tasks-axi dispatch-axi quota-axi"
 BACKEND=$(fm_backend_name)
 BACKEND_VALID=1
 if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
@@ -1046,6 +1056,10 @@ fi
 if command -v quota-axi >/dev/null 2>&1 && ! fm_quota_axi_compatible; then
   echo "MISSING: quota-axi (install: $(install_cmd quota-axi))"
 fi
+# dispatch-axi deliberately gets no version line here: it has no --version flag
+# to probe, and its contract version is validated where it is read
+# (fm-dispatch-axi-lib.sh), not by paying a live provider refresh at every
+# session start.
 if command -v tasks-axi >/dev/null 2>&1 && ! fm_tasks_axi_compatible; then
   echo "MISSING: tasks-axi (install: $(install_cmd tasks-axi))"
 fi

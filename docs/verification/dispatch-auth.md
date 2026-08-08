@@ -6,7 +6,8 @@ This record supports the dispatch judgment rules in `.agents/skills/quota-array-
 It records only facts that must be re-established when a producer or vendor version changes.
 Task chronology, incident transcripts, and credential metadata stay in private reports or PR evidence.
 
-Firstmate resolves a candidate's provider family, credential surface, and applicable quota by reading the evidence below and reasoning in the open.
+Firstmate resolves a candidate's provider family, credential surface, and applicable capacity by reading the evidence below and reasoning in the open.
+Capacity itself is read from `dispatch-axi`, which carries `quota-axi` as one of its sources; the `quota-axi` facts recorded here are the shape that source supplies and the credential surface `dispatch-axi` does not expose.
 No script maps a model to a provider, a provider to a credential store, or a name prefix to a family, so the facts here are what that reasoning rests on.
 Credential paths below are shown with the home directory replaced by `<home>`.
 
@@ -143,10 +144,28 @@ Observed source statuses are `available`, `expired` (with an `error` slug), and 
 - A `pi:`-prefixed source exists only where Pi holds its own credential for that family (`pi:xai`, `pi:kimi-coding`). Pi's `openai-codex` family has none, because it authenticates through the Codex store that the `codex` provider already lists. A missing `pi:` source is therefore never evidence against a Pi candidate.
 
 Neither this per-source shape nor `state.authStatus` exists before quota-axi 0.1.16.
-`bin/fm-bootstrap.sh` enforces that floor through `bin/fm-quota-axi-lib.sh`.
+`bin/fm-bootstrap.sh` enforces that floor through `bin/fm-dispatch-axi-lib.sh`.
 
 Grok also reports `credits.remaining: 0` alongside `percentRemaining: 41` on a healthy account.
 That zero is a prepaid balance, not the subscription window, and is never headroom.
+
+## The dispatch tool's own surface
+
+Verified 2026-08-08 against the installed dispatch-axi and quota-axi 0.1.17.
+dispatch-axi publishes no version string, so its contract is identified here by the `schemaVersion: 1` it reports in `--json`.
+
+```sh
+dispatch-axi --json | jq '{schemaVersion, candidateKeys: ([.candidates[0] | keys]), runwayKeys: ([.candidates[0].runway | keys]), rankingKeys: ([.rankings[0] | keys]), top: [.candidates[].evidence | keys] | unique}'
+dispatch-axi --version   # not a version surface: prints the ranked report
+dispatch-axi auth        # not an auth surface: prints the ranked report
+```
+
+Observed:
+
+- `--json` carries `schemaVersion: 1`, one `candidates[]` entry per provider with `provider`, `label`, `source`, `runway`, `evidence`, `warnings`, and `errors`, a parallel `rankings[]` of `{provider, rank, runway_human}` where an unmeasured provider has `rank: null`, plus top-level `warnings` and `degradedSources`.
+- There is no `--version` and no `--help`. An unrecognized flag is ignored and the human report prints anyway, so any version probe reads a report as a version string. `bin/fm-bootstrap.sh` therefore presence-checks the tool and `bin/fm-dispatch-axi-lib.sh` validates `schemaVersion` where the tool is read.
+- There is no auth subcommand and no credential field anywhere in the output. `quota-axi auth --json` remains the only per-provider credential surface, which is why the sections above stay authoritative and why `quota-axi` stays a required tool.
+- `candidates[].evidence` for a window provider is `effectivePercentRemaining`, `worstReservePercentPoints`, and `liveWindows` only. Per-window percentages, per-window resets, `quotaSemantics.description`, and the named unmeasurable-window lists recorded above are consumed inside `dispatch-axi` and are not passed through. `liveWindows` still names a model-scoped window such as `model:fable`, which is the granularity signal the selection procedure relies on.
 
 ## Standalone Grok discovery probe
 
@@ -173,6 +192,7 @@ Re-run the two commands above and update this section and the pinned version tog
 `tests/fm-vendor-auth-probe.test.sh` drives the real script against a fake vendor CLI that records every invocation's argv and anything readable on stdin.
 It asserts that the script accepts no harness, model, or provider input, never calls `quota-axi`, exits alike for every probe result because it renders no verdict, invokes only the two fixed non-destructive argv forms with stdin closed, holds a real bound even when the configured bound is zero or malformed, and never echoes raw vendor output.
 `tests/fm-spawn-dispatch-profile.test.sh` owns spawn's deterministic profile and harness refusals.
-`tests/fm-bootstrap.test.sh` owns the quota-axi version-floor diagnostic.
-`tests/fm-quota-array-dispatch-live-e2e.test.sh` drives the public Pi skill-loading interface against one fake `quota-axi --json` snapshot per case.
-It covers the Claude 1 percent versus Codex 55 percent reserve regression, explicit accounting for unmeasurable runway, and the strongest-reasoning constraint.
+`tests/fm-bootstrap.test.sh` owns the quota-axi version-floor diagnostic and the dispatch-axi presence diagnostic, including that bootstrap never invokes dispatch-axi.
+`tests/fm-spawn-dispatch-reading.test.sh` owns the spawn-boundary reading, including that an unrecognized `dispatch-axi` schema records `unavailable` rather than a guessed line.
+`tests/fm-quota-array-dispatch-live-e2e.test.sh` drives the public Pi skill-loading interface against one fake `dispatch-axi --json` snapshot per case, with a fake `quota-axi` beside it that fails and records any call, so a direct capacity read is caught.
+It covers the Claude 1 percent versus Codex 55 percent reserve regression, explicit accounting for an unranked candidate, the strongest-reasoning constraint, and a stated override of a low-confidence cross-shape top rank.

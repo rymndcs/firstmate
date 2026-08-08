@@ -3,10 +3,16 @@
 # probe of a named vendor CLI.
 #
 # This script collects a FACT and renders no verdict. It takes no harness, model,
-# or provider, reads no quota, and never decides whether a dispatch candidate is
-# eligible. The dispatching first mate owns that judgment from `quota-axi`'s data
-# plus each harness's authoritative model catalog; the decision procedure is
-# owned once by .agents/skills/quota-array-dispatch/SKILL.md.
+# or provider, reads no capacity data, and never decides whether a dispatch
+# candidate is eligible. The dispatching first mate owns that judgment from
+# `dispatch-axi`'s ranked output plus each harness's authoritative model catalog;
+# the decision procedure is owned once by
+# .agents/skills/quota-array-dispatch/SKILL.md.
+#
+# This probe reads neither `dispatch-axi` nor `quota-axi` and never has: the
+# credential fact it collects comes from the vendor's own CLI. `quota-axi auth`
+# remains firstmate's per-provider credential surface, read by the agent under
+# that skill, and `dispatch-axi` exposes no auth surface to replace it.
 #
 # Why it exists rather than the agent running the vendor CLI itself: the
 # captain's 2026-07-30 `firstmate-grok-auth-preflight` decision approved exactly

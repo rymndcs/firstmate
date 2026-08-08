@@ -549,7 +549,11 @@ SH
 [ "${1:-}" = --version ] && printf '%s\n' '0.1.16'
 exit 0
 SH
-  chmod +x "$fakebin/gh" "$fakebin/treehouse" "$fakebin/tasks-axi" "$fakebin/quota-axi"
+  cat > "$fakebin/dispatch-axi" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/gh" "$fakebin/treehouse" "$fakebin/tasks-axi" "$fakebin/quota-axi" "$fakebin/dispatch-axi"
   printf '%s\n' "$case_dir"
 }
 
