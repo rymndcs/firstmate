@@ -968,6 +968,10 @@ families_for_changed_path() {
     .agents/skills/quota-array-dispatch/SKILL.md)
       printf '%s\n' pure-contract-unit
       printf '%s\n' live-harness-optin
+      # The selection procedure branches on dispatch-axi's evidence shapes, and
+      # the credential-free regression pinning those shapes lives in the spawn
+      # reading test, so editing the procedure re-runs it too.
+      printf '%s\n' backend-dispatch
       ;;
     .agents/skills/*/SKILL.md)
       printf '%s\n' pure-contract-unit

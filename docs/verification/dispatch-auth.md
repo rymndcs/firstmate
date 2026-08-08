@@ -410,5 +410,26 @@ It asserts that the script accepts no harness, model, or provider input, never c
 `tests/fm-spawn-dispatch-profile.test.sh` owns spawn's deterministic profile and harness refusals.
 `tests/fm-bootstrap.test.sh` owns the quota-axi version-floor diagnostic and the dispatch-axi presence diagnostic, including that bootstrap never invokes dispatch-axi.
 `tests/fm-spawn-dispatch-reading.test.sh` owns the spawn-boundary reading, including that an unrecognized `dispatch-axi` schema records `unavailable` rather than a guessed line, and that a snapshot with no usable candidate still records its named degraded source instead of collapsing to `unavailable`.
+
+That same file also owns the credential-free half of the selection procedure's coverage: the data contract the procedure reads.
+It carries one fixture per evidence shape recorded above and asserts what the reading records for each.
+Shape 1 balance and shape 2 window each record their ranked candidate and its runway.
+Shape 3 window fallback keeps its runway rather than being emptied out, which is the assertion that stops a shape carrying no headroom figure from being read as a figure of zero.
+Shape 4 is covered once per sentinel value, for `effectiveAvailability` holding `empty`, for `raw_has_quota_semantics` holding `false`, and for the key `effectiveAvailability[0]` holding `not a dict`; each is recorded unranked rather than dropped, scored, or allowed to cost the measurable candidate beside it.
+A pair of fixtures pins the camelCase/snake_case split that this record exists to guard: a candidate whose `runway` carries the documented `runwayHuman` records that runway, and an otherwise identical candidate whose `runway` carries only the `runway_human` spelling records `unknown` and does not fall back to the `rankings[]` sibling.
+Without that pair, swapping to the wrong sibling would degrade every provider to `unknown` while `schemaVersion: 1` still validated.
+These cases run on every pull request with no credentials, no network, and no real `dispatch-axi` or `quota-axi` invocation.
+`bin/fm-test-run.sh` maps `.agents/skills/quota-array-dispatch/SKILL.md` to the `backend-dispatch` family for this reason, so editing the selection procedure re-runs them under `--changed`.
+
 `tests/fm-quota-array-dispatch-live-e2e.test.sh` drives the public Pi skill-loading interface against one fake `dispatch-axi --json` snapshot per case, with a fake `quota-axi` beside it that fails and records any call, so a direct capacity read is caught.
 It covers the Claude 1 percent versus Codex 55 percent reserve regression, explicit accounting for an unranked candidate, the strongest-reasoning constraint, and a stated override of a low-confidence cross-shape top rank.
+
+It stays opt-in, and what it covers cannot be reached without credentials.
+The credential-free regression above pins the data the selection rules read; only this one exercises the reasoning over that data.
+That reasoning is the agent's own judgment: reading the ranking together with the evidence printed beside it, applying the rule 5 and rule 6 override contract including a stated override of a low-confidence cross-shape top rank, naming both the rank not taken and the exact field that overrides it, and escalating a genuine tie to the captain instead of breaking it by list order.
+No fixture can assert any of that, because the thing under test is a model's stated reasoning rather than a value in a file.
+
+Running it requires all of the following machine state: `FM_QUOTA_ARRAY_DISPATCH_LIVE_E2E=1`, a `pi` binary on `PATH`, and a working credential for the pinned model `openai-codex/gpt-5.6-sol`.
+It could not be executed in the authoring environment.
+Attempted 2026-08-08; `pi` reports `No API key found for openai-codex.` on this machine, so the third requirement is unmet here and the test gate-skips.
+The pinned model is deliberately not changed to make it run, because the pin is what makes a pass comparable across runs.
