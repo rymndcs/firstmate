@@ -345,6 +345,44 @@ test_no_mistakes_dod_wording() {
     "no-mistakes DOD must keep direct requirements and exclude generic scaffold boilerplate from --intent"
   assert_grep "exclude generic operational, status, delivery, and other scaffold boilerplate unless it is task-specific" "$brief" \
     "no-mistakes DOD must exclude non-task-specific scaffold boilerplate from --intent"
+  assert_grep "active run's recorded \`--intent\` cannot be updated after the run starts" "$brief" \
+    "no-mistakes DOD must state that an active run's recorded intent is immutable"
+  assert_grep "next gate with a \`no-mistakes axi respond --action fix\` response" "$brief" \
+    "no-mistakes DOD must carry a mid-run supersession through the next gate response"
+  assert_grep "otherwise use that gate's \`help\` to supply a supported \`--add-finding\`" "$brief" \
+    "no-mistakes DOD must create a finding when no existing finding carries the reconciliation"
+  assert_grep "replacement is authoritative over the stale recorded intent" "$brief" \
+    "no-mistakes DOD must make the accepted replacement authoritative over stale intent"
+  assert_grep "escalate to firstmate and stop first, then carry the reconciliation inside the decision firstmate returns" "$brief" \
+    "no-mistakes DOD must order ask-user escalation ahead of a self-issued reconciliation response"
+  assert_grep "A pending reconciliation never authorizes you to answer an ask-user finding yourself." "$brief" \
+    "no-mistakes DOD must not let a pending reconciliation become ask-user authority"
+  assert_grep "CI-ready point or a final outcome with no further gate while an accepted clarification or supersession is still unreconciled" "$brief" \
+    "no-mistakes DOD must cover a run that ends with no further gate to carry the reconciliation"
+  assert_grep "$ROOT/.agents/skills/decision-hold-lifecycle/SKILL.md" "$brief" \
+    "no-mistakes DOD must route an unreconciled requirement through the durable decision-hold policy"
+  assert_grep "FM_HOME='$home' '$ROOT/bin/fm-decision-hold.sh' hold $id {key} --title {title} --reason {reason}" "$brief" \
+    "no-mistakes DOD must register the hold in the originating home under a stable key"
+  assert_grep "keeping {title} and {reason} each on one line and {reason} free of parentheses" "$brief" \
+    "no-mistakes DOD must state the hold argument constraints the script enforces"
+  assert_grep "pass that skill's completion gate for this review pass with that key still unresolved" "$brief" \
+    "no-mistakes DOD must complete the review pass with the requirement still unresolved"
+  assert_grep "the hold is what survives a terminal run state and teardown" "$brief" \
+    "no-mistakes DOD must state why the hold outlives the run's own state"
+  assert_grep "append \`needs-decision [key={key}]: {the unreconciled requirement, in enough detail for firstmate to act}\` (rule 6) under that same key" "$brief" \
+    "no-mistakes DOD must escalate an unreconciled requirement under the key its hold already carries"
+  assert_grep "so the wake and the hold are one decision rather than two" "$brief" \
+    "no-mistakes DOD must keep the status wake and the durable hold on one identity"
+  assert_grep "do not append \`done:\`, never report the unreconciled requirement as validated, and never choose follow-up work versus re-validation yourself" "$brief" \
+    "no-mistakes DOD must keep the follow-up versus re-validation call with firstmate"
+  assert_grep "Do not abort or restart solely to refresh \`--intent\`" "$brief" \
+    "no-mistakes DOD must not discard an active run merely to refresh recorded intent"
+  assert_grep "That \`done:\` line does not apply while an accepted clarification or supersession is still unreconciled" "$brief" \
+    "no-mistakes DOD's CI-green done instruction must exclude the unreconciled-requirement path"
+  assert_grep "no CI-green result overrides it" "$brief" \
+    "no-mistakes DOD must keep a green CI result from overriding the durable-hold fallback"
+  assert_grep "before you append your final status line - \`done:\` or the unreconciled-requirement \`needs-decision:\` above, whichever applies" "$brief" \
+    "no-mistakes DOD must replace the PR body on both final-status paths"
   # The apostrophe in "firstmate's authority check" is now structurally safe
   # (no `$(...)` wrapper around the heredoc), so it renders verbatim instead of
   # being reworded or escaped away. test_no_heredoc_in_command_substitution

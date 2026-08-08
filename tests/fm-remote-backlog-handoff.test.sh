@@ -17,7 +17,23 @@ FAKEBIN=$(fm_fakebin "$TMP_ROOT/fake")
 SSH_COUNT="$TMP_ROOT/ssh.count"
 mkdir -p "$PARENT/data" "$PARENT/state" "$REMOTE_ROOT/bin" \
   "$REMOTE/data" "$REMOTE/state" "$REMOTE/config" "$REMOTE/projects" "$REMOTE/bin"
-trap 'touch "$TMP_ROOT/put.release" "$TMP_ROOT/route.release" 2>/dev/null || true; if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+# A signalled job worker keeps writing its lock directory for a moment, so wait
+# for it to actually exit before removing the tree: otherwise rm races the worker
+# and fails with "Directory not empty", failing a run whose assertions all passed.
+cleanup() {
+  local worker_pid='' wait_attempt=0
+  touch "$TMP_ROOT/put.release" "$TMP_ROOT/route.release" 2>/dev/null || true
+  if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then
+    worker_pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid")
+    kill "$worker_pid" 2>/dev/null || true
+    while kill -0 "$worker_pid" 2>/dev/null && [ "$wait_attempt" -lt 100 ]; do
+      wait_attempt=$((wait_attempt + 1))
+      sleep 0.05
+    done
+  fi
+  rm -rf -- "$TMP_ROOT"
+}
+trap cleanup EXIT
 printf 'fixture\n' > "$REMOTE_ROOT/AGENTS.md"
 cp "$ROOT/bin/fm-remote-entrypoint.sh" "$ROOT/bin/fm-remote-job-lib.sh" \
   "$ROOT/bin/fm-remote-job-worker.sh" "$ROOT/bin/fm-remote-file.sh" \

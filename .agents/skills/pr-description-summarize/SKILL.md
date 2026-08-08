@@ -5,7 +5,7 @@ description: >-
   description instead of publishing the raw intent verbatim.
   Use for a direct-PR task immediately before running `gh-axi pr create`, and for a
   no-mistakes task once the run reaches the CI-ready `checks-passed` outcome but before
-  reporting `done: PR <url> checks green`.
+  its final status line.
 user-invocable: false
 metadata:
   internal: true
@@ -117,9 +117,12 @@ steps (test, document, lint, push, ci) report in, so there is no reachable point
 pipeline posts, and editing right after PR creation risks the pipeline's own next step
 silently overwriting the edit.
 Apply the edit once, at the last point the mechanics above return `outcome: checks-passed`
-and before reporting `done: PR <url> checks green` - by then the pipeline has finished
+and before the task's final status line - by then the pipeline has finished
 assembling every section it owns and only its background merge monitor remains, which does
 not rewrite the body.
+That final line is usually `done: PR <url> checks green`, but the ship brief owns one other
+ending - a keyed `needs-decision` wake for a requirement left unreconciled against the run's
+recorded intent - and the body still gets its summary before either.
 
 To read the pipeline-assembled body, `gh-axi pr view <n> --full` prints it as a single
 double-quoted, backslash-escaped scalar (e.g. `body: "## Why\n\nLinear issues are ..."`),

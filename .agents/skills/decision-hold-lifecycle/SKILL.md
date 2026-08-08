@@ -2,7 +2,7 @@
 name: decision-hold-lifecycle
 description: >-
   Agent-only policy for completing investigations and visual reviews without losing unresolved captain decisions.
-  Load before treating an investigation, scout report, structured review, or Lavish review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
+  Load before treating an investigation, scout report, structured review, or Lavish review as complete, before ending a visual review that exposed a decision, before ending an active no-mistakes ship run that still has an accepted requirement unreconciled against that run's recorded intent, and when recording or routing the captain's answer.
 user-invocable: false
 metadata:
   internal: true
@@ -11,6 +11,7 @@ metadata:
 # Durable unresolved-decision lifecycle
 
 This skill is the single policy owner for unresolved captain decisions discovered by an investigation or visual review.
+A no-mistakes ship worker whose run reaches the CI-ready point or a final outcome while an accepted mid-run requirement is still unreconciled against that run's recorded intent is inside this scope too, and registers and completes that reconciliation here under the same key discipline.
 
 ## Policy
 
