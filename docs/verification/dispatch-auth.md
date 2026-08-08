@@ -357,11 +357,25 @@ Three shapes appear in the snapshot pasted above.
 - Window, with `source: window`, observed for `claude` and `codex`: `effectivePercentRemaining`, `worstReservePercentPoints`, and `liveWindows`. This is the only shape carrying a headroom figure.
 - Sentinel, with `source: unknown` and `runway.status: unknown`, observed for `cursor`, `copilot`, `grok`, and `kimi`: the single key `effectiveAvailability` whose value is the literal string `empty`, alongside an `errors` entry `No effectiveAvailability entries`.
 
+Every command above projects keys only, which drops the one value the selection procedure branches on.
+So the sentinel's value is recorded as output rather than described:
+
+```sh
+dispatch-axi --json | jq -c '[.candidates[] | select(.source == "unknown") | {provider, evidence}]'
+```
+
+```json
+[{"provider":"cursor","evidence":{"effectiveAvailability":"empty"}},{"provider":"copilot","evidence":{"effectiveAvailability":"empty"}},{"provider":"grok","evidence":{"effectiveAvailability":"empty"}},{"provider":"kimi","evidence":{"effectiveAvailability":"empty"}}]
+```
+
 That sentinel is a diagnostic marker meaning `quota-axi` returned no effective-availability entries for that provider.
 It shares a key name with the rich `quotaSemantics.effectiveAvailability` array pinned at the top of this record and nothing else: it carries no `boundedBy`, no `limitingWindowIds`, no `pace`, and no per-scope `runway`.
 Reading it as that array is the inference this paragraph exists to prevent.
 
-The following variants did not occur in this snapshot and are recorded as code-derived claims, not as observed output, from the producing path `dispatch_axi/normalizer.py` in the `dispatch-axi` project.
+The following variants did not occur in this snapshot and are recorded as code-derived claims, not as observed output.
+They were read from `dispatch_axi/normalizer.py` in the `dispatch-axi` project at commit `9d1daa9590d80d88d20ffa7a03701e3cc6230af2`, dated 2026-08-08, against a clean tree.
+That repository has no remote by design, so this SHA is local to this home and resolves on no forge; re-checking these three claims means reading that file in the local clone at that commit.
+It is pinned anyway because it is the only anchor available: `dispatch-axi` publishes no version string, and the `schemaVersion: 1` recorded above does not move when the normalizer changes.
 
 - Window fallback, with `source: window`, `runway.status: window_fallback`, and `runway.projectionBasis: window_fallback`: `liveWindows` only, with no `effectivePercentRemaining` and no `worstReservePercentPoints`, alongside an `errors` entry `No effectiveAvailability entries; using window fallback`. It half-matches the window shape while carrying no headroom figure, which is why the selection procedure must test for the key rather than the `source`.
 - Two further sentinels beside the observed one, each also `source: unknown` with `runway.status: unknown`: `raw_has_quota_semantics` set to `false` with an `errors` entry `No quotaSemantics in provider data`, and the key `effectiveAvailability[0]` set to `not a dict`.

@@ -123,7 +123,7 @@ Apply only among candidates satisfying required fit and strongest reasoning clas
 Never use rank, runway, headroom, pace, or reserve to silently replace that reasoning class.
 
 1. Concrete contradictory evidence or malformed configuration: stop and report the tuple and that evidence.
-   An unranked candidate, an unmeasured runway, a missing model-scoped window, and a credential surface the snapshot does not model are uncertainty, never this rule.
+   An unranked candidate, an unmeasured runway, a missing model-scoped window, a `window_fallback` measurement, and a credential surface the snapshot does not model are uncertainty, never this rule.
 2. Honor any explicit captain instruction that sets a floor for that candidate before the generic comparison.
    Do not invent a generic percentage floor or treat a low percentage as an automatic failure.
 3. Keep the strongest-reasoning class when every candidate is tight or completion evidence is poor.
@@ -132,7 +132,7 @@ Never use rank, runway, headroom, pace, or reserve to silently replace that reas
    An unranked candidate is not last: it is unmeasured, stays eligible, and is compared under rule 7.
 5. Check the ranking's own stated limits before relying on it, and go to rule 6 when any hold.
    The ranking is approximate across measurement shapes, so a `balance` provider ranked above a `window` provider on runway alone is not a settled comparison.
-   A rank resting on `projectionConfidence: low` or a thin `projectionBasis` such as one day of burn history does not outrank established evidence.
+   A rank resting on `projectionConfidence: low` or a thin `projectionBasis` does not outrank established evidence, whether that basis is one day of burn history or `projectionBasis: window_fallback`, which is derived from raw window resets rather than the provider's own projection.
    A `runway.status` that projects exhaustion inside the task's likely-completion horizon loses to one that projects through it, even when its raw runway number is larger.
 6. Override the rank when the evidence beside it says to, and say so explicitly.
    State the rank you are not taking, the exact field that overrides it, and the candidate you chose instead - for example "not taking rank 1 deepseek: `projectionConfidence: low` on one day of burn history, against rank 3 claude's established `cycle_average` through the horizon".
