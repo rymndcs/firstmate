@@ -87,6 +87,7 @@ The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `gr
 When dispatch profiles exist, consult them at every crewmate or scout intake, pass the resolved concrete profile required by `fm-spawn`, and preserve malformed profile configuration as an actionable error rather than selecting around it.
 Routing precedence is an explicit per-task captain override, then the best-fit configured rule, then the configured default, then the static crewmate harness.
 Load `quota-array-dispatch` before choosing among a matched profile array; that skill is the single owner of the capacity evidence, candidate accounting, and completion-aware selection procedure, and `harness-adapters` owns the effort fallback.
+`dispatch-axi` is the capacity read and it ranks without selecting, while `quota-axi` is a data source inside it and never something firstmate reads for capacity itself.
 `docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-harness.sh` owns static resolution, and `bin/fm-spawn.sh` owns launch flags and fail-closed validation.
 
 `secondmate-provisioning` owns secondmate harness pins and inherited local material, while `harness-adapters` owns the harness consequences.
@@ -267,6 +268,7 @@ Fleet supervision is an always-loaded operational contract; `docs/architecture.m
 
 Whenever work is under way, keep exactly one live supervision cycle using the emitted protocol for this primary harness.
 X mode may require that same live cycle with no fleet work.
+A registered process-to-event source requires that same live cycle with no fleet work.
 Do not substitute another harness's wait shape, use shell `&`, or create a second cycle when a healthy one already exists.
 For every actionable wake, follow the ordinary-wake continuation in the emitted protocol; use its repair action only when the live cycle is missing or failed.
 No turn ends blind while work is under way, including turns described as holding or waiting.
