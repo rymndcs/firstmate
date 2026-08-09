@@ -34,7 +34,8 @@ cleanup() {
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup EXIT
-printf 'fixture\n' > "$REMOTE_ROOT/AGENTS.md"
+printf 'fixture\n' > "$REMOTE_ROOT/CLAUDE.md"
+ln -s CLAUDE.md "$REMOTE_ROOT/AGENTS.md"
 cp "$ROOT/bin/fm-remote-entrypoint.sh" "$ROOT/bin/fm-remote-job-lib.sh" \
   "$ROOT/bin/fm-remote-job-worker.sh" "$ROOT/bin/fm-remote-file.sh" \
   "$ROOT/bin/fm-backlog-receive.sh" "$ROOT/bin/fm-tasks-axi-lib.sh" \
@@ -45,9 +46,10 @@ chmod +x "$REMOTE_ROOT/bin"/*.sh
 git -C "$REMOTE_ROOT" init -q -b main
 git -C "$REMOTE_ROOT" config user.email test@example.com
 git -C "$REMOTE_ROOT" config user.name Test
-git -C "$REMOTE_ROOT" add AGENTS.md bin
+git -C "$REMOTE_ROOT" add AGENTS.md CLAUDE.md bin
 git -C "$REMOTE_ROOT" commit -qm 'tracked remote fixture'
-printf 'fixture\n' > "$REMOTE/AGENTS.md"
+printf 'fixture\n' > "$REMOTE/CLAUDE.md"
+ln -s CLAUDE.md "$REMOTE/AGENTS.md"
 printf 'ios\n' > "$REMOTE/.fm-secondmate-home"
 cat > "$PARENT/data/secondmates.md" <<EOF
 - ios - iOS delivery (host: remote-mac; root: $REMOTE_ROOT; home: $REMOTE; scope: iOS work; projects: alpha; added 2026-08-02)

@@ -80,7 +80,7 @@ ROOT=$(<"$TMP/root")
 HOME_PATH=$(<"$TMP/home")
 ROOT=$(fm_remote_job_canonical_existing_dir "$ROOT") || die "remote root is not a safe existing directory"
 HOME_PATH=$(fm_remote_job_canonical_home "$HOME_PATH") || die "remote home is not a safe directory"
-[ -f "$ROOT/AGENTS.md" ] && [ ! -L "$ROOT/AGENTS.md" ] || die "remote root is not a Firstmate checkout"
+[ -f "$ROOT/CLAUDE.md" ] && [ ! -L "$ROOT/CLAUDE.md" ] || die "remote root is not a Firstmate checkout"
 [ -d "$ROOT/bin" ] && [ ! -L "$ROOT/bin" ] || die "remote root has no safe bin directory"
 if path_is_ancestor "$ROOT" "$HOME_PATH" || path_is_ancestor "$HOME_PATH" "$ROOT" || [ "$ROOT" = "$HOME_PATH" ]; then
   die "remote root and home must be separate, non-overlapping directories"

@@ -20,7 +20,8 @@ FAKEBIN=$(fm_fakebin "$TMP_ROOT/fakebin")
 SSH_LOG="$TMP_ROOT/ssh.log"
 SSH_COUNT="$TMP_ROOT/ssh.count"
 mkdir -p "$LOCAL_HOME/data" "$REMOTE_ROOT/bin" "$REMOTE_HOME"
-printf 'fixture\n' > "$REMOTE_ROOT/AGENTS.md"
+printf 'fixture\n' > "$REMOTE_ROOT/CLAUDE.md"
+ln -s CLAUDE.md "$REMOTE_ROOT/AGENTS.md"
 cp "$ROOT/bin/fm-remote-entrypoint.sh" "$ROOT/bin/fm-remote-job-lib.sh" \
   "$ROOT/bin/fm-remote-job-worker.sh" "$REMOTE_ROOT/bin/"
 
@@ -67,7 +68,7 @@ chmod +x "$REMOTE_ROOT/bin/tasks-axi"
 git -C "$REMOTE_ROOT" init -q -b main
 git -C "$REMOTE_ROOT" config user.email test@example.com
 git -C "$REMOTE_ROOT" config user.name Test
-git -C "$REMOTE_ROOT" add AGENTS.md bin
+git -C "$REMOTE_ROOT" add AGENTS.md CLAUDE.md bin
 git -C "$REMOTE_ROOT" commit -qm 'tracked remote fixture'
 
 cat > "$FAKEBIN/fake-ssh" <<'SH'

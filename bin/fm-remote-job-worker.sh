@@ -459,7 +459,7 @@ worker_run_job() { # <account-home> <job-dir>
   root=$(fm_remote_job_canonical_existing_dir "$root") || { worker_publish_result "$job" 126; return; }
   home=$(fm_remote_job_canonical_home "$home") || { worker_publish_result "$job" 126; return; }
   [ "$root" = "$FM_ROOT" ] || { worker_publish_result "$job" 126; return; }
-  [ -f "$root/AGENTS.md" ] && [ ! -L "$root/AGENTS.md" ] &&
+  [ -f "$root/CLAUDE.md" ] && [ ! -L "$root/CLAUDE.md" ] &&
     [ -d "$root/bin" ] && [ ! -L "$root/bin" ] || { worker_publish_result "$job" 126; return; }
   fm_remote_job_regular_bounded "$job/argv" "$FM_REMOTE_JOB_MAX_BYTES" || { worker_publish_result "$job" 126; return; }
   fm_remote_job_regular_bounded "$job/stdin" "$FM_REMOTE_JOB_MAX_BYTES" || { worker_publish_result "$job" 126; return; }
@@ -590,7 +590,7 @@ main() {
   local account_home lock_status
   account_home=$(worker_account_home) || { worker_error "cannot resolve account home"; exit 1; }
   FM_ROOT=$(fm_remote_job_canonical_existing_dir "$FM_ROOT") || { worker_error "configured FM_ROOT is unsafe"; exit 1; }
-  [ -f "$FM_ROOT/AGENTS.md" ] && [ ! -L "$FM_ROOT/AGENTS.md" ] || { worker_error "FM_ROOT is not a Firstmate checkout"; exit 1; }
+  [ -f "$FM_ROOT/CLAUDE.md" ] && [ ! -L "$FM_ROOT/CLAUDE.md" ] || { worker_error "FM_ROOT is not a Firstmate checkout"; exit 1; }
   fm_remote_job_prepare_state "$account_home" || { worker_error "$FM_REMOTE_JOB_ERROR"; exit 1; }
   WORKER_LOCK=$(fm_remote_job_worker_lock_path)
   trap worker_exit_cleanup EXIT
@@ -650,7 +650,7 @@ worker_supervise_linux() {
   local account_home child_status
   account_home=$(worker_account_home) || { worker_error "cannot resolve account home"; return 1; }
   FM_ROOT=$(fm_remote_job_canonical_existing_dir "$FM_ROOT") || { worker_error "configured FM_ROOT is unsafe"; return 1; }
-  [ -f "$FM_ROOT/AGENTS.md" ] && [ ! -L "$FM_ROOT/AGENTS.md" ] || { worker_error "FM_ROOT is not a Firstmate checkout"; return 1; }
+  [ -f "$FM_ROOT/CLAUDE.md" ] && [ ! -L "$FM_ROOT/CLAUDE.md" ] || { worker_error "FM_ROOT is not a Firstmate checkout"; return 1; }
   fm_remote_job_prepare_state "$account_home" || { worker_error "$FM_REMOTE_JOB_ERROR"; return 1; }
   trap worker_supervisor_shutdown HUP INT TERM
   while :; do
