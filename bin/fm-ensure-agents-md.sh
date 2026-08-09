@@ -3,7 +3,9 @@
 # CLAUDE.md is the real project-intrinsic knowledge file; AGENTS.md is a
 # relative symlink to it for compatibility. Creates a minimal CLAUDE.md skeleton
 # when neither file exists, promotes a real AGENTS.md file when it is the only
-# file present, and refuses to clobber distinct real files or wrong symlinks.
+# file present, reverses a legacy CLAUDE.md -> AGENTS.md pair (including one
+# left dangling by a deleted AGENTS.md), and refuses to clobber distinct real
+# files or wrong symlinks.
 # Owns the canonical "## Maintaining this file" self-governance wording for
 # project CLAUDE.md files, injecting it idempotently into created skeletons,
 # promoted AGENTS.md files, and any existing CLAUDE.md that still lacks it.
@@ -158,6 +160,13 @@ if [ -L "$CLAUDE" ] && [ -f "$AGENTS" ] && is_legacy_claude_symlink; then
   ensure_maintenance_section
   ln -s "$CLAUDE" "$AGENTS"
   echo "promoted: reversed legacy CLAUDE.md -> AGENTS.md to AGENTS.md -> CLAUDE.md in $DIR"
+  exit 0
+fi
+if [ -L "$CLAUDE" ] && is_legacy_claude_symlink && [ ! -e "$AGENTS" ] && [ ! -L "$AGENTS" ]; then
+  rm "$CLAUDE"
+  write_skeleton
+  ln -s "$CLAUDE" "$AGENTS"
+  echo "created: replaced dangling legacy CLAUDE.md -> AGENTS.md with CLAUDE.md and AGENTS.md -> CLAUDE.md in $DIR"
   exit 0
 fi
 if [ -L "$CLAUDE" ]; then

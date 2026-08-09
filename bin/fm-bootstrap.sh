@@ -229,7 +229,7 @@ secondmate_sync() {
   # fetch, no origin dependency: a linked-worktree home already holds the primary's
   # commit (fm-ff-lib.sh), while a standalone clone without it is skipped until
   # /updatefirstmate refreshes it from origin. Startup sends reread nudges only
-  # for RUNNING secondmates whose instruction surface (AGENTS.md, bin/, or
+  # for RUNNING secondmates whose instruction surface (CLAUDE.md, bin/, or
   # .agents/skills/) actually changed, so a secondmate already on the primary's
   # version is never disturbed (AGENTS.md bootstrap + supervision). Unlike
   # /updatefirstmate, startup owns the live-convergence send itself because it is

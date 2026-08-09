@@ -82,6 +82,40 @@ test_legacy_pair_is_reversed() {
   pass "fm-ensure-agents-md.sh: legacy symlink direction is reversed"
 }
 
+test_dangling_legacy_link_converges() {
+  local repo out count
+  repo="$TMP_ROOT/dangling-legacy-project"
+  mkdir -p "$repo"
+  ln -s AGENTS.md "$repo/CLAUDE.md"
+  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
+    || fail "fm-ensure-agents-md.sh failed on a dangling legacy CLAUDE.md -> AGENTS.md link"
+  assert_contains "$out" "created:" "dangling legacy link did not report creation"
+  assert_correct_pair "$repo"
+  count=$(grep -Fc "## Maintaining this file" "$repo/CLAUDE.md")
+  [ "$count" -eq 1 ] || fail "dangling legacy convergence wrote $count self-governance sections"
+  cp "$repo/CLAUDE.md" "$repo/.after-first"
+  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
+    || fail "fm-ensure-agents-md.sh failed re-running after dangling legacy convergence"
+  assert_contains "$out" "unchanged:" "converged dangling legacy repo was not reported unchanged"
+  cmp -s "$repo/.after-first" "$repo/CLAUDE.md" || fail "re-run modified the converged CLAUDE.md"
+  assert_correct_pair "$repo"
+  pass "fm-ensure-agents-md.sh: dangling legacy link converges idempotently"
+}
+
+test_wrong_claude_symlink_conflicts() {
+  local repo out rc
+  repo="$TMP_ROOT/wrong-claude-link-project"
+  mkdir -p "$repo"
+  printf '# Notes\n' > "$repo/NOTES.md"
+  ln -s NOTES.md "$repo/CLAUDE.md"
+  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "expected a non-zero exit for a CLAUDE.md symlink to an unrelated file"
+  assert_contains "$out" "CLAUDE.md is a symlink" "wrong CLAUDE.md symlink was not explained"
+  assert_absent "$repo/AGENTS.md" "AGENTS.md was created beside a wrong CLAUDE.md symlink"
+  pass "fm-ensure-agents-md.sh: a wrong CLAUDE.md symlink still conflicts"
+}
+
 test_already_correct_pair_is_idempotent() {
   local repo out
   repo="$TMP_ROOT/correct-pair-project"
@@ -206,6 +240,8 @@ test_empty_project_creates_claude_md_with_self_governance
 test_only_claude_md_gains_symlink_and_self_governance
 test_only_agents_md_is_promoted
 test_legacy_pair_is_reversed
+test_dangling_legacy_link_converges
+test_wrong_claude_symlink_conflicts
 test_already_correct_pair_is_idempotent
 test_claude_md_without_trailing_newline_keeps_blank_separator
 test_existing_crlf_claude_md_with_section_stays_unchanged
