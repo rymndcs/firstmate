@@ -24,7 +24,7 @@
 #          purely local fast-forward and never an origin fetch. Remote routes
 #          instead converge the persistent home to their configured remote code
 #          root. If either placement changes its loaded instruction surface
-#          (AGENTS.md, bin/, or .agents/skills/), bootstrap immediately nudges it
+#          (CLAUDE.md, bin/, or .agents/skills/), bootstrap immediately nudges it
 #          via FM_HOME=<active-home> bin/fm-send.sh fm-<id> so meta resolves the
 #          current route and the standard from-firstmate marker is applied. A
 #          successful send prints one BOOTSTRAP_INFO line with the exact target
