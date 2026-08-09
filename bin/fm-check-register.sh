@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 # Bind an intentional custom watcher check to its current bytes.
+#
+# Authoring contract for a custom state/<id>.check.sh, which this script is the
+# owner of because binding is the last step of writing one:
+#   - an ordinary file with a single link, mode 0700, on the state directory's
+#     own device (this script refuses anything else)
+#   - prints exactly one line when firstmate should wake, and prints nothing
+#     otherwise, since any output is what wakes firstmate
+#   - finishes before FM_CHECK_TIMEOUT (see docs/configuration.md), because
+#     bin/fm-watch.sh kills a check that overruns it
+# Register the check with this script after every edit; the watcher executes a
+# check only while its recorded bytes still match, so an unbound or edited check
+# is skipped rather than run.
 # Usage: fm-check-register.sh <id>
 set -u
 
