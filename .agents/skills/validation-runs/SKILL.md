@@ -12,7 +12,7 @@ metadata:
 # Crew-owned no-mistakes validation runs
 
 This skill is the single owner of how firstmate starts, steers, and gates a no-mistakes validation run that a crewmate drives.
-`AGENTS.md` section 7 keeps only the facts that fire before this skill would be loaded: that a no-mistakes ship triggers validation on the same worker after its implementation commit, that the worker owns the run and firstmate never answers its gate, that new requirements route to follow-up work, that an ask-user finding returns as a `needs-decision` wake, and how a validating worker's state is judged on a supervision wake.
+`AGENTS.md` section 7 keeps only the facts that fire before this skill would be loaded: that a no-mistakes ship triggers validation on the same worker after its implementation commit, that the worker owns the run and firstmate never answers its gate, that new requirements route to follow-up work, the test for what counts as a new requirement, that an ask-user finding returns as a `needs-decision` wake, how a validating worker's state is judged on a supervision wake, and the cue that a worker acting on the branch during an active run is duplicating pipeline ownership.
 Everything below is the procedure behind those facts.
 
 ## Starting a run
@@ -23,13 +23,7 @@ That worker then owns every `no-mistakes axi run` and `no-mistakes axi respond` 
 ## Requirements that arrive after the run starts
 
 The routing default is follow-up work, and the exception is a requirement that completely invalidates the work being validated.
-Three things are not new requirements and stay inside the current task even when they touch files not named at intake:
-
-- The smallest downstream changes needed to keep already accepted product or engineering behavior correct.
-- Behavioral tests where an executable contract exists.
-- Changes that keep documentation accurate.
-
-A correction required to satisfy already accepted intent is a correction, not an expansion.
+`AGENTS.md` section 7 owns the test for what counts as a new requirement.
 When firstmate accepts a clarification or supersession after a run starts without invalidating it, send it to that worker and require the generated brief's recorded-intent reconciliation contract before validation proceeds.
 
 ## The single supported invalidation abort
@@ -43,7 +37,7 @@ The worker then runs this sequence, in order:
 4. Validate exactly once against that final head, so no obsolete or intermediate head is ever treated as authoritative.
 
 Apart from that single supported abort, do not hand-edit, commit, restart, or start a second validation run while the obsolete run still owns the branch.
-A worker hand-editing, committing, aborting, or restarting during an active run is duplicating pipeline ownership outside this sequence; steer it back to the gate response flow.
+`AGENTS.md` section 7 owns the detection cue for a worker that duplicates pipeline ownership outside this sequence.
 
 ## Gate decisions
 

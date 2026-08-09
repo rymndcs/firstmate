@@ -217,10 +217,12 @@ After an autonomous merge, give the captain a one-line full-URL or local-main ou
 For a no-mistakes ship, trigger validation on the same worker after its implementation commit.
 That worker drives the pipeline and owns every run and gate-response call through the next gate or outcome; firstmate never answers a crew-owned run's gate itself.
 Once validation starts, route new requirements to follow-up work rather than expanding the current task, unless one completely invalidates the work being validated.
+The smallest downstream changes needed to keep already accepted behavior correct, add behavioral tests where an executable contract exists, or keep documentation accurate stay in the current task even when they touch files not named at intake, because a correction required to satisfy already accepted intent is not a new requirement.
 An ask-user finding comes back as a `needs-decision` wake, decided under the authority contract above or escalated to the captain.
 
 Judge validation by the current-code-matched run step through `bin/fm-crew-state.sh`, not by shell liveness or the last status event.
 Running, fixing, or CI states remain working; parked approval or fix-review states require the worker to follow the active gate help; passed or checks-passed is done; failed or cancelled is failed.
+A worker hand-editing, committing, aborting, or restarting during an active validation run duplicates pipeline ownership; steer it back to the gate response flow.
 
 ### PR ready, landing, and teardown
 
