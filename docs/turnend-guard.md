@@ -48,6 +48,10 @@ If `jq` is missing or hook stdin is empty, the guard exits 0 because it cannot s
 - Grok registers a `Stop` hook in `.grok/hooks/fm-primary-turnend-guard.json` and delegates capability selection to `bin/fm-turnend-guard-grok.sh`.
   The tracked Claude Stop entries are inert when `GROK_AGENT` is present, so Grok's Claude-compatible settings loading cannot create a second continuation path.
 
+Grok and Kimi crew turn-end wakes are authorized per task rather than per checkout: one shared Firstmate-owned hook script reads a per-task authorization file from that harness's `fm-turn-end.d` directory, so no worktree hook file and no trust grant is needed.
+`bin/fm-spawn.sh` writes that authorization file and records its name as the task's token under `state/<id>.grok-turnend-token` or `state/<id>.kimi-turnend-token`, and `bin/fm-teardown.sh` reads the token to delete the authorization file and then removes the token itself.
+Those two scripts own the exact authorization and cleanup mechanics.
+
 Claude and Codex can block a Stop directly with exit status 2 and stderr.
 Both payloads carry `stop_hook_active`.
 In the default Codex mode, a true value lets the second stop finish after one forced continuation.

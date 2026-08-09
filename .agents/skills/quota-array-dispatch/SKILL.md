@@ -12,11 +12,13 @@ metadata:
 
 # quota-array-dispatch
 
-This skill is the single owner of the completion-aware profile-array selection procedure.
-`AGENTS.md` section 4 owns the always-loaded intake boundary, load trigger, malformed-config refusal, every-candidate accounting, and strongest-reasoning/tie safety rules.
+This skill is the single owner of the completion-aware profile-array selection procedure, including every-candidate accounting and the strongest-reasoning and tie-breaking safety rules below.
+`AGENTS.md` section 4 keeps only the always-loaded intake boundary, this skill's load trigger, and the intake-time malformed-config refusal.
 `harness-adapters` owns harness verification, model/provider discovery, and effort fallback.
 `dispatch-axi` ranks providers by runway and shows its working; it never selects, never spawns, and never knows what task you are dispatching.
-`quota-axi` is a data source inside `dispatch-axi`, not something you read for capacity yourself.
+Its ranking is approximate because it compares different measurement shapes, so it is an input to the procedure below and never the answer.
+`quota-axi` is a data source inside `dispatch-axi`, not something you read for capacity yourself; it remains data-only, owns how model or product windows relate to the account windows that bound them, and stays firstmate's per-provider credential surface.
+Firstmate alone resolves a matched profile array, and resolving one is not optional: run the snapshot, evaluate every configured candidate against its ranked output and the evidence printed beside it, and never adopt or overturn a rank without stating that evidence.
 Do not add a daemon, opaque composite score, routing wrapper, hard-coded model-specific policy, or producer-side route recommendation.
 Deterministic shell owns only schema, configuration, and version validation plus concrete spawn safeguards; every model-to-provider, provider-to-credential, and capacity-applicability relation is yours to establish transparently and to show your evidence for.
 
@@ -93,6 +95,7 @@ Steps 1 and 3 apply to every candidate; step 2 applies only where `evidence.live
 ## Authentication is scoped to the selected surface
 
 A candidate authenticates through its own tuple's surface; another harness's CLI can never gate it, and `harness=pi` with `model=xai/grok-*` is Pi using xAI rather than the standalone Grok CLI.
+Never infer a credential store, provider family, or capacity mapping from a harness, model, or source name: establish each relation from the authoritative catalog and the snapshot, and never launch another harness's CLI to judge a candidate.
 `quota-axi auth --json` lists each provider's credential sources independently, so read the one source the candidate actually uses rather than collapsing a provider to a single status.
 A provider can carry a healthy source beside a missing or expired one; the unused source's state is not the candidate's state.
 A Pi-hosted family may authenticate through the vendor's own store with no `pi:`-prefixed source at all, which is normal and never evidence against the candidate.

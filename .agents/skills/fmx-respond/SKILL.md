@@ -224,6 +224,7 @@ This section is the sole owner of that procedure.
 
 1. Run `bin/fm-public-followup.sh consume`.
    It reconciles every typed terminal result from disk and prints `ready <obligation-id> <request-id> <platform>` for each commitment that became deliverable.
+   The typed result on disk is the only terminal source: never recover an outcome by reading a worker's `done:` sentence, and never post from one.
    A refusal prints `rejected <event-id>: <reason>` and quarantines that event; read the reason rather than re-emitting blindly.
 2. For each ready commitment, run `bin/fm-public-followup.sh deliver <obligation-id>`.
    With no `--text-file` it reuses the accepted terminal outcome exactly, which is the preferred path for a landed result.

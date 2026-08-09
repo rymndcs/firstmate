@@ -52,80 +52,11 @@ Each secondmate has a persistent isolated `FM_HOME`, including its own state, ba
 `bin/fm-send.sh` fails closed unless `FM_HOME` is explicit, so a steer cannot silently resolve against another home.
 
 Tracked files hold shared instructions and tooling; `data/` holds durable private fleet records; `state/` holds volatile runtime records and append-only status events; `config/` holds local operating choices; and `projects/` contains clones that are read-only to firstmate except under hard rule 1's concrete captain-approved project operation exception.
-
-```
-CLAUDE.md            this file (AGENTS.md is a symlink to it)
-CONTRIBUTING.md      contributor workflow and repo conventions
-README.md            public overview and development notes
-.github/workflows/   shared CI and PR enforcement, committed
-.tasks.toml          tracked tasks-axi markdown backend config for the default backlog backend (section 10)
-.agents/skills/      firstmate-loaded internal skills, committed; each carries metadata.internal=true for installers
-.claude/skills       symlink to .agents/skills for claude compatibility
-skills/              standalone public installer-facing skills, committed; not loaded by firstmate
-bin/                 helper scripts, committed; read each script's header before first use
-.env                 optional X-mode pairing token; LOCAL, gitignored; presence-gates section 14
-config/crew-harness  crewmate harness override; LOCAL, gitignored; absent or "default" = same as firstmate. Inherited as the literal file: a concrete primary adapter value also controls a secondmate home's own crewmates (section 4)
-config/crew-dispatch.json  optional crewmate dispatch profiles; LOCAL, gitignored; firstmate-maintained but human-editable natural-language rules that choose a per-task harness/model/effort profile (section 4). Inherited by secondmate homes
-config/crew-limit  most ship/scout workers this home may run at once; LOCAL, gitignored; absent = 3, enforced by fm-spawn.sh, exempting secondmate spawns; inherited by secondmate homes, which each enforce their own copy (docs/configuration.md "Live worker limit")
-config/secondmate-harness  harness the PRIMARY uses to launch SECONDMATE agents, optionally followed by a model and effort token on the same line ("<harness> [<model>] [<effort>]"; section 4); LOCAL, gitignored; absent or "default" harness falls back to config/crew-harness then firstmate's own. The primary's own setting; NOT inherited into secondmate homes (secondmates do not spawn secondmates)
-config/backlog-backend  backlog backend override; LOCAL, gitignored; absent or "tasks-axi" = default tasks-axi backend, "manual" = force routine backlog updates to hand-editing; inherited by secondmate homes (section 10)
-config/linear-api-key  Linear API key binding dispatch, PR record, and merge to that task's Linear issue status; LOCAL, gitignored; absent = off, never inherited by secondmate homes; bin/fm-linear.sh owns the mechanics (docs/configuration.md "Linear status binding")
-config/backend  runtime session-provider backend override for new tasks; LOCAL, gitignored; absent = falls through to runtime auto-detection (the runtime firstmate itself is executing inside), then tmux; tmux is the verified reference backend (docs/tmux-backend.md), while herdr, zellij, orca, and cmux are experimental spawn backends (docs/herdr-backend.md, docs/zellij-backend.md, docs/orca-backend.md, docs/cmux-backend.md) - herdr and cmux can also be selected by runtime auto-detection, zellij and orca never are (always explicit), and codex-app is not accepted; see docs/codex-app-backend.md; inherited by secondmate homes under the primary-authoritative contract in secondmate-provisioning
-config/calm     Pi Calm presentation preference; LOCAL, gitignored, and not inherited; see docs/configuration.md "Pi Calm preference"
-config/startup-memory-budget     primary-authoritative per-home startup-memory budget; LOCAL, gitignored, materialized as 7,500 estimated tokens by locked primary bootstrap and inherited into secondmate homes; see docs/configuration.md "Startup memory budget"
-config/herdr-presentation-spaces  optional presence flag for Herdr's default-off disposable single-task visual projection; LOCAL, gitignored; inherited by secondmate homes; see docs/herdr-backend.md "Optional presentation spaces"
-config/trace-context  optional presence flag enabling default-off native W3C trace-context propagation to spawned agents; LOCAL, gitignored; inherited by secondmate homes; see docs/configuration.md "Trace context propagation" and docs/trace-context.md
-config/cmux-socket-password  optional cmux control-socket password; LOCAL, gitignored; read fresh on every cmux CLI call and passed through without ever overriding an operator's own ambient CMUX_SOCKET_PASSWORD when absent (docs/cmux-backend.md "Setup")
-config/wedge-alarm  optional away-mode wedge-alarm active-alert directives; LOCAL, gitignored; absent means auto (macOS Notification Center when available); see docs/wedge-alarm.md
-config/x-mode.env    generated X-mode watcher cadence; LOCAL, gitignored; source before arming watcher when present
-data/                personal fleet records; LOCAL, gitignored as a whole
-  backlog.md         task queue, dependencies, history
-  captain.md         this home's domain-local captain preferences and working style; LOCAL, gitignored, canonical even if harness memory mirrors it, and updated with inspect-then-update
-  captain-shared.md  main-authoritative shared captain preferences propagated read-only to secondmate homes; LOCAL, gitignored, owned by secondmate-provisioning
-  learnings.md       fleet-local operational facts and gotchas; LOCAL, gitignored; dated, evidence-backed, curated, and updated with inspect-then-update - rewrite and prune rather than append forever, the same contract as captain.md; created lazily, absent until this home has a learning to store
-  projects.md        thin fleet navigation registry recording each project's standing delivery posture; firstmate-private, parsed for mechanical sync and seeding by fm-project-mode.sh (section 6)
-  secondmates.md      local and remote secondmate routing table; firstmate-private, maintained by the secondmate seed helpers (section 6)
-  <id>/brief.md      per-task crewmate brief, or per-secondmate charter brief when kind=secondmate
-  <id>/report.md     scout task deliverable, written by the crewmate; survives teardown
-  <id>/recovery-context.md  optional wedge context captured before a crewmate is terminated; `stuck-crewmate-recovery` owns when and what it records; survives teardown
-projects/            cloned repos; gitignored; read-only except under hard rule 1's concrete captain-approved project operation exception
-state/               volatile runtime signals; gitignored
-  <id>.status        appended by crewmates: "<state>: <note>" wake-event lines, not current-state truth
-  <id>.turn-ended    touched by turn-end hooks
-  <id>.grok-turnend-token   firstmate-owned grok hook registry token for the task; removed by teardown
-  <id>.kimi-turnend-token   firstmate-owned Kimi hook registry token for the task; removed by teardown
-  <id>.meta          written by fm-spawn: window=, endpoint_task_id=, worktree=, project=, harness=, model=, effort=, kind=, mode=, yolo=, tasktmp=; ship and scout spawns record dispatch_reading= as a compact timestamped ranked-capacity snapshot or the explicit unavailable marker, while secondmate records, older metadata, and metadata predating the rename safely omit it (bin/fm-dispatch-axi-lib.sh); an optional branch= only when the task's brief supplied its own task-branch name, absent meaning the derivable fm/<task-id> default (bin/fm-brief.sh --branch); an optional traceparent= only when trace context is enabled (docs/configuration.md "Trace context propagation"); kind=secondmate also records home= and projects=, plus remote_host=/remote_root=/remote_backend=/remote_herdr_session=/remote_target= for a remote route; a non-default runtime backend records further backend-specific fields (docs/configuration.md "Runtime backend"; bin/fm-backend.sh, section 8); fm-pr-check, including through fm-pr-merge, records one canonical pr= and the forge's pr_head= when available (GitHub pull requests and GitLab merge requests; docs/gitlab-merge-watch.md); fm-x-link appends x_request=, x_request_ts=, x_followups=, and optional x_platform=/x_reply_max_chars= for an X-mode-originated task (section 14)
-  <id>.herdr-presentation  quarantinable attempt and restart-binding journal for Herdr's optional visual projection; never task or endpoint authority; see docs/herdr-backend.md "Optional presentation spaces"
-  <id>.check.sh      authenticated slow poll; the watcher dispatches validated PR data and the byte-identified X shim through trusted repository scripts, runs registered custom checks from hash-validated private snapshots, and rejects every other state check without execution
-  <id>.check-trust   private content binding created by fm-check-register.sh for an intentional custom check
-  <id>.pr-poll       private validated data sidecar for the byte-static PR merge poll
-  <id>.pr-poll-registration  private transactional provenance record binding the task, canonical metadata identity, sidecar, and static poll publication
-  <id>.pr-poll-retirement  private identity-bound crash-recovery receipt for one exact validated merged result; removed after its poll artifacts retire
-  .pr-check-quarantine/  private non-runnable storage for checks neutralized by the non-executing migration
-  .pr-check-migration.log  private per-task outcomes distinguishing rebuilt or canonically registered replacement polls, quarantined unarmed polls, and incomplete migrations
-  .pr-check-migration-scan-v1  private marker proving the non-executing scan disabled every unsafe legacy check; .pr-check-migration-v1 separately records completed private repairs
-  x-watch.check.sh   generated X-mode relay poll shim; present only when opted in (section 14)
-  pending-replies/   parent-owned secondmate pending-reply records (correlation id, delivery vs reply, recovery, escalation); fm-pending-reply-lib.sh
-  procevent/         registered process-to-event sources, one private record per canonical source id; written only by bin/fm-procevent.sh, and their presence alone keeps supervision required (section 13)
-  procevent-inbox/   private captured results and their durable handled-acknowledgement markers; source output lives here and never in an event line
-  x-inbox/           generated X-mode pending mention payloads; fmx-respond drains it (section 14)
-  x-context/         generated X-mode durable per-request reply context and one-wake offer markers, keyed by request_id; survives inbox cleanup and expires within seven days (section 14; bin/fm-x-lib.sh)
-  x-outbox/          generated X-mode dry-run reply and dismiss previews; inspect it when FMX_DRY_RUN is set (section 14)
-  public-followup/   generated private transport for promised public replies: commitment registrations, typed terminal-result inbox, accepted/rejected ledgers (section 14; bin/fm-public-followup.sh)
-  x-poll.error x-poll.claim-error  generated X-mode relay and offer-claim diagnostic dedupe markers
-  .wake-queue        durable queued wakes: epoch<TAB>seq<TAB>kind<TAB>key<TAB>payload
-  .afk               durable away-mode flag; present = sub-supervisor may inject escalations (set by /afk, cleared on user return)
-  .watch.lock .wake-queue.lock watcher singleton and queue serialization locks
-  .claude-autoarm.lock .claude-autoarm-epoch .claude-autoarm-failure-notified .claude-autoarm-failure-alarmed .turnend-claude-blocks .turnend-claude-blocks.lock   Claude Stop auto-arm single-flight, epoch, failure-episode, attended-alarm, guard-budget, and budget-lock records; never touch
-  .hash-* .count-* .stale-* .stale-since-* .paused-* .wedge-escalations-* .seen-* .hb-surfaced-* .last-* .heartbeat-streak   watcher internals; never touch
-  .watch-triage.log  watcher's absorbed-wake debug log (size-capped); never relied on, safe to delete
-  .last-watcher-beat watcher liveness beacon, touched every poll (including while absorbing benign wakes); guard scripts read it
-  .subsuper-* .supervise-daemon.*   sub-supervisor internals; never touch
-.no-mistakes/        local validation state and evidence; gitignored
-```
+`docs/configuration.md` "Operational home layout and state" owns the per-directory inventory and points at each child file's own owner.
+Never hand-edit the watcher, Claude auto-arm, or sub-supervisor coordination records under `state/`; those loops own them.
 
 A `state/<id>.status` line is a wake event, not current-state truth; `bin/fm-crew-state.sh` owns current-state reconciliation.
-Treat `data/captain.md` as the domain-local record of captain preferences, optional `data/captain-shared.md` as the main-authoritative shared captain-preference file for secondmate inheritance, and `data/learnings.md` as curated home-local knowledge, regardless of harness memory.
+Treat `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md` as canonical over anything harness memory mirrors.
 
 ## 3. Session start (run once at every session start)
 
@@ -137,25 +68,9 @@ Tracked native session-open adapters only nudge this command; `docs/sessionstart
 
 Read the complete digest once and trust it as this turn's startup and recovery input.
 Do not separately re-read the context, backlog, metadata, or bulk status inputs it just printed unless a source was reported absent or corrupt, older history is specifically needed, or a targeted workflow must inspect before writing.
-An `ABSENT` captain, shared-captain, secondmate, or learnings file means the firstmate repo's built-in defaults, no shared captain preferences, no registered secondmates, or no captured learnings; rebuild an absent or stale project registry from the clones before dispatch.
 
 If the session lock cannot be acquired and verified, report its exact diagnostic and remain read-only; another active session is only one possible cause.
 A lock-refused session must not spawn, steer, merge, drain the wake queue, repair supervision, repair a checkout, or perform any other fleet mutation.
-
-1. **Lock** - acquires the per-home session lock first, before anything mutates shared state.
-2. **Bootstrap** - detect-only checks (tool/version problems, GitHub auth, the worktree-tangle check, harness override, dispatch-profile validation, backlog-backend status) always run, but routine confirmations stay silent by default.
-   When the lock could not be acquired, the worktree-tangle check uses read-only advisory wording without a checkout repair command.
-   Home-local stale Herdr projection cleanup and the bootstrap MUTATING sweeps (`bin/fm-bootstrap.sh`'s header owns the enumeration under `FM_BOOTSTRAP_DETECT_ONLY`) run only when this session actually holds the lock from step 1.
-   The secondmate liveness sweep deterministically accounts for every registered secondmate: it relaunches only from the recovery-grade `dead` or `missing` states, preserves ambiguous, unreadable, or unreachable remote targets, and reports skipped or failed guarantees as `SECONDMATE_LIVENESS:` lines (`bin/fm-bootstrap.sh`; `bin/fm-backend.sh`'s `fm_backend_agent_state`; `docs/remote-secondmates.md`).
-3. **Wake queue** - when locked, drains the durable wake queue and prints the raw records prominently as this turn's first work queue; a bounded, clearly labeled historical status-event annotation may follow a valid `signal` record but never replaces it or current-state reconciliation, and a lapsed watcher chain still surfaces here via the same guard alarm.
-   When the lock could not be acquired and verified, the queue is left untouched because no session mutation is authorized, and the guard's tangle/watcher-liveness alarms still print in read-only advisory mode without drain, supervision repair, or checkout repair commands.
-4. **Context digest** - the full contents of `data/projects.md`, `data/secondmates.md`, `data/captain.md`, `data/captain-shared.md`, and `data/learnings.md`, each clearly delimited.
-   A file that does not exist prints an explicit `ABSENT` marker, never confused with an empty-but-present file: absence is meaningful (`captain.md` absent means use the firstmate repo's built-in defaults, `projects.md` absent means rebuild it from the clones under `projects/`, etc.).
-5. **Fleet-state digest** - the compact backlog listing owned by `bin/fm-session-start.sh`; every `state/<id>.meta`; a bounded tail of each task's `state/<id>.status` (labeled as wake-EVENT history, not current state, with the full log path printed for a deeper read); the `state/.afk` flag; and one cheap alive/dead read of each task's recorded backend endpoint.
-   That liveness line is a fast presence check only, not a full state read - when you need a crew's actual current state (a run-step, not just "is the pane there"), read it with `bin/fm-crew-state.sh <id>` as before; the digest deliberately skips that deeper, slower read for every task so it stays fast and bounded.
-6. **Supervision operating instructions and next step** - after the wake queue and before context, the digest emits exactly one operating block for the detected primary harness.
-   The closing reminder points back to that emitted block and preserves only the lock, afk, X-mode, and read-once reminders.
-   The script itself never starts supervision; the emitted harness protocol owns the exact wait or wake mechanism.
 
 Bootstrap detects first, asks for consent, and installs only after the captain approves in the current session.
 Do not dispatch until the required tools are present and GitHub authentication is good.
@@ -167,25 +82,12 @@ A silent bootstrap section needs no action; for any printed actionable diagnosti
 ## 4. Harness and runtime dispatch
 
 Load `harness-adapters` before every spawn or recovery and before trust handling, skill invocation, interrupt, exit, resume, or adapter verification.
-The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, and `kimi`; never dispatch on an unverified adapter.
-If static `config/crew-harness` or `config/secondmate-harness` names an unverified adapter, report it and fall back only to a verified adapter rather than launching it.
+The verified harnesses are `claude`, `codex`, `opencode`, `pi`, `pi-signed`, `grok`, and `kimi`; never dispatch on an unverified adapter, whatever static configuration names.
 
-`docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-harness.sh` owns static resolution, and `bin/fm-spawn.sh` owns launch flags and fail-closed validation.
-When dispatch profiles exist, consult them at every crewmate or scout intake and pass the resolved concrete profile required by `fm-spawn`.
+When dispatch profiles exist, consult them at every crewmate or scout intake, pass the resolved concrete profile required by `fm-spawn`, and preserve malformed profile configuration as an actionable error rather than selecting around it.
 Routing precedence is an explicit per-task captain override, then the best-fit configured rule, then the configured default, then the static crewmate harness.
-Firstmate alone resolves a matched profile array: run `dispatch-axi --json` at that intake, evaluate every configured candidate against that ranked output and the evidence printed beside it, and never adopt or overturn a rank without stating that evidence.
-Account for every candidate with the catalog evidence, provider relationship, applicable capacity and authentication facts, remaining uncertainty, fit and reasoning class, and the rank, runway, and headroom, plus the later pace or reserve evidence used in selection; never omit a candidate, guess, fall back silently, or call the result capacity-informed without them.
-Establish model support and provider family from that harness's own authoritative catalog, then read the dispatch snapshot at the granularity the vendor actually supplies: provider-level or all-model evidence applies to every model established in that family, and a named-model window bounds only that model.
-Missing model-level capacity, a missing authentication source, an unranked or unmeasurable candidate, or unmodeled authentication is disclosed uncertainty that keeps a candidate eligible, never a credential or login escalation.
-Only concrete contradictory evidence blocks a candidate, such as an authoritative catalog proving the model unsupported or proof that the credential selected for that surface is unusable; never infer a credential store, provider family, or capacity mapping from a harness, model, or source name, and never launch another harness's CLI to judge a candidate.
-Preserve malformed profile configuration as an actionable error rather than selecting around it.
-When every candidate is tight, preserve the captain's strongest-reasoning class rather than silently downgrading it solely to conserve capacity; stop and report the tight choice if that class cannot proceed.
-Break genuine evidence ties without array-order or harness bias.
-`dispatch-axi` ranks the providers and shows its working, but it never selects, and its ranking is approximate because it compares different measurement shapes.
-`quota-axi` is a data source inside it, never something firstmate reads for capacity itself; it remains data-only, owns how model or product windows relate to bounding account windows, and stays firstmate's per-provider credential surface.
-Load `quota-array-dispatch` before choosing among a matched profile array; that skill is the single owner of the completion-aware selection procedure and of when firstmate may override the ranking.
-The generic effort fallback and its precedence are owned by `harness-adapters`: explicit captain and standing configured effort win; otherwise use low for well-understood explicit work, xhigh for ambiguous investigation or design, intermediate levels proportionally, and never max without explicit captain preference.
-Do not add model-specific versions of that policy.
+Load `quota-array-dispatch` before choosing among a matched profile array; that skill is the single owner of the capacity evidence, candidate accounting, and completion-aware selection procedure, and `harness-adapters` owns the effort fallback.
+`docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-harness.sh` owns static resolution, and `bin/fm-spawn.sh` owns launch flags and fail-closed validation.
 
 `secondmate-provisioning` owns secondmate harness pins and inherited local material, while `harness-adapters` owns the harness consequences.
 Dispatch only on a backend that `fm-spawn` validates as spawn-capable; pass an explicit per-spawn `--backend` only under that exact task's own authority, never as later-task precedent (selection contract: [`docs/configuration.md`](docs/configuration.md) "Runtime backend").
@@ -501,37 +403,30 @@ It performs guarded fast-forward updates of firstmate and registered secondmate 
 
 These skills are not captain-invocable; load them only at their precise triggers.
 
-- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap section prints an actionable diagnostic line (`MISSING:`, `MISSING_MANUAL:`, `BACKEND_INVALID:`, `NEEDS_GH_AUTH`, `TANGLE:`, `STARTUP_MEMORY_BUDGET:`, `CREW_DISPATCH: invalid`, `FLEET_SYNC:`, `PR_CHECK_MIGRATION:`, `SECONDMATE_SYNC:`, `SECONDMATE_LIVENESS:`, `SECONDMATE_HANDOFF:`, `NUDGE_SECONDMATES:`, or `FMX:`); silence and `BOOTSTRAP_INFO:` need no load.
+- `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap section prints an actionable diagnostic line; that skill owns which prefixes are actionable and how to handle each one.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
 - `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
-- `quota-array-dispatch` - load before choosing among a matched crew-dispatch profile array from current dispatch-axi output.
-- `harness-adapters` - load before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter.
-- `firstmate-orca` - load before switching to Orca, spawning or supervising Orca-backed work, smoke-testing Orca backend behavior, debugging Orca task state, or reconciling Orca-backed task metadata.
-- `project-management` - load before adding, creating, removing, or initializing a project.
-  Cloning or registering a project is add intake and uses the same trigger.
-- `stuck-crewmate-recovery` - load when the session-start digest reports an ordinary direct report's endpoint dead or its metadata has no window, or after a stale wake, looping pane, repeated confusion, an answered-by-brief question, an unresponsive crewmate, or a failed steer.
+- `quota-array-dispatch` - load before choosing among a matched crew-dispatch profile array.
+- `harness-adapters` - load before spawning or recovering a crewmate or secondmate, and before any harness-specific trust, invocation, interrupt, exit, resume, or adapter-verification step.
+- `firstmate-orca` - load before switching to Orca, and before spawning, supervising, smoke-testing, debugging, or reconciling Orca-backed work.
+- `project-management` - load before adding, creating, removing, or initializing a project; cloning or registering one is add intake and uses the same trigger.
+- `stuck-crewmate-recovery` - load when an ordinary direct report's endpoint is dead or its metadata has no window, and after a stale wake, a looping or repeatedly confused pane, a question its brief already answers, an unresponsive worker, or a failed steer.
 - `secondmate-provisioning` - load before creating, seeding, validating, launching, handing backlog to, recovering, pushing inherited local material into, or retiring a secondmate home, and before editing `data/secondmates.md`.
 - `decision-hold-lifecycle` - load before treating an investigation or visual review as complete, before ending a visual review that exposed a decision, and when recording or routing the captain's answer.
-- `process-event-sources` - load before arming a long-polling source, and on any `procevent <adapter> <source-id> <sequence>` check wake.
-  Never run a registered source's blocking command yourself in a conversational turn.
-- `fmx-respond` - load on an `x-mention <request_id>` `check:` wake to handle the mention, on an `x-mode-error ...` `check:` wake to report the X-mode configuration blocker, on a `public-followup ...` `check:` wake or a startup-surfaced public commitment, and on any milestone or terminal wake for an X-mode-linked task before posting its completion follow-up; relevant only when X mode is on.
-- `firstmate-codexapp` - load before coordinating a visible Codex Desktop thread, evaluating a Codex App backend request, or reconciling Codex Desktop host-tool smoke evidence for Firstmate work.
-- `pr-description-summarize` - load, for a direct-PR ship task, immediately before `gh-axi pr create`; for a no-mistakes ship task, once the run reports `outcome: checks-passed` and before that task's final status line.
+- `process-event-sources` - load before arming a long-polling source, and on any `procevent` check wake; never run a registered source's blocking command yourself in a conversational turn.
+- `fmx-respond` - load on an `x-mention`, `x-mode-error`, or `public-followup` check wake, on a startup-surfaced public commitment, and on any milestone or terminal wake for an X-linked task; relevant only when X mode is on.
+- `firstmate-codexapp` - load before creating, reading, steering, archiving, debugging, or reviewing a visible Codex Desktop thread for firstmate work, and before evaluating a Codex App backend request.
+- `pr-description-summarize` - load before `gh-axi pr create` on a direct-PR ship task, and on a no-mistakes ship task once the run reports `outcome: checks-passed`, before that task's final status line.
 - `firstmate-coding-guidelines` - load before changing firstmate's shared, tracked material, as defined by section 1's list, whether editing directly or briefing a crewmate for a firstmate-repo task.
 
 ## 14. X mode
 
-X mode ships inert and causes no behavior change until the home opts in by placing `FMX_PAIRING_TOKEN` in its gitignored `.env`.
+X mode lets this home answer public mentions and act on eligible ones through the normal lifecycle.
+It ships inert and causes no behavior change until the home opts in by placing `FMX_PAIRING_TOKEN` in its gitignored `.env`.
 That token is consent for public replies and normal reversible lifecycle actions from eligible mentions, not authority for destructive, irreversible, or security-sensitive action; those still require trusted-channel confirmation.
-`docs/configuration.md` owns activation, generated state, cadence, wire protocol, and opt-out mechanics.
 
-An X-only home still requires the live supervision cycle so mentions can wake it without fleet work.
-On an `x-mention <request_id>` or `x-mode-error ...` check wake, load `fmx-respond`, which owns classification, public-safety policy, reply or dismissal, task linking, and follow-ups.
-For every X-linked terminal outcome, load that owner and use the promised-final reconciliation when a typed public commitment exists, otherwise post the final completion follow-up before teardown.
-
-A promised final public reply is durable state, never conversation memory.
-Load `fmx-respond` before promising one, on a `public-followup ...` check wake, and whenever the session-start digest lists a public commitment awaiting delivery.
-Only the home holding the relay consent and thread binding ever posts it, so never ask a secondmate or crewmate to find the thread or send the reply, and never recover a terminal result by reading a `done:` sentence.
+A promised final public reply is durable state, never conversation memory, and only the home holding the relay consent and thread binding ever posts it, so never ask a secondmate or crewmate to find the thread or send the reply.
+Load `fmx-respond` at its section 13 triggers and before promising a final public reply; it owns classification, public-safety policy, reply or dismissal, task linking, and follow-ups, while `docs/configuration.md` owns activation, generated state, cadence, wire protocol, and opt-out mechanics.
 
 ## Captain instruction precedence
 

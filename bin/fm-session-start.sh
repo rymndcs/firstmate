@@ -29,21 +29,65 @@
 #                       mutating step runs.
 #   2. bootstrap      - home-local stale Herdr projection cleanup runs only
 #                       when this session actually holds the lock. Detect-only
-#                       diagnostics always run. Bootstrap's MUTATING sweeps
-#                       also run only when locked; bin/fm-bootstrap.sh's own
-#                       header owns their current list.
+#                       diagnostics always run: tool/version problems, GitHub
+#                       auth, the worktree-tangle check, the harness override,
+#                       crew-dispatch profile validation, and backlog-backend
+#                       status. Routine confirmations stay silent by default.
+#                       When the lock was refused, the worktree-tangle check
+#                       uses read-only advisory wording and prints no checkout
+#                       repair command. Bootstrap's MUTATING sweeps also run
+#                       only when locked; bin/fm-bootstrap.sh's own header owns
+#                       their current list. Among them the secondmate liveness
+#                       sweep deterministically accounts for EVERY registered
+#                       secondmate: it relaunches only from the recovery-grade
+#                       'dead' or 'missing' states, preserves ambiguous,
+#                       unreadable, or unreachable remote targets rather than
+#                       respawning against them, and reports every skipped or
+#                       failed guarantee as a SECONDMATE_LIVENESS: line
+#                       (bin/fm-backend.sh's fm_backend_agent_state;
+#                       docs/remote-secondmates.md).
 #   3. wake-drain     - mutates the durable wake queue, so it also only runs
-#                       when locked.
+#                       when locked. When locked, the raw drained records print
+#                       prominently as this turn's FIRST work queue; a bounded,
+#                       clearly labeled historical status-event annotation may
+#                       follow a valid 'signal' record but never replaces that
+#                       record or current-state reconciliation. A lapsed watcher
+#                       chain surfaces here through the same guard alarm.
+#                       When the lock was refused the queue is left UNTOUCHED,
+#                       because a read-only session has no mutation authority
+#                       and another session may be draining it; the guard's
+#                       tangle and watcher-liveness alarms still print, in
+#                       advisory mode, with no drain, supervision repair, or
+#                       checkout repair command.
 #   4. context digest - data/projects.md, data/secondmates.md, data/captain.md,
 #                       data/captain-shared.md, data/learnings.md: read-only,
-#                       always safe, always runs.
+#                       always safe, always runs. Each prints in full, or as an
+#                       explicit ABSENT marker that is never confused with an
+#                       empty-but-present file; the section preamble prints what
+#                       each file's absence means, because absence is meaningful
+#                       for every one of them.
 #   5. fleet digest   - a compact data/backlog.md identity/metadata listing,
-#                       every state/*.meta, a bounded state/*.status tail,
+#                       every state/*.meta, a bounded state/*.status tail
+#                       labeled as wake-EVENT history rather than current state
+#                       and printed with the full log path for a deeper read,
 #                       state/.afk, and a cheap per-task endpoint-liveness read:
-#                       read-only, always runs.
+#                       read-only, always runs. That liveness line is a fast
+#                       presence check only. A crew's actual current state - a
+#                       run-step, not just "is the pane there" - still needs
+#                       bin/fm-crew-state.sh <id>; this digest deliberately
+#                       skips that deeper, slower read for every task so it
+#                       stays fast and bounded.
 #   6. closing reminder - prints the context-specific watcher next step; this
 #                       script points back to the emitted harness supervision
 #                       block and deliberately never arms the watcher itself.
+#
+# The supervision operating instructions are emitted after the wake queue and
+# before context: exactly ONE operating block for the detected primary harness,
+# rendered by bin/fm-supervision-instructions.sh from docs/supervision-protocols/.
+# The closing reminder points back at that block and otherwise preserves only
+# the lock, afk, X-mode, and read-once reminders. This script never starts
+# supervision; the emitted harness protocol owns the exact wait or wake
+# mechanism.
 #
 # On a Pi primary, the supervision-block step also checks whether Pi's two
 # tracked primary extensions are loaded and prints a PI_WATCH_EXTENSION
@@ -121,10 +165,10 @@ subsection() { printf '\n%s\n%s\n' "$1" "$SUBRULE"; }
 
 # print_file_or_absent <path> <label>: full contents under a labeled
 # subsection, or an explicit ABSENT marker. Absence is semantically
-# meaningful for every one of these files (captain.md absent = firstmate
-# repo built-in defaults, projects.md absent = rebuild from clones, etc. -
-# AGENTS.md section 3) and must never be confused with an empty-but-present
-# file, so the two cases print differently.
+# meaningful for every one of these files and must never be confused with an
+# empty-but-present file, so the two cases print differently. The CONTEXT
+# section preamble prints what each file's absence means, so the digest
+# carries that meaning itself rather than deferring it to AGENTS.md.
 print_file_or_absent() {
   local path=$1 label=$2
   subsection "$label"
@@ -343,6 +387,15 @@ fi
 
 # --- 4. context digest -----------------------------------------------------
 section "CONTEXT"
+cat <<'EOF'
+ABSENT below is meaningful and never the same as a present-but-empty file:
+data/captain.md absent = use the firstmate repo's built-in defaults;
+data/captain-shared.md absent = no shared captain preferences;
+data/secondmates.md absent = no registered secondmates;
+data/learnings.md absent = no captured learnings yet;
+data/projects.md absent or stale = rebuild the registry from the clones under
+projects/ before dispatching any work.
+EOF
 print_file_or_absent "$DATA/projects.md" "data/projects.md"
 print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
 print_file_or_absent "$DATA/captain.md" "data/captain.md"

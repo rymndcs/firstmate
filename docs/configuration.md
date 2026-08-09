@@ -8,15 +8,22 @@ The shared orchestrator behavior lives in [`AGENTS.md`](../AGENTS.md) - edit it 
 
 ## Operational home layout and state
 
-This section is the single owner of the top-level operational-home layout; producer script headers and their help own exact child-file fields and mutation contracts.
-The tracked code root contains the shared instruction, skill, documentation, workflow, and `bin/` surfaces, while each effective `FM_HOME` contains private operational directories.
-`data/` holds durable private fleet records such as the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, backlog, briefs, and scout reports.
-`state/` holds volatile runtime records such as task metadata, append-only status events, endpoint signals, watcher and wake-queue coordination, away-mode state, generated X-mode artifacts, private secondmate config-reread generations with their retry and quarantine state, and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
-`config/` holds local gitignored operating choices, and `projects/` holds the local project clones that Firstmate reads but changes only through the narrow guarded and concrete captain-approved exceptions in `AGENTS.md`.
+This section is the single owner of the top-level operational-home layout and of the per-directory inventory below; producer script headers and their help own exact child-file fields and mutation contracts.
+The tracked code root contains the shared instruction, skill, documentation, workflow, and `bin/` surfaces, plus the `.tasks.toml` backlog-backend config covered under "Backlog backend" below.
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) and the README's "Two-tier skill layout" own the tracked-root surfaces themselves, including the `AGENTS.md` symlink to `CLAUDE.md`, the `.claude/skills` symlink to `.agents/skills/`, and the split between firstmate-loaded internal skills and standalone public `skills/`.
+Each effective `FM_HOME` then contains the four private operational directories below, plus a gitignored `.no-mistakes/` holding this home's local validation state and evidence.
+
+`data/` holds durable private fleet records: the backlog, the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, and one `data/<id>/` directory per task carrying its brief or secondmate charter, a scout's `report.md`, and any `recovery-context.md` captured before a worker is terminated.
+The `<id>/` artifacts deliberately survive teardown; `stuck-crewmate-recovery` owns when and what a recovery context records.
+
+`state/` holds volatile runtime records, each with its own named owner rather than one exhaustive tree here: task metadata and append-only status events, turn-end markers and the per-task turn-end authorization tokens described in [`docs/turnend-guard.md`](turnend-guard.md), watcher and wake-queue coordination, away-mode state, registered custom watcher checks with the content binding `bin/fm-check-register.sh` creates for them, the PR merge-poll artifacts owned by `bin/fm-pr-check.sh` and the quarantine, log, and marker records owned by `bin/fm-pr-check-migrate.sh`, registered process-to-event sources and their captured results under "Process-to-event sources" below, generated X-mode artifacts and the promised-public-reply transport under "X mode" below, private secondmate config-reread generations with their retry and quarantine state, and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
+Watcher, Claude auto-arm, and sub-supervisor coordination records under `state/` are internal to those loops and are never hand-edited; `AGENTS.md` section 2 keeps that rule inline because it binds whenever an agent reads this directory.
+
+`config/` holds local gitignored operating choices, one file per choice, and every such file's own section below is the single owner of its format, default, and effect; `secondmate-provisioning` separately owns which of them a secondmate home inherits.
+`projects/` holds the local project clones that Firstmate reads but changes only through the narrow guarded and concrete captain-approved exceptions in `AGENTS.md`.
 
 `bin/fm-spawn.sh` owns the base task-metadata fields it emits, while the runtime-backend section below owns backend-specific fields and selector interpretation.
 The producing PR and X helpers own the fields they append, `bin/fm-classify-lib.sh` owns status-event vocabulary, and `bin/fm-crew-state.sh` owns current-state reconciliation.
-Wake, watcher, away-mode, and X-specific state mechanics remain with their named scripts and reference sections rather than being duplicated into one exhaustive state tree here.
 
 `bin/fm-session-start.sh`'s header is the single owner of session-start ordering, composed commands, digest contents, and the digest's startup mechanism.
 `docs/sessionstart-nudge.md` owns the native session-open adapter mechanics that nudge the digest command.
