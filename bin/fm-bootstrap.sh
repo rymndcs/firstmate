@@ -58,10 +58,12 @@
 #          installed but incompatible build reports MISSING like no-mistakes. A
 #          compatible tasks-axi default backend is silent.
 #          dispatch-axi is what firstmate actually reads for the agent-owned
-#          dispatch-profile array procedure in AGENTS.md section 4 and
-#          .agents/skills/quota-array-dispatch/SKILL.md. It is checked for
-#          presence only; fm-dispatch-axi-lib.sh owns why it has no version gate
-#          and where its contract version is validated instead.
+#          dispatch-profile array procedure owned by
+#          .agents/skills/quota-array-dispatch/SKILL.md; AGENTS.md section 4
+#          keeps only the intake boundary and the trigger that loads that skill.
+#          It is checked for presence only; fm-dispatch-axi-lib.sh owns why it
+#          has no version gate and where its contract version is validated
+#          instead.
 #          quota-axi stays required alongside it because dispatch-axi reads it
 #          for every window provider and firstmate reads `quota-axi auth --json`
 #          for per-provider credentials, a surface dispatch-axi does not expose.
