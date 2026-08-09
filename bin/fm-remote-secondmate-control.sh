@@ -59,7 +59,8 @@ validate_home() { # <id> [allow-absent]
     || die "remote home is not a seeded secondmate home"
   marker=$(cat "$TARGET_HOME/.fm-secondmate-home")
   [ "$marker" = "$id" ] || die "remote home belongs to $marker, not $id"
-  [ -f "$TARGET_HOME/AGENTS.md" ] && [ -d "$TARGET_HOME/bin" ] || die "remote home is not a Firstmate checkout"
+  [ -f "$TARGET_HOME/CLAUDE.md" ] && [ ! -L "$TARGET_HOME/CLAUDE.md" ] \
+    && [ -d "$TARGET_HOME/bin" ] || die "remote home is not a Firstmate checkout"
 }
 
 meta_path() { printf '%s/%s.meta\n' "$CONTROL_STATE" "$1"; }

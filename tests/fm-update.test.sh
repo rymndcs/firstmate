@@ -12,7 +12,7 @@
 #     fast-forward of one worktree never disturbs another worktree's checkout
 #     or the shared default branch.
 #   - The caller-action summary is correct: reread-firstmate flips to yes only
-#     when the instruction surface (AGENTS.md / bin / .agents/skills) changed, and
+#     when the instruction surface (CLAUDE.md / bin / .agents/skills) changed, and
 #     nudge-secondmates lists exactly the live secondmates that advanced.
 #   - Secondmate homes resolve from both state/<id>.meta and the
 #     data/secondmates.md registry, deduped, and the firstmate repo is never
@@ -31,7 +31,8 @@ TMP_ROOT=$(fm_test_tmproot fm-update-tests)
 
 # Build a fresh world: a bare origin seeded with one commit, a firstmate repo
 # clone checked out on main, and a home dir with state/ and data/. Echoes the
-# world dir. Files seeded: AGENTS.md, README.md, bin/tool.sh, and an internal skill note.
+# world dir. Files seeded: the real CLAUDE.md with its AGENTS.md symlink, README.md,
+# bin/tool.sh, and an internal skill note.
 new_world() {
   local name=$1 w
   w="$TMP_ROOT/$name"
@@ -43,7 +44,8 @@ new_world() {
   git -C "$w/origin.git" symbolic-ref HEAD refs/heads/main
   git clone -q "$w/origin.git" "$w/seed" 2>/dev/null
 
-  printf 'v1\n' > "$w/seed/AGENTS.md"
+  printf 'v1\n' > "$w/seed/CLAUDE.md"
+  ln -s CLAUDE.md "$w/seed/AGENTS.md"
   printf 'r1\n' > "$w/seed/README.md"
   mkdir -p "$w/seed/bin" "$w/seed/.agents/skills"
   printf 'echo a\n' > "$w/seed/bin/tool.sh"
@@ -72,13 +74,13 @@ add_sm() {
 }
 
 # Advance origin by one commit. mode=instr changes the instruction surface
-# (AGENTS.md, bin, .agents/skills) plus README; mode=readme changes only README.
+# (CLAUDE.md, bin, .agents/skills) plus README; mode=readme changes only README.
 bump_origin() {
   local w=$1 mode=$2
   git -C "$w/seed" pull -q origin main >/dev/null 2>&1 || true
   printf 'r-%s\n' "$mode" >> "$w/seed/README.md"
   if [ "$mode" = instr ]; then
-    printf 'v2\n' > "$w/seed/AGENTS.md"
+    printf 'v2\n' > "$w/seed/CLAUDE.md"
     printf 'echo b\n' > "$w/seed/bin/tool.sh"
     printf 's2\n' > "$w/seed/.agents/skills/note.md"
   fi
@@ -149,13 +151,13 @@ test_dirty_secondmate_skipped() {
   w=$(new_world t4)
   add_sm "$w" sm1
   bump_origin "$w" instr
-  printf 'uncommitted local edit\n' >> "$w/sm1/AGENTS.md"
+  printf 'uncommitted local edit\n' >> "$w/sm1/CLAUDE.md"
 
   out=$(run_update "$w")
 
   assert_contains "$out" "secondmate sm1: skipped: dirty working tree" "dirty home skipped"
   assert_not_contains "$out" "fm-sm1" "skipped secondmate is not nudged"
-  grep -q 'uncommitted local edit' "$w/sm1/AGENTS.md" \
+  grep -q 'uncommitted local edit' "$w/sm1/CLAUDE.md" \
     || fail "dirty edit was discarded"
   pass "T4 dirty secondmate skipped, local edit preserved"
 }
@@ -166,7 +168,7 @@ test_diverged_secondmate_skipped() {
   w=$(new_world t5)
   add_sm "$w" sm1
   # Local commit on the secondmate's detached HEAD makes it diverge from origin.
-  printf 'fork work\n' > "$w/sm1/AGENTS.md"
+  printf 'fork work\n' > "$w/sm1/CLAUDE.md"
   git -C "$w/sm1" add -A
   git -C "$w/sm1" commit -qm local-work
   before=$(git -C "$w/sm1" rev-parse HEAD)

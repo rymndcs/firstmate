@@ -22,7 +22,8 @@ mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
 trap 'if [ -n "$OTHER_PID" ]; then kill "$OTHER_PID" 2>/dev/null || true; fi; if [ -n "$RECOVERY_WORKER_PID" ]; then kill "$RECOVERY_WORKER_PID" 2>/dev/null || true; fi; if [ -f "$STATE_ROOT/worker.pid" ]; then kill "$(cat "$STATE_ROOT/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
 
 cp "$ROOT/bin/fm-remote-job-lib.sh" "$ROOT/bin/fm-remote-job-worker.sh" "$REMOTE_ROOT/bin/"
-printf 'fixture\n' > "$REMOTE_ROOT/AGENTS.md"
+printf 'fixture\n' > "$REMOTE_ROOT/CLAUDE.md"
+ln -s CLAUDE.md "$REMOTE_ROOT/AGENTS.md"
 cat > "$REMOTE_ROOT/bin/fm-probe-job.sh" <<'SH'
 #!/bin/bash
 set -u
@@ -72,7 +73,7 @@ chmod +x "$RUNTIME_BIN/perl"
 git -C "$REMOTE_ROOT" init -q -b main
 git -C "$REMOTE_ROOT" config user.email test@example.com
 git -C "$REMOTE_ROOT" config user.name Test
-git -C "$REMOTE_ROOT" add AGENTS.md bin
+git -C "$REMOTE_ROOT" add AGENTS.md CLAUDE.md bin
 git -C "$REMOTE_ROOT" commit -qm 'remote job fixture'
 
 DEFAULT_STATE="$TMP_ROOT/default-timeout-jobs"

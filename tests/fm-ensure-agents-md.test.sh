@@ -7,29 +7,35 @@ set -u
 
 TMP_ROOT=$(fm_test_tmproot fm-ensure-agents-md)
 
-test_created_agents_md_includes_self_governance() {
-  local repo agents
+assert_correct_pair() {
+  local repo=$1
+  [ -f "$repo/CLAUDE.md" ] || fail "CLAUDE.md is not a regular file"
+  [ ! -L "$repo/CLAUDE.md" ] || fail "CLAUDE.md must not be a symlink"
+  [ -L "$repo/AGENTS.md" ] || fail "AGENTS.md is not a symlink"
+  [ "$(readlink "$repo/AGENTS.md")" = "CLAUDE.md" ] || fail "AGENTS.md does not point literally to CLAUDE.md"
+}
+
+test_empty_project_creates_claude_md_with_self_governance() {
+  local repo claude
   repo="$TMP_ROOT/new-project"
   mkdir -p "$repo"
   "$ROOT/bin/fm-ensure-agents-md.sh" "$repo" >/dev/null 2>&1 || fail "fm-ensure-agents-md.sh failed for empty project"
-  agents="$repo/AGENTS.md"
-  assert_present "$agents" "AGENTS.md was not created"
-  assert_present "$repo/CLAUDE.md" "CLAUDE.md symlink was not created"
-  [ -L "$repo/CLAUDE.md" ] || fail "CLAUDE.md is not a symlink"
-  assert_grep "## Maintaining this file" "$agents" "self-governance section heading missing"
-  assert_grep "Keep this file for knowledge useful to almost every future agent session in this project." "$agents" \
+  claude="$repo/CLAUDE.md"
+  assert_correct_pair "$repo"
+  assert_grep "## Maintaining this file" "$claude" "self-governance section heading missing"
+  assert_grep "Keep this file for knowledge useful to almost every future agent session in this project." "$claude" \
     "self-governance section lost the future-session bar"
-  assert_grep "Do not repeat what the codebase already shows; point to the authoritative file or command instead." "$agents" \
+  assert_grep "Do not repeat what the codebase already shows; point to the authoritative file or command instead." "$claude" \
     "self-governance section lost pointer-over-copy guidance"
-  assert_grep "Prefer rewriting or pruning existing entries over appending new ones." "$agents" \
+  assert_grep "Prefer rewriting or pruning existing entries over appending new ones." "$claude" \
     "self-governance section lost rewrite-or-prune guidance"
-  assert_grep "When updating this file, preserve this bar for all agents and keep entries concise." "$agents" \
+  assert_grep "When updating this file, preserve this bar for all agents and keep entries concise." "$claude" \
     "self-governance section lost all-agents maintenance guidance"
-  pass "fm-ensure-agents-md.sh: created AGENTS.md includes self-governance section"
+  pass "fm-ensure-agents-md.sh: empty project creates real CLAUDE.md and AGENTS.md symlink"
 }
 
-test_promoted_claude_md_includes_self_governance() {
-  local repo agents count
+test_only_claude_md_gains_symlink_and_self_governance() {
+  local repo claude count
   repo="$TMP_ROOT/claude-project"
   mkdir -p "$repo"
   cat > "$repo/CLAUDE.md" <<'EOF'
@@ -37,95 +43,108 @@ test_promoted_claude_md_includes_self_governance() {
 
 Run tests with `make test`.
 EOF
-  "$ROOT/bin/fm-ensure-agents-md.sh" "$repo" >/dev/null 2>&1 || fail "fm-ensure-agents-md.sh failed for CLAUDE.md promotion"
-  agents="$repo/AGENTS.md"
-  assert_present "$agents" "AGENTS.md was not created during promotion"
-  [ -L "$repo/CLAUDE.md" ] || fail "CLAUDE.md is not a symlink after promotion"
-  assert_grep "Run tests with \`make test\`." "$agents" \
-    "promotion lost existing CLAUDE.md content"
-  count=$(grep -Fc "## Maintaining this file" "$agents")
-  [ "$count" -eq 1 ] || fail "promotion wrote $count self-governance sections"
-  assert_grep "Keep this file for knowledge useful to almost every future agent session in this project." "$agents" \
-    "promoted AGENTS.md missing self-governance wording"
-  pass "fm-ensure-agents-md.sh: promoted CLAUDE.md includes self-governance section"
+  "$ROOT/bin/fm-ensure-agents-md.sh" "$repo" >/dev/null 2>&1 || fail "fm-ensure-agents-md.sh failed for lone CLAUDE.md"
+  claude="$repo/CLAUDE.md"
+  assert_correct_pair "$repo"
+  assert_grep "Run tests with \`make test\`." "$claude" "existing CLAUDE.md content was lost"
+  count=$(grep -Fc "## Maintaining this file" "$claude")
+  [ "$count" -eq 1 ] || fail "CLAUDE.md has $count self-governance sections"
+  pass "fm-ensure-agents-md.sh: lone CLAUDE.md gains the symlink and section"
 }
 
-test_promoted_claude_md_without_trailing_newline_keeps_blank_separator() {
-  local repo agents before
-  repo="$TMP_ROOT/no-trailing-newline-project"
+test_only_agents_md_is_promoted() {
+  local repo claude out count
+  repo="$TMP_ROOT/agents-project"
   mkdir -p "$repo"
-  printf '# Existing agent memory\n\nRun tests with make test.' > "$repo/CLAUDE.md"
-  "$ROOT/bin/fm-ensure-agents-md.sh" "$repo" >/dev/null 2>&1 || fail "fm-ensure-agents-md.sh failed for newline-less CLAUDE.md promotion"
-  agents="$repo/AGENTS.md"
-  assert_grep "Run tests with make test." "$agents" \
-    "newline-less promotion lost or mangled the last content line"
-  assert_grep "## Maintaining this file" "$agents" \
-    "newline-less promotion did not append the self-governance section"
-  before=$(grep -B1 -Fx '## Maintaining this file' "$agents" | head -n 1)
-  [ -z "$before" ] || fail "self-governance heading not preceded by a blank line (got: $before)"
-  pass "fm-ensure-agents-md.sh: newline-less promotion keeps a blank separator line"
+  printf '# Existing agent memory\n\nDeploy with kubectl.\n' > "$repo/AGENTS.md"
+  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
+    || fail "fm-ensure-agents-md.sh failed promoting lone AGENTS.md"
+  claude="$repo/CLAUDE.md"
+  assert_contains "$out" "promoted:" "lone AGENTS.md did not report promotion"
+  assert_correct_pair "$repo"
+  assert_grep "Deploy with kubectl." "$claude" "promotion lost existing AGENTS.md content"
+  count=$(grep -Fc "## Maintaining this file" "$claude")
+  [ "$count" -eq 1 ] || fail "promotion wrote $count self-governance sections"
+  pass "fm-ensure-agents-md.sh: lone AGENTS.md is promoted to real CLAUDE.md"
 }
 
-test_existing_agents_md_with_symlink_gains_self_governance() {
-  local repo agents out count
-  repo="$TMP_ROOT/existing-symlinked-project"
+test_legacy_pair_is_reversed() {
+  local repo out
+  repo="$TMP_ROOT/legacy-pair-project"
   mkdir -p "$repo"
   printf '# Existing agent memory\n\nBuild with make.\n' > "$repo/AGENTS.md"
   ln -s AGENTS.md "$repo/CLAUDE.md"
-  agents="$repo/AGENTS.md"
   out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
-    || fail "fm-ensure-agents-md.sh failed for existing AGENTS.md with symlink"
-  assert_contains "$out" "updated:" "injection into existing AGENTS.md did not report an update"
-  assert_grep "Build with make." "$agents" "injection dropped existing AGENTS.md content"
-  assert_grep "## Maintaining this file" "$agents" "existing AGENTS.md did not gain the self-governance section"
-  count=$(grep -Fc "## Maintaining this file" "$agents")
-  [ "$count" -eq 1 ] || fail "injection wrote $count self-governance sections"
-  [ -L "$repo/CLAUDE.md" ] || fail "CLAUDE.md is no longer a symlink after injection"
-  # Re-run must be a byte-exact no-op reporting unchanged.
-  cp "$agents" "$repo/.after-first"
-  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
-    || fail "fm-ensure-agents-md.sh failed on idempotent re-run"
-  assert_contains "$out" "unchanged:" "idempotent re-run did not report unchanged"
-  diff "$repo/.after-first" "$agents" >/dev/null \
-    || fail "idempotent re-run modified AGENTS.md"
-  pass "fm-ensure-agents-md.sh: existing symlinked AGENTS.md gains the section idempotently"
+    || fail "fm-ensure-agents-md.sh failed reversing the legacy pair"
+  assert_contains "$out" "promoted:" "legacy pair did not report promotion"
+  assert_correct_pair "$repo"
+  assert_grep "Build with make." "$repo/CLAUDE.md" "legacy-pair reversal lost content"
+  pass "fm-ensure-agents-md.sh: legacy symlink direction is reversed"
 }
 
-test_existing_agents_md_without_claude_gains_section_and_symlink() {
-  local repo agents out count
-  repo="$TMP_ROOT/existing-bare-project"
+test_dangling_legacy_link_converges() {
+  local repo out count
+  repo="$TMP_ROOT/dangling-legacy-project"
   mkdir -p "$repo"
-  printf '# Existing agent memory\n\nDeploy with kubectl.\n' > "$repo/AGENTS.md"
-  agents="$repo/AGENTS.md"
+  ln -s AGENTS.md "$repo/CLAUDE.md"
   out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
-    || fail "fm-ensure-agents-md.sh failed for existing AGENTS.md without CLAUDE.md"
-  assert_contains "$out" "updated:" "injection without CLAUDE.md did not report an update"
-  [ -L "$repo/CLAUDE.md" ] || fail "CLAUDE.md symlink was not created"
-  assert_grep "Deploy with kubectl." "$agents" "injection dropped existing AGENTS.md content"
-  count=$(grep -Fc "## Maintaining this file" "$agents")
-  [ "$count" -eq 1 ] || fail "injection wrote $count self-governance sections"
-  pass "fm-ensure-agents-md.sh: existing AGENTS.md without CLAUDE.md gains section and symlink"
+    || fail "fm-ensure-agents-md.sh failed on a dangling legacy CLAUDE.md -> AGENTS.md link"
+  assert_contains "$out" "created:" "dangling legacy link did not report creation"
+  assert_correct_pair "$repo"
+  count=$(grep -Fc "## Maintaining this file" "$repo/CLAUDE.md")
+  [ "$count" -eq 1 ] || fail "dangling legacy convergence wrote $count self-governance sections"
+  cp "$repo/CLAUDE.md" "$repo/.after-first"
+  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
+    || fail "fm-ensure-agents-md.sh failed re-running after dangling legacy convergence"
+  assert_contains "$out" "unchanged:" "converged dangling legacy repo was not reported unchanged"
+  cmp -s "$repo/.after-first" "$repo/CLAUDE.md" || fail "re-run modified the converged CLAUDE.md"
+  assert_correct_pair "$repo"
+  pass "fm-ensure-agents-md.sh: dangling legacy link converges idempotently"
 }
 
-test_existing_agents_md_with_section_reports_unchanged() {
-  local repo agents out
-  repo="$TMP_ROOT/fully-formed-project"
+test_wrong_claude_symlink_conflicts() {
+  local repo out rc
+  repo="$TMP_ROOT/wrong-claude-link-project"
   mkdir -p "$repo"
-  # Build a fully-formed project (AGENTS.md with the section + correct symlink).
+  printf '# Notes\n' > "$repo/NOTES.md"
+  ln -s NOTES.md "$repo/CLAUDE.md"
+  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "expected a non-zero exit for a CLAUDE.md symlink to an unrelated file"
+  assert_contains "$out" "CLAUDE.md is a symlink" "wrong CLAUDE.md symlink was not explained"
+  assert_absent "$repo/AGENTS.md" "AGENTS.md was created beside a wrong CLAUDE.md symlink"
+  pass "fm-ensure-agents-md.sh: a wrong CLAUDE.md symlink still conflicts"
+}
+
+test_already_correct_pair_is_idempotent() {
+  local repo out
+  repo="$TMP_ROOT/correct-pair-project"
+  mkdir -p "$repo"
   "$ROOT/bin/fm-ensure-agents-md.sh" "$repo" >/dev/null 2>&1 \
-    || fail "fm-ensure-agents-md.sh failed building the fully-formed fixture"
-  agents="$repo/AGENTS.md"
-  cp "$agents" "$repo/.before"
+    || fail "fm-ensure-agents-md.sh failed building the correct fixture"
+  cp "$repo/CLAUDE.md" "$repo/.before"
   out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
-    || fail "fm-ensure-agents-md.sh failed on already-formed project"
-  assert_contains "$out" "unchanged:" "already-formed project was not reported unchanged"
-  diff "$repo/.before" "$agents" >/dev/null \
-    || fail "already-formed AGENTS.md was modified"
-  pass "fm-ensure-agents-md.sh: AGENTS.md that already has the section stays unchanged"
+    || fail "fm-ensure-agents-md.sh failed on an already-correct pair"
+  assert_contains "$out" "unchanged:" "already-correct pair was not reported unchanged"
+  cmp -s "$repo/.before" "$repo/CLAUDE.md" || fail "idempotent re-run modified CLAUDE.md"
+  assert_correct_pair "$repo"
+  pass "fm-ensure-agents-md.sh: already-correct pair stays unchanged"
 }
 
-test_existing_crlf_agents_md_with_section_stays_unchanged() {
-  local repo agents out count
+test_claude_md_without_trailing_newline_keeps_blank_separator() {
+  local repo before
+  repo="$TMP_ROOT/no-trailing-newline-project"
+  mkdir -p "$repo"
+  printf '# Existing agent memory\n\nRun tests with make test.' > "$repo/CLAUDE.md"
+  "$ROOT/bin/fm-ensure-agents-md.sh" "$repo" >/dev/null 2>&1 || fail "fm-ensure-agents-md.sh failed for newline-less CLAUDE.md"
+  assert_grep "Run tests with make test." "$repo/CLAUDE.md" "newline-less CLAUDE.md content was mangled"
+  before=$(grep -B1 -Fx '## Maintaining this file' "$repo/CLAUDE.md" | head -n 1)
+  [ -z "$before" ] || fail "self-governance heading not preceded by a blank line (got: $before)"
+  pass "fm-ensure-agents-md.sh: newline-less CLAUDE.md keeps a blank separator line"
+}
+
+test_existing_crlf_claude_md_with_section_stays_unchanged() {
+  local repo out count
   repo="$TMP_ROOT/crlf-formed-project"
   mkdir -p "$repo"
   printf '%s\r\n' \
@@ -136,33 +155,27 @@ test_existing_crlf_agents_md_with_section_stays_unchanged() {
     'Keep this file for knowledge useful to almost every future agent session in this project.' \
     'Do not repeat what the codebase already shows; point to the authoritative file or command instead.' \
     'Prefer rewriting or pruning existing entries over appending new ones.' \
-    'When updating this file, preserve this bar for all agents and keep entries concise.' > "$repo/AGENTS.md"
-  ln -s AGENTS.md "$repo/CLAUDE.md"
-  agents="$repo/AGENTS.md"
-  cp "$agents" "$repo/.before"
+    'When updating this file, preserve this bar for all agents and keep entries concise.' > "$repo/CLAUDE.md"
+  ln -s CLAUDE.md "$repo/AGENTS.md"
+  cp "$repo/CLAUDE.md" "$repo/.before"
   out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
-    || fail "fm-ensure-agents-md.sh failed on CRLF AGENTS.md with the section"
-  assert_contains "$out" "unchanged:" "complete CRLF AGENTS.md was not reported unchanged"
-  cmp -s "$repo/.before" "$agents" \
-    || fail "complete CRLF AGENTS.md was modified"
-  count=$(LC_ALL=C grep -a -c '## Maintaining this file' "$agents")
-  [ "$count" -eq 1 ] || fail "complete CRLF AGENTS.md has $count self-governance sections"
-  pass "fm-ensure-agents-md.sh: CRLF AGENTS.md with the section stays unchanged"
+    || fail "fm-ensure-agents-md.sh failed on complete CRLF CLAUDE.md"
+  assert_contains "$out" "unchanged:" "complete CRLF CLAUDE.md was not reported unchanged"
+  cmp -s "$repo/.before" "$repo/CLAUDE.md" || fail "complete CRLF CLAUDE.md was modified"
+  count=$(LC_ALL=C grep -a -c '## Maintaining this file' "$repo/CLAUDE.md")
+  [ "$count" -eq 1 ] || fail "complete CRLF CLAUDE.md has $count self-governance sections"
+  pass "fm-ensure-agents-md.sh: complete CRLF CLAUDE.md stays unchanged"
 }
 
-test_existing_crlf_agents_md_without_section_preserves_crlf() {
-  local repo agents out
+test_existing_crlf_claude_md_without_section_preserves_crlf() {
+  local repo out
   repo="$TMP_ROOT/crlf-injected-project"
   mkdir -p "$repo"
-  printf '%s\r\n' \
-    '# Existing agent memory' \
-    '' \
-    'Run tests with make test.' > "$repo/AGENTS.md"
-  ln -s AGENTS.md "$repo/CLAUDE.md"
-  agents="$repo/AGENTS.md"
+  printf '%s\r\n' '# Existing agent memory' '' 'Run tests with make test.' > "$repo/CLAUDE.md"
+  ln -s CLAUDE.md "$repo/AGENTS.md"
   out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1) \
-    || fail "fm-ensure-agents-md.sh failed injecting into CRLF AGENTS.md"
-  assert_contains "$out" "updated:" "CRLF AGENTS.md injection did not report an update"
+    || fail "fm-ensure-agents-md.sh failed injecting into CRLF CLAUDE.md"
+  assert_contains "$out" "updated:" "CRLF CLAUDE.md injection did not report an update"
   printf '%s\r\n' \
     '# Existing agent memory' \
     '' \
@@ -174,38 +187,65 @@ test_existing_crlf_agents_md_without_section_preserves_crlf() {
     'Do not repeat what the codebase already shows; point to the authoritative file or command instead.' \
     'Prefer rewriting or pruning existing entries over appending new ones.' \
     'When updating this file, preserve this bar for all agents and keep entries concise.' > "$repo/.expected"
-  cmp -s "$repo/.expected" "$agents" \
-    || fail "CRLF AGENTS.md injection did not preserve CRLF line endings"
-  cp "$agents" "$repo/.after-first"
+  cmp -s "$repo/.expected" "$repo/CLAUDE.md" || fail "CRLF injection did not preserve line endings"
+  cp "$repo/CLAUDE.md" "$repo/.after-first"
   "$ROOT/bin/fm-ensure-agents-md.sh" "$repo" >/dev/null 2>&1 \
     || fail "fm-ensure-agents-md.sh failed on idempotent CRLF re-run"
-  cmp -s "$repo/.after-first" "$agents" \
-    || fail "idempotent CRLF re-run modified AGENTS.md"
+  cmp -s "$repo/.after-first" "$repo/CLAUDE.md" || fail "idempotent CRLF re-run modified CLAUDE.md"
   pass "fm-ensure-agents-md.sh: CRLF injection preserves line endings idempotently"
 }
 
-test_lowercase_agents_md_refuses_case_fragile_symlink() {
+test_both_real_files_conflict() {
   local repo out rc
-  repo="$TMP_ROOT/lowercase-project"
+  repo="$TMP_ROOT/both-real-project"
+  mkdir -p "$repo"
+  printf '# Claude memory\n' > "$repo/CLAUDE.md"
+  printf '# Agents memory\n' > "$repo/AGENTS.md"
+  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "expected a non-zero exit when both files are real"
+  assert_contains "$out" "both AGENTS.md and CLAUDE.md are real files" "both-real conflict was not explained"
+  pass "fm-ensure-agents-md.sh: distinct real files conflict"
+}
+
+test_lowercase_agents_md_refuses_case_fragile_name() {
+  local repo out rc
+  repo="$TMP_ROOT/lowercase-agents-project"
   mkdir -p "$repo"
   printf '# project memory\n' > "$repo/agents.md"
   out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1)
   rc=$?
-  [ "$rc" -ne 0 ] || fail "expected a non-zero exit for a lowercase agents.md"
+  [ "$rc" -ne 0 ] || fail "expected a non-zero exit for lowercase agents.md"
   assert_contains "$out" "conflict:" "lowercase agents.md did not report a conflict"
-  assert_contains "$out" "agents.md" "conflict message did not name the offending file"
-  assert_absent "$repo/CLAUDE.md" "a case-fragile CLAUDE.md symlink was created for lowercase agents.md"
-  [ ! -L "$repo/CLAUDE.md" ] || fail "a case-fragile CLAUDE.md symlink was created for lowercase agents.md"
-  assert_present "$repo/agents.md" "the real lowercase agents.md was disturbed"
-  pass "fm-ensure-agents-md.sh: refuses a case-variant lowercase agents.md (issue #389)"
+  assert_contains "$out" "agents.md" "conflict did not name lowercase agents.md"
+  assert_absent "$repo/CLAUDE.md" "CLAUDE.md was created beside lowercase agents.md"
+  pass "fm-ensure-agents-md.sh: refuses lowercase agents.md"
 }
 
-test_created_agents_md_includes_self_governance
-test_promoted_claude_md_includes_self_governance
-test_promoted_claude_md_without_trailing_newline_keeps_blank_separator
-test_existing_agents_md_with_symlink_gains_self_governance
-test_existing_agents_md_without_claude_gains_section_and_symlink
-test_existing_agents_md_with_section_reports_unchanged
-test_existing_crlf_agents_md_with_section_stays_unchanged
-test_existing_crlf_agents_md_without_section_preserves_crlf
-test_lowercase_agents_md_refuses_case_fragile_symlink
+test_lowercase_claude_md_refuses_case_fragile_name() {
+  local repo out rc
+  repo="$TMP_ROOT/lowercase-claude-project"
+  mkdir -p "$repo"
+  printf '# project memory\n' > "$repo/claude.md"
+  out=$("$ROOT/bin/fm-ensure-agents-md.sh" "$repo" 2>&1)
+  rc=$?
+  [ "$rc" -ne 0 ] || fail "expected a non-zero exit for lowercase claude.md"
+  assert_contains "$out" "conflict:" "lowercase claude.md did not report a conflict"
+  assert_contains "$out" "claude.md" "conflict did not name lowercase claude.md"
+  assert_absent "$repo/AGENTS.md" "AGENTS.md was created pointing at lowercase claude.md"
+  pass "fm-ensure-agents-md.sh: refuses lowercase claude.md"
+}
+
+test_empty_project_creates_claude_md_with_self_governance
+test_only_claude_md_gains_symlink_and_self_governance
+test_only_agents_md_is_promoted
+test_legacy_pair_is_reversed
+test_dangling_legacy_link_converges
+test_wrong_claude_symlink_conflicts
+test_already_correct_pair_is_idempotent
+test_claude_md_without_trailing_newline_keeps_blank_separator
+test_existing_crlf_claude_md_with_section_stays_unchanged
+test_existing_crlf_claude_md_without_section_preserves_crlf
+test_both_real_files_conflict
+test_lowercase_agents_md_refuses_case_fragile_name
+test_lowercase_claude_md_refuses_case_fragile_name

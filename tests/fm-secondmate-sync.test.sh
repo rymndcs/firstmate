@@ -52,7 +52,8 @@ new_world() {
   # Mirror the real repo: the gitignored operational dirs never dirty a worktree,
   # so a secondmate home's data/state/projects can never block its fast-forward.
   printf 'projects/\nstate/\ndata/\n.no-mistakes/\nconfig/crew-harness\n' > "$w/main/.gitignore"
-  printf 'v1\n' > "$w/main/AGENTS.md"
+  printf 'v1\n' > "$w/main/CLAUDE.md"
+  ln -s CLAUDE.md "$w/main/AGENTS.md"
   printf 'r1\n' > "$w/main/README.md"
   mkdir -p "$w/main/bin" "$w/main/.agents/skills"
   printf 'echo a\n' > "$w/main/bin/tool.sh"
@@ -78,13 +79,13 @@ add_sm_worktree() {
 }
 
 # bump_primary <w> <mode>: advance the PRIMARY's main branch by one local commit.
-# instr changes the instruction surface (AGENTS.md, bin, .agents/skills) plus README;
+# instr changes the instruction surface (CLAUDE.md, bin, .agents/skills) plus README;
 # readme changes only README. No push - the sync follows the primary's local HEAD.
 bump_primary() {
   local w=$1 mode=$2
   printf 'r-%s\n' "$mode" >> "$w/main/README.md"
   if [ "$mode" = instr ]; then
-    printf 'v-%s\n' "$mode" > "$w/main/AGENTS.md"
+    printf 'v-%s\n' "$mode" > "$w/main/CLAUDE.md"
     printf 'echo %s\n' "$mode" > "$w/main/bin/tool.sh"
     printf 's-%s\n' "$mode" > "$w/main/.agents/skills/note.md"
   fi
@@ -142,7 +143,7 @@ test_ff_updated() {
 
   [ "$FF_STATUS" = updated ] || fail "FF_STATUS: expected updated, got '$FF_STATUS'"
   assert_contains "$FF_OUT" "secondmate sm: updated " "updated home prints an advance line"
-  assert_contains "$FF_INSTR" "AGENTS.md" "instruction change is recorded in FF_INSTR"
+  assert_contains "$FF_INSTR" "CLAUDE.md" "instruction change is recorded in FF_INSTR"
   [ "$(head_of "$w/sm")" = "$base" ] || fail "home did not advance to the primary's local HEAD"
   git -C "$w/sm" symbolic-ref -q HEAD >/dev/null && fail "home is no longer detached"
   # A fast-forwarded tip has exactly one parent; a merge would have two.
@@ -176,7 +177,7 @@ test_ff_dirty() {
   git -C "$w/main" worktree add -q --detach "$w/sm" "$c1"
   bump_primary "$w" instr
   base=$(primary_head_commit "$w/main")
-  printf 'uncommitted local edit\n' >> "$w/sm/AGENTS.md"
+  printf 'uncommitted local edit\n' >> "$w/sm/CLAUDE.md"
   before=$(head_of "$w/sm")
 
   run_ff "$w/sm" "$base"
@@ -184,7 +185,7 @@ test_ff_dirty() {
   [ "$FF_STATUS" = skipped ] || fail "FF_STATUS: expected skipped, got '$FF_STATUS'"
   assert_contains "$FF_OUT" "secondmate sm: skipped: dirty working tree" "dirty home is skipped"
   [ "$(head_of "$w/sm")" = "$before" ] || fail "dirty home HEAD moved"
-  grep -q 'uncommitted local edit' "$w/sm/AGENTS.md" || fail "dirty edit was discarded"
+  grep -q 'uncommitted local edit' "$w/sm/CLAUDE.md" || fail "dirty edit was discarded"
   pass "T3 dirty: an uncommitted home is skipped, its edit preserved"
 }
 
@@ -194,7 +195,7 @@ test_ff_diverged() {
   w=$(new_world ff-diverged)
   c1=$(head_of "$w/main")
   git -C "$w/main" worktree add -q --detach "$w/sm" "$c1"
-  printf 'fork work\n' > "$w/sm/AGENTS.md"
+  printf 'fork work\n' > "$w/sm/CLAUDE.md"
   git -C "$w/sm" add -A
   git -C "$w/sm" commit -qm local-work
   before=$(head_of "$w/sm")
@@ -686,7 +687,7 @@ test_bootstrap_sweep_surfaces_skipped_home() {
   add_sm_worktree "$w" sm-dirty "$c1"
   bump_primary "$w" instr
   base=$(primary_head_commit "$w/main")
-  printf 'uncommitted local edit\n' >> "$w/sm-dirty/AGENTS.md"
+  printf 'uncommitted local edit\n' >> "$w/sm-dirty/CLAUDE.md"
   before=$(head_of "$w/sm-dirty")
 
   fakebin=$(make_fake_toolchain "$w")
@@ -698,7 +699,7 @@ test_bootstrap_sweep_surfaces_skipped_home() {
   assert_contains "$skip_line" "dirty working tree" "dirty skipped home reports the actionable reason"
   [ "$(head_of "$w/sm-dirty")" = "$before" ] || fail "dirty home HEAD moved"
   [ "$(head_of "$w/main")" = "$base" ] || fail "primary HEAD changed during bootstrap"
-  grep -q 'uncommitted local edit' "$w/sm-dirty/AGENTS.md" || fail "dirty edit was discarded"
+  grep -q 'uncommitted local edit' "$w/sm-dirty/CLAUDE.md" || fail "dirty edit was discarded"
   pass "T9 bootstrap surfaces a skipped dirty live secondmate home"
 }
 
@@ -746,7 +747,7 @@ test_spawn_warns_when_sync_skipped_before_launch() {
   mkdir -p "$w/sm/data"
   printf 'charter\n' > "$w/sm/data/charter.md"
   bump_primary "$w" instr
-  printf 'uncommitted local edit\n' >> "$w/sm/AGENTS.md"
+  printf 'uncommitted local edit\n' >> "$w/sm/CLAUDE.md"
   before=$(head_of "$w/sm")
 
   fakebin="$w/fakebin"
@@ -769,7 +770,7 @@ SH
     "warning: secondmate sm sync skipped before launch: dirty working tree" \
     "spawn warning reports the skipped sync reason"
   [ "$(head_of "$w/sm")" = "$before" ] || fail "dirty spawn home HEAD moved"
-  grep -q 'uncommitted local edit' "$w/sm/AGENTS.md" || fail "dirty spawn edit was discarded"
+  grep -q 'uncommitted local edit' "$w/sm/CLAUDE.md" || fail "dirty spawn edit was discarded"
   pass "T11 spawn warns when pre-launch sync is skipped"
 }
 
@@ -830,7 +831,7 @@ test_seed_marker_does_not_mask_real_dirt() {
   w=$(new_world marker-real-dirt)
   c0=$(head_of "$w/main")
   seed_marked_home "$w" sm "$c0"
-  printf 'real local change\n' >> "$w/sm/AGENTS.md"   # genuine tracked-file edit + the marker
+  printf 'real local change\n' >> "$w/sm/CLAUDE.md"   # genuine tracked-file edit + the marker
   before=$(head_of "$w/sm")
   ignore_marker_commit "$w"
   base=$(primary_head_commit "$w/main")
@@ -841,7 +842,7 @@ test_seed_marker_does_not_mask_real_dirt() {
   assert_contains "$FF_OUT" "secondmate sm: skipped: dirty working tree" \
     "a genuinely dirty home is skipped even with the marker present"
   [ "$(head_of "$w/sm")" = "$before" ] || fail "genuinely dirty home HEAD moved (work at risk)"
-  grep -q 'real local change' "$w/sm/AGENTS.md" || fail "genuine local edit was discarded"
+  grep -q 'real local change' "$w/sm/CLAUDE.md" || fail "genuine local edit was discarded"
   pass "T14 marker tolerance does not mask a genuinely dirty home"
 }
 

@@ -127,7 +127,7 @@ PROVISION_LOCK_HELD=1
 
 if [ -e "$FM_HOME" ] || [ -L "$FM_HOME" ]; then
   [ -d "$FM_HOME" ] && [ ! -L "$FM_HOME" ] || die "remote home exists but is not a safe directory"
-  [ -f "$FM_HOME/AGENTS.md" ] && [ ! -L "$FM_HOME/AGENTS.md" ] \
+  [ -f "$FM_HOME/CLAUDE.md" ] && [ ! -L "$FM_HOME/CLAUDE.md" ] \
     && [ -d "$FM_HOME/bin" ] && [ ! -L "$FM_HOME/bin" ] || die "existing remote home is not a safe Firstmate checkout"
   for operational_dir in data state config projects; do
     operational_path="$FM_HOME/$operational_dir"
