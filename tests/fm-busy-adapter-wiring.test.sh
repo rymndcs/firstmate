@@ -59,9 +59,13 @@ run_spawn() {  # <home> <wt> <fakebin> <spawn-args...>
   # Every case here is a ship spawn, which carries an explicit delivery contract
   # (AGENTS.md section 7); these tests are about busy-state wiring, so they pass a
   # fixed valid one.
-  local home=$1 wt=$2 fakebin=$3
+  local home=$1 wt=$2 fakebin=$3 harness
   shift 3
-  set -- "$@" --mode no-mistakes --yolo off
+  # Every crew spawn also carries the captain's runtime pick, which fm-spawn.sh
+  # checks against the runtime it launches; these cases configure the harness, so
+  # the pick is read from the same fixture rather than hardcoded per case.
+  harness=$(cat "$home/config/crew-harness")
+  set -- "$@" --mode no-mistakes --yolo off --captain-pick "$harness"
   FM_ROOT_OVERRIDE='' FM_HOME="$home" \
     FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
     FM_PROJECTS_OVERRIDE="$home/projects" FM_CONFIG_OVERRIDE="$home/config" \

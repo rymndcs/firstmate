@@ -130,7 +130,7 @@ run_spawn() {
     CLAUDE_CONFIG_DIR='' GROK_HOME="$HOME_DIR/grok-home" \
     FM_FAKE_DISPATCH_MODE="$mode" \
     PATH="$FAKEBIN_DIR:$PATH" \
-    "$SPAWN" "$id" "$PROJECT_DIR" --mode no-mistakes --yolo off 2>&1
+    "$SPAWN" "$id" "$PROJECT_DIR" --mode no-mistakes --yolo off --captain-pick claude 2>&1
 }
 
 test_success_records_timestamped_ranking() {

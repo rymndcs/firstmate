@@ -168,7 +168,7 @@ run_spawn() {
 }
 
 run_ship_spawn() {
-  run_spawn "$@" --mode no-mistakes --yolo off
+  run_spawn "$@" --mode no-mistakes --yolo off --captain-pick claude
 }
 
 # Forget what earlier spawns in the same case did, so a later refusal is judged
@@ -371,7 +371,7 @@ test_scouts_are_capped_and_hold_slots() {
   seed_task held-two-k8 scout alive
   seed_task held-three-k8 scout alive
 
-  out=$(run_spawn "$id" "$PROJ_DIR" --scout)
+  out=$(run_spawn "$id" "$PROJ_DIR" --scout --captain-pick claude)
   status=$?
   expect_code 1 "$status" "a scout spawn is a worker and should be capped like a ship task"
   assert_contains "$out" "3 live workers already hold the limit of 3" \

@@ -89,6 +89,7 @@ Routing precedence is an explicit per-task captain override, then the best-fit c
 Load `quota-array-dispatch` before choosing among a matched profile array; that skill is the single owner of the capacity evidence, candidate accounting, and completion-aware selection procedure, and `harness-adapters` owns the effort fallback.
 `dispatch-axi` is the capacity read and it ranks without selecting, while `quota-axi` is a data source inside it and never something firstmate reads for capacity itself.
 `docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-harness.sh` owns static resolution, and `bin/fm-spawn.sh` owns launch flags and fail-closed validation.
+Every crewmate and scout launch additionally carries the captain's own runtime pick through `bin/fm-spawn.sh --captain-pick`, which refuses a launch that does not match it.
 
 `secondmate-provisioning` owns secondmate harness pins and inherited local material, while `harness-adapters` owns the harness consequences.
 Dispatch only on a backend that `fm-spawn` validates as spawn-capable; pass an explicit per-spawn `--backend` only under that exact task's own authority, never as later-task precedent (selection contract: [`docs/configuration.md`](docs/configuration.md) "Runtime backend").

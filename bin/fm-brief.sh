@@ -74,6 +74,15 @@
 # over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
 # self-governance section when a touched project AGENTS.md lacks it.
 # Refuses to overwrite an existing brief.
+#
+# Standing knowledge at the intake moment: scaffolding a brief is where a task is
+# defined, tiered and scoped, so before the scaffold is written this prints to
+# stderr the verbatim data/captain.md and data/learnings.md sections tagged
+# `intake` (bin/fm-standing-knowledge.sh owns the tag format and the selection).
+# Nothing is restated here and nothing is added to the scaffold; the knowledge
+# files remain the sole owners. The print adds no refusal, touches no stdout, and
+# a missing, unreadable, or untagged knowledge file prints its own diagnostic and
+# leaves the scaffold unchanged.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -179,6 +188,12 @@ elif [ "$MODE_SET" -eq 1 ]; then
   exit 1
 fi
 ID=${POS[0]}
+
+# Scaffolding a brief IS the intake moment, so the captain's intake rules print
+# here, before the task is written down. bin/fm-standing-knowledge.sh quotes
+# data/captain.md and data/learnings.md verbatim on stderr and can never fail a
+# scaffold.
+"$SCRIPT_DIR/fm-standing-knowledge.sh" intake || true
 
 # A supplied branch name replaces fm/<task-id> everywhere this scaffold names the
 # task branch. Validate it here rather than letting an unusable name reach the

@@ -1,9 +1,30 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
-#        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> --captain-pick <harness>[/<model>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+#        fm-spawn.sh <task-id> <project-dir> --scout --captain-pick <harness>[/<model>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
+#   --captain-pick is the captain's own runtime choice for THIS task and is
+#   REQUIRED on every ship and scout spawn; it is refused on --secondmate, whose
+#   harness pin is captain configuration rather than a per-task pick. Its value
+#   names the runtime the captain picked as <harness>[/<model>], and the spawn
+#   REFUSES a launch that does not match it: a different harness, a --model the
+#   pick does not name, or a pick naming a model this spawn will not pass. A raw
+#   launch command is matched on the runtime name its first word resolves to; a
+#   raw command that resolves to none prints a notice saying the pick could not
+#   be checked, rather than implying it was. The refusals name the missing or
+#   disagreeing input and how to supply it. data/captain.md owns the rule and its
+#   reasoning; this flag is only its mechanical half, and the existing explicit
+#   --harness requirement remains the separate proof that the dispatch rules were
+#   consulted at all.
+#   Before either refusal, and on every crew spawn that is not refused, the
+#   verbatim data/captain.md and data/learnings.md sections tagged `spawn` print
+#   to stderr (bin/fm-standing-knowledge.sh owns the tag format and the
+#   selection). Nothing is restated here, no stdout changes, and a missing,
+#   unreadable, or untagged knowledge file prints its own diagnostic and leaves
+#   the spawn's own behavior unchanged. A batch prints them once, in the parent:
+#   the re-exec'd pairs carry FM_SPAWN_STANDING_KNOWLEDGE_SHOWN=1 so one dispatch
+#   does not repeat the same rules per pair.
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -135,6 +156,8 @@
 #   source of truth; shared --scout/--harness/--model/--effort/--backend/--mode/--yolo
 #   applies to every pair. A ship batch therefore carries one delivery contract, and each
 #   pair still checks it against its own brief; a batch spanning modes is two invocations.
+#   One --captain-pick likewise covers the batch and is passed to every pair, which
+#   each re-check it against the runtime they launch.
 #   If config/crew-dispatch.json exists, shared --harness is required for crewmate
 #   and scout batches. The loop lives here, in bash, so callers never hand-write a
 #   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
@@ -241,6 +264,7 @@ fm_refuse_if_gate_agent
 [ -n "${FM_SPAWN_NO_GUARD:-}" ] || "$FM_ROOT/bin/fm-guard.sh" || true
 KIND=ship
 HARNESS_ARG=
+CAPTAIN_PICK=
 MODEL=
 EFFORT=
 BACKEND_ARG=
@@ -248,6 +272,7 @@ MODE=
 YOLO=
 TRACEPARENT_ARG=
 HARNESS_SET=0
+CAPTAIN_PICK_SET=0
 MODEL_SET=0
 EFFORT_SET=0
 BACKEND_SET=0
@@ -263,6 +288,7 @@ for a in "$@"; do
     esac
     case "$want_value" in
       harness) HARNESS_ARG=$a; HARNESS_SET=1 ;;
+      captain-pick) CAPTAIN_PICK=$a; CAPTAIN_PICK_SET=1 ;;
       model) MODEL=$a; MODEL_SET=1 ;;
       effort) EFFORT=$a; EFFORT_SET=1 ;;
       backend) BACKEND_ARG=$a; BACKEND_SET=1 ;;
@@ -279,6 +305,8 @@ for a in "$@"; do
     --secondmate) KIND=secondmate ;;
     --harness) want_value=harness ;;
     --harness=*) HARNESS_ARG=${a#--harness=}; HARNESS_SET=1 ;;
+    --captain-pick) want_value=captain-pick ;;
+    --captain-pick=*) CAPTAIN_PICK=${a#--captain-pick=}; CAPTAIN_PICK_SET=1 ;;
     --model) want_value=model ;;
     --model=*) MODEL=${a#--model=}; MODEL_SET=1 ;;
     --effort) want_value=effort ;;
@@ -296,6 +324,7 @@ for a in "$@"; do
 done
 [ -z "$want_value" ] || { echo "error: --$want_value requires a value" >&2; exit 1; }
 [ "$HARNESS_SET" -eq 0 ] || [ -n "$HARNESS_ARG" ] || { echo "error: --harness requires a non-empty value" >&2; exit 1; }
+[ "$CAPTAIN_PICK_SET" -eq 0 ] || [ -n "$CAPTAIN_PICK" ] || { echo "error: --captain-pick requires a non-empty value" >&2; exit 1; }
 [ "$MODEL_SET" -eq 0 ] || [ -n "$MODEL" ] || { echo "error: --model requires a non-empty value" >&2; exit 1; }
 [ "$EFFORT_SET" -eq 0 ] || [ -n "$EFFORT" ] || { echo "error: --effort requires a non-empty value" >&2; exit 1; }
 [ "$BACKEND_SET" -eq 0 ] || [ -n "$BACKEND_ARG" ] || { echo "error: --backend requires a non-empty value" >&2; exit 1; }
@@ -353,6 +382,41 @@ else
     echo "error: --yolo applies only to ship spawns; a scout delivers a report and a secondmate records its own fixed posture" >&2
     exit 1
   }
+fi
+
+# --- the captain's runtime choice -------------------------------------------
+#
+# Every crew spawn - ship or scout, every project - is preceded by the captain
+# being presented the runtime options and picking one. data/captain.md owns that
+# rule and its reasoning; this is only its mechanical half. The pre-existing
+# explicit-harness requirement proves firstmate CONSULTED the dispatch rules; it
+# cannot show the captain was ever asked, which is the failure that actually
+# recurred. --captain-pick carries that evidence, and it is checked against the
+# runtime this spawn will really launch further below, so a pick presented for
+# one runtime cannot be spent launching another.
+#
+# A --secondmate spawn is a persistent home rather than a crew spawn, so the flag
+# is refused there exactly as --mode and --yolo are.
+if [ "$KIND" = secondmate ]; then
+  [ "$CAPTAIN_PICK_SET" -eq 0 ] || {
+    echo "error: --captain-pick applies only to ship and scout spawns; a secondmate is a persistent home, and its harness pin is captain configuration (config/secondmate-harness)" >&2
+    exit 1
+  }
+else
+  # The spawn moment's standing rules print on every crew spawn, refused or not,
+  # so the captain's own words are in front of the agent making the choice rather
+  # than only in front of one it already got wrong. A batch prints them once, in
+  # the parent, rather than once per re-exec'd pair.
+  if [ -z "${FM_SPAWN_STANDING_KNOWLEDGE_SHOWN:-}" ]; then
+    "$SCRIPT_DIR/fm-standing-knowledge.sh" spawn || true
+  fi
+  if [ "$CAPTAIN_PICK_SET" -eq 0 ]; then
+    echo "error: refusing to spawn $KIND task '${POS[0]:-?}': no evidence the captain was presented the runtime choice for it." >&2
+    echo "  missing input: --captain-pick <harness>[/<model>], naming the runtime the captain actually picked." >&2
+    echo "  supply it after presenting the options: define and tier the task, disclose what the brief hands over, present the candidates with capacity evidence, then pass the pick here." >&2
+    echo "  the value must match the runtime this spawn launches, so pass the model too whenever --model is passed (e.g. --captain-pick claude/opus, --captain-pick pi/deepseek-v4-pro)." >&2
+    exit 1
+  fi
 fi
 
 spawn_remote_secondmate() {
@@ -766,6 +830,10 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   rc=0
   shared_args=()
   [ -z "$HARNESS_ARG" ] || shared_args+=(--harness "$HARNESS_ARG")
+  # One captain pick covers the batch, exactly like the shared harness it must
+  # match. Each pair re-execs through the same refusal, so a batch can never
+  # launch a pair the captain was not presented a runtime choice for.
+  [ "$CAPTAIN_PICK_SET" -eq 0 ] || shared_args+=(--captain-pick "$CAPTAIN_PICK")
   [ -z "$MODEL" ] || shared_args+=(--model "$MODEL")
   [ -z "$EFFORT" ] || shared_args+=(--effort "$EFFORT")
   [ -z "$BACKEND_ARG" ] || shared_args+=(--backend "$BACKEND_ARG")
@@ -784,9 +852,9 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
       rc=2
       continue
     elif [ "$KIND" = scout ]; then
-      if FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}" --scout; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
+      if FM_SPAWN_NO_GUARD=1 FM_SPAWN_STANDING_KNOWLEDGE_SHOWN=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}" --scout; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
     else
-      if FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}"; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
+      if FM_SPAWN_NO_GUARD=1 FM_SPAWN_STANDING_KNOWLEDGE_SHOWN=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}"; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
     fi
   done
   exit "$rc"
@@ -1019,6 +1087,36 @@ esac
 if [ "$HARNESS" = pi-signed ] && ! command -v pi-signed >/dev/null 2>&1; then
   echo "error: pi-signed executable not found on PATH; install the signed Pi wrapper or select a different verified harness" >&2
   exit 1
+fi
+
+# The captain's pick, checked against the runtime this spawn will actually
+# launch. Presence alone would only prove the flag was typed; matching is what
+# closes "presented DeepSeek, spawned Claude". Same shape as the brief's
+# recorded delivery contract, which is likewise read back and refused on
+# mismatch rather than trusted.
+if [ "$KIND" != secondmate ]; then
+  CAPTAIN_PICK_HARNESS=${CAPTAIN_PICK%%/*}
+  CAPTAIN_PICK_MODEL=
+  case "$CAPTAIN_PICK" in
+    */*) CAPTAIN_PICK_MODEL=${CAPTAIN_PICK#*/} ;;
+  esac
+  if [ -z "$HARNESS" ]; then
+    # A raw launch command whose first word yields no runtime name. The pick
+    # cannot be checked against anything, so say so rather than imply it was.
+    echo "notice: --captain-pick '$CAPTAIN_PICK' could not be checked: this raw launch command names no resolvable runtime" >&2
+  elif [ "$CAPTAIN_PICK_HARNESS" != "$HARNESS" ]; then
+    echo "error: refusing to spawn $KIND task '${POS[0]:-?}': the captain's pick names runtime '$CAPTAIN_PICK_HARNESS' but this spawn launches '$HARNESS'." >&2
+    echo "  spawn on what the captain picked, or present the options again for the runtime you intend to launch and pass that pick." >&2
+    exit 1
+  elif [ -n "$MODEL" ] && [ "$CAPTAIN_PICK_MODEL" != "$MODEL" ]; then
+    echo "error: refusing to spawn $KIND task '${POS[0]:-?}': this spawn launches model '$MODEL' and the captain's pick does not name it." >&2
+    echo "  missing input: the model half of --captain-pick. Pass --captain-pick $HARNESS/$MODEL when that is what the captain picked." >&2
+    exit 1
+  elif [ -z "$MODEL" ] && [ -n "$CAPTAIN_PICK_MODEL" ]; then
+    echo "error: refusing to spawn $KIND task '${POS[0]:-?}': the captain's pick names model '$CAPTAIN_PICK_MODEL' but this spawn passes no --model, so the runtime's own default would run instead." >&2
+    echo "  missing input: --model $CAPTAIN_PICK_MODEL, or a pick of plain '$HARNESS' if the default is what the captain chose." >&2
+    exit 1
+  fi
 fi
 
 # config/secondmate-harness may carry optional model/effort tokens alongside the

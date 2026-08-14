@@ -5,6 +5,22 @@
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
 # including a merge request on a self-hosted GitLab instance.
+#
+# Standing knowledge at the pr-ready moment, printed to STDERR after the poll is
+# armed, in two parts:
+#   1. The verbatim data/captain.md and data/learnings.md sections tagged
+#      `pr-ready` (bin/fm-standing-knowledge.sh owns the tag format).
+#   2. The task project's verbatim data/projects.md registry entry, as the
+#      merge-authority source. The ENTRY is printed, not a parsed flag: a
+#      project's merge authority can live in the freeform prose beside its
+#      `[mode]` annotation, and a flag-parser reproduces exactly the failure this
+#      output exists to remove. bin/fm-project-mode.sh remains the only parser,
+#      and it deliberately answers a different question (registered delivery
+#      posture), so nothing here reads or contradicts it.
+# Both are advisory: this script surfaces the source and never decides a merge.
+# An unregistered project prints an explicit unregistered notice, a missing
+# registry prints an explicit diagnostic, and neither aborts the recording or
+# the arming that already succeeded.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 
@@ -12,6 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
@@ -120,6 +137,42 @@ fm_pr_poll_publish_prepared || {
   exit 1
 }
 printf 'armed: state/%s.check.sh\n' "$ID"
+
+# The PR now exists, which is the moment merge authority binds. Surface the
+# captain's own words for it rather than a verdict derived from them: the
+# pr-ready rule slice, then this project's verbatim registry entry.
+"$SCRIPT_DIR/fm-standing-knowledge.sh" pr-ready || true
+print_registry_entry() {
+  local registry="$DATA/projects.md" project name entry
+  project=$(grep '^project=' "$META" | tail -1 | cut -d= -f2- || true)
+  if [ -z "$project" ]; then
+    printf 'standing-knowledge: task %s records no project; its merge-authority entry cannot be printed\n' \
+      "$ID" >&2
+    return 0
+  fi
+  name=$(basename -- "$project")
+  if [ ! -f "$registry" ] || [ ! -r "$registry" ]; then
+    printf 'standing-knowledge: data/projects.md is missing or unreadable at %s; the merge-authority source for %s cannot be printed\n' \
+      "$registry" "$name" >&2
+    return 0
+  fi
+  # An entry is its "- <name> ..." line plus any continuation lines up to the
+  # next entry or heading, printed exactly as written.
+  entry=$(awk -v n="$name" '
+    $1 == "-" && $2 == n { found = 1; print; next }
+    found && (/^- / || /^#/) { exit }
+    found { print }
+  ' "$registry")
+  if [ -z "$entry" ]; then
+    printf 'standing-knowledge: %s has no entry in data/projects.md; its merge authority is unregistered and belongs to the captain\n' \
+      "$name" >&2
+    return 0
+  fi
+  printf -- '--- merge-authority source for %s (data/projects.md) ---\n' "$name" >&2
+  printf '%s\n' "$entry" >&2
+  printf -- '--- end merge-authority source for %s ---\n' "$name" >&2
+}
+print_registry_entry
 
 # Recording a PR against the task IS the In Review transition, so it happens
 # here rather than as a step an agent has to remember afterwards.

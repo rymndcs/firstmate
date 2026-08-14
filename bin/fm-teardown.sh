@@ -115,6 +115,16 @@
 #   checks, and discards secondmate child work for kind=secondmate. Only use it
 #   when the captain has explicitly said to discard the work.
 #
+# Standing knowledge at the teardown moment: before any cleanup runs, this prints
+# to stderr the verbatim data/captain.md and data/learnings.md sections tagged
+# `teardown` (bin/fm-standing-knowledge.sh owns the tag format and the selection).
+# That is where the captain's instruction moving the completion point to PR
+# creation lives, so a worker sitting idle after its PR is read as finished
+# rather than as waiting on a merge. Nothing is restated here: the knowledge
+# files remain the sole owners. The print writes only to stderr, adds no refusal,
+# and can never fail a teardown - a missing, unreadable, or untagged knowledge
+# file prints its own diagnostic and cleanup proceeds unchanged.
+#
 # Transient / stale worktree git lock recovery (teardown-lock-race): a crew process
 # killed mid-git-operation can leave a .git/worktrees/<wt>/index.lock (or, for a
 # non-linked worktree, .git/index.lock) that makes `treehouse return --force` fail
@@ -192,6 +202,14 @@ FORCE=${2:-}
 # down a worktree (see bin/fm-gate-refuse-lib.sh).
 fm_refuse_if_gate_agent
 FM_LOCK_LOG_PREFIX=teardown
+
+# Put the captain's teardown-moment rules in front of the agent BEFORE any
+# cleanup runs - among them the instruction that moved the completion point to
+# PR creation, so a worker idle after its PR reads as finished rather than as
+# waiting for a merge. bin/fm-standing-knowledge.sh owns the selection and
+# quotes data/captain.md and data/learnings.md verbatim; it writes only to
+# stderr and can never fail a teardown.
+"$SCRIPT_DIR/fm-standing-knowledge.sh" teardown || true
 
 META="$STATE/$ID.meta"
 [ -f "$META" ] || { echo "error: no meta for task $ID at $META" >&2; exit 1; }
