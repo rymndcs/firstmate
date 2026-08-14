@@ -592,6 +592,22 @@ test_brief_prints_the_intake_rules() {
   pass 'intake prints the verbatim rules tagged for that moment'
 }
 
+test_brief_prints_no_intake_rules_for_a_secondmate_charter() {
+  local home data out status
+  home="$TMP_ROOT/brief-charter/home"
+  mkdir -p "$home/state"
+  data=$(make_data brief-charter)
+  ln -s "$data" "$home/data"
+  out=$(FM_ROOT_OVERRIDE='' FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
+    FM_STATE_OVERRIDE="$home/state" FM_SECONDMATE_CHARTER='fixture charter' \
+    "$BRIEF" charter-task --secondmate --no-projects 2>&1)
+  status=$?
+  expect_code 0 "$status" 'scaffolding a charter must still succeed'
+  assert_not_contains "$out" 'State what changes and how anyone tells whether it worked.' \
+    'a persistent secondmate home takes in no task and must print no intake rules'
+  pass 'a secondmate charter prints no intake rules'
+}
+
 test_resolver_returns_the_verbatim_tagged_section
 test_resolver_skips_sections_tagged_for_other_moments
 test_resolver_never_prints_an_untagged_section
@@ -621,3 +637,4 @@ test_pr_check_survives_missing_knowledge_files
 test_teardown_surfaces_the_pr_creation_completion_point
 test_teardown_survives_missing_knowledge_files
 test_brief_prints_the_intake_rules
+test_brief_prints_no_intake_rules_for_a_secondmate_charter
