@@ -303,6 +303,8 @@ EOF
     'the refusal must say what is actually missing'
   assert_contains "$out" '--captain-pick' 'the refusal must name the exact missing input'
   assert_contains "$out" 'claude/opus' 'the refusal must show how to supply the input'
+  assert_not_contains "$out" 'define and tier the task' \
+    'the refusal must point at the printed rules, never carry a second copy of them'
   assert_absent "$home/state/nopick-ship.meta" 'a refused spawn must leave no task metadata'
   pass 'spawn refuses a ship launch with no evidence of the captain runtime choice'
 }

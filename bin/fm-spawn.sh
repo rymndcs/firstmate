@@ -386,14 +386,15 @@ fi
 
 # --- the captain's runtime choice -------------------------------------------
 #
-# Every crew spawn - ship or scout, every project - is preceded by the captain
-# being presented the runtime options and picking one. data/captain.md owns that
-# rule and its reasoning; this is only its mechanical half. The pre-existing
+# data/captain.md owns the rule this enforces - its scope, its required sequence,
+# and its reasoning - and the slice printed just below quotes that owner. Nothing
+# is restated here.
+#
+# The mechanical half is all that lives in this script: a crew launch carries
+# evidence of the captain's pick, and that evidence is checked against the
+# runtime the launch will really use, further below. The pre-existing
 # explicit-harness requirement proves firstmate CONSULTED the dispatch rules; it
-# cannot show the captain was ever asked, which is the failure that actually
-# recurred. --captain-pick carries that evidence, and it is checked against the
-# runtime this spawn will really launch further below, so a pick presented for
-# one runtime cannot be spent launching another.
+# cannot show the captain was ever asked, which is the gap this closes.
 #
 # A --secondmate spawn is a persistent home rather than a crew spawn, so the flag
 # is refused there exactly as --mode and --yolo are.
@@ -413,7 +414,7 @@ else
   if [ "$CAPTAIN_PICK_SET" -eq 0 ]; then
     echo "error: refusing to spawn $KIND task '${POS[0]:-?}': no evidence the captain was presented the runtime choice for it." >&2
     echo "  missing input: --captain-pick <harness>[/<model>], naming the runtime the captain actually picked." >&2
-    echo "  supply it after presenting the options: define and tier the task, disclose what the brief hands over, present the candidates with capacity evidence, then pass the pick here." >&2
+    echo "  the rules printed above own what presenting that choice requires; pass the captain's answer here once they have given it." >&2
     echo "  the value must match the runtime this spawn launches, so pass the model too whenever --model is passed (e.g. --captain-pick claude/opus, --captain-pick pi/deepseek-v4-pro)." >&2
     exit 1
   fi
