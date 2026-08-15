@@ -346,6 +346,101 @@ ROWS
   pass 'resolver reports a marker that misses the exact spelling, in emission and in --audit'
 }
 
+# The fourth way: the marker is in position and well formed but names nothing,
+# which is what deleting the last moment out of one leaves behind.
+test_resolver_reports_a_marker_naming_no_moment_at_all() {
+  local data out status audit
+  data="$TMP_ROOT/empty-marker/data"
+  mkdir -p "$data"
+  cat > "$data/captain.md" <<'MD'
+# Captain preferences
+
+## A correctly tagged rule (fixture, 2026-01-17)
+<!-- fm-moment: merge -->
+
+Correct merge body.
+
+## A rule whose marker names nothing (fixture, 2026-01-18)
+<!-- fm-moment: -->
+
+This body binds at no moment because its marker names none.
+MD
+  printf '# Shared captain preferences\n\n## Shared\n<!-- fm-moment: merge -->\n\nShared body.\n' \
+    > "$data/captain-shared.md"
+  printf '# Learnings\n\n## Learned\n<!-- fm-moment: merge -->\n\nLearned body.\n' \
+    > "$data/learnings.md"
+  out=$(run_know "$data" merge)
+  status=$?
+  expect_code 0 "$status" 'an empty marker must not fail the resolver'
+  assert_contains "$out" 'naming no lifecycle moment at all' \
+    'the diagnostic must say what is actually wrong with the marker'
+  assert_contains "$out" 'data/captain.md' 'the diagnostic must name the owning file'
+  assert_contains "$out" '## A rule whose marker names nothing (fixture, 2026-01-18)' \
+    'the diagnostic must name the section the empty marker belongs to'
+  assert_contains "$out" 'Correct merge body.' \
+    'an empty marker elsewhere must not stop the well-formed sections resolving'
+  assert_not_contains "$out" 'This body binds at no moment because its marker names none.' \
+    'a section whose marker names no moment must still not print'
+  audit=$(run_know "$data" --audit)
+  assert_contains "$audit" 'empty-marker <!-- fm-moment: --> | ## A rule whose marker names nothing (fixture, 2026-01-18)' \
+    '--audit must label an empty marker rather than render a blank tag field'
+  pass 'resolver reports a marker naming no lifecycle moment, in emission and in --audit'
+}
+
+# A knowledge file may document the tag format itself. A worked example in a
+# section BODY is not a defective marker, and claiming it is would print a false
+# "this binds nowhere" directly above rules that are in fact binding.
+test_resolver_leaves_documented_marker_examples_alone() {
+  local data out status audit
+  data="$TMP_ROOT/marker-examples/data"
+  mkdir -p "$data"
+  cat > "$data/captain.md" <<'MD'
+# Captain preferences
+
+## How the lifecycle tags work (fixture, 2026-01-19)
+<!-- fm-moment: merge -->
+
+Write the marker as:
+
+    <!-- fm-moment: spawn -->
+
+on the line directly under the heading.
+MD
+  cat > "$data/captain-shared.md" <<'MD'
+# Shared captain preferences
+
+## How the tags are written down (fixture, 2026-01-20)
+<!-- fm-moment: merge -->
+
+A fenced example:
+
+```markdown
+<!-- fm-moment: spawn -->
+<!--fm-moment: teardown -->
+```
+
+That is the shape.
+MD
+  printf '# Learnings\n\n## Learned\n<!-- fm-moment: merge -->\n\nLearned body.\n' \
+    > "$data/learnings.md"
+  out=$(run_know "$data" merge)
+  status=$?
+  expect_code 0 "$status" 'a documented example must not fail the resolver'
+  assert_not_contains "$out" 'binds nowhere' \
+    'a marker example in a section body must not be reported as a defective marker'
+  assert_contains "$out" '## How the lifecycle tags work (fixture, 2026-01-19)' \
+    'the indented-example section must still bind and print'
+  assert_contains "$out" '## How the tags are written down (fixture, 2026-01-20)' \
+    'the fenced-example section must still bind and print'
+  assert_contains "$out" 'Learned body.' 'the other knowledge files must still resolve'
+  audit=$(run_know "$data" --audit)
+  assert_not_contains "$audit" 'malformed-marker' \
+    '--audit must not call a documented example a malformed marker'
+  assert_contains "$audit" 'merge | ## How the lifecycle tags work (fixture, 2026-01-19)' \
+    '--audit must report the documenting section by its own real tag'
+  pass 'resolver leaves a knowledge file its own worked marker examples'
+}
+
 # Everything between the banner lines is the owning files' own words. A
 # diagnostic landing under the last line of a quoted rule would read as part of
 # that rule, and an absent data/captain-shared.md makes that the steady state.
@@ -891,6 +986,8 @@ test_resolver_reports_an_absent_shared_captain_file
 test_resolver_reports_an_unknown_moment_tag_in_the_data
 test_resolver_reports_a_marker_out_of_binding_position
 test_resolver_reports_a_marker_that_misses_the_exact_spelling
+test_resolver_reports_a_marker_naming_no_moment_at_all
+test_resolver_leaves_documented_marker_examples_alone
 test_diagnostics_print_outside_the_verbatim_banner
 test_audit_still_calls_a_deliberately_untagged_section_untagged
 test_resolver_prints_nothing_when_no_section_binds

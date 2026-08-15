@@ -82,17 +82,23 @@
 #
 # DEGRADED KNOWLEDGE FILES never abort the caller. A missing, unreadable, or
 # entirely untagged file prints its own explicit diagnostic naming the file and
-# what cannot be surfaced, and the run still exits 0. So are the three ways a
+# what cannot be surfaced, and the run still exits 0. So are the four ways a
 # hand-written marker can bind nowhere while reading exactly like a section
 # deliberately left untagged: a tag naming a moment outside the set above; a
-# well-formed marker that is not on the line directly below a `## ` heading,
-# which a single stray blank line is enough to cause; and a line plainly meant to
-# be a marker that misses the exact spelling, such as a missing space after
-# `<!--`, a trailing space, or a leading indent. Each names the file, the
-# offending marker or token and the section, because the tags are written by hand
-# in files that live outside this repo and nothing else would ever report that a
-# rule quietly stopped arriving. Only the exact spelling ever binds a section, so
-# none of this changes what a moment resolves to. The caller's primary job is never blocked by
+# marker naming no moment at all, which is what deleting the last token out of
+# one leaves behind; a well-formed marker that is not on the line directly below
+# a `## ` heading, which a single stray blank line is enough to cause; and a line
+# plainly meant to be a marker that misses the exact spelling, such as a missing
+# space after `<!--`, a trailing space, or a leading indent. Each names the file,
+# the offending marker or token and the section, because the tags are written by
+# hand in files that live outside this repo and nothing else would ever report
+# that a rule quietly stopped arriving. Only the exact spelling ever binds a
+# section, so none of this changes what a moment resolves to. A knowledge file
+# may also DOCUMENT the tag format, so a fenced block and any marker-shaped line
+# in a section body are deliberately left alone: every slip above is by
+# construction the line directly under a heading, and a false "this binds
+# nowhere" printed above a section that IS binding is worse than the silence
+# these checks exist to remove. The caller's primary job is never blocked by
 # knowledge that could not be read - the enforcement that DOES block lives in the
 # lifecycle scripts themselves, on inputs they require. data/captain-shared.md in
 # particular is absent in a home that has never been propagated to, and its
@@ -105,7 +111,8 @@
 #   fm-standing-knowledge.sh --audit      print every `##` heading in each
 #                                         knowledge file with its tags, or
 #                                         "untagged", to stdout, marking any tag
-#                                         that names an unknown moment and any
+#                                         that names an unknown moment, any
+#                                         marker naming none at all, and any
 #                                         marker that sits out of binding
 #                                         position or misses the exact spelling,
 #                                         rather than calling its section plainly
@@ -142,7 +149,10 @@ FM_MOMENTS="intake spawn pr-ready merge teardown"
 # section. looks_like_marker is deliberately LOOSE - an HTML comment mentioning
 # fm-moment, indented or padded however it was typed - and never binds anything;
 # it exists so a line that was plainly meant to be a marker but misses the exact
-# spelling can be reported instead of vanishing.
+# spelling can be reported instead of vanishing. is_fence is not part of the
+# marker format at all: the problem checks use it to leave a knowledge file's own
+# worked examples alone, since a file explaining the tag format is exactly the
+# kind of note these files carry.
 FM_MARKER_AWK='
 function is_marker(line) {
   return line ~ /^<!-- fm-moment:[^>]*-->$/
@@ -150,11 +160,20 @@ function is_marker(line) {
 function looks_like_marker(line) {
   return line ~ /^[[:space:]]*<!--.*fm-moment.*-->[[:space:]]*$/
 }
+function is_fence(line) {
+  return line ~ /^[[:space:]]*(```|~~~)/
+}
 function marker_tags(line,   stripped) {
   stripped = line
   sub(/^<!-- fm-moment:[[:space:]]*/, "", stripped)
   sub(/[[:space:]]*-->$/, "", stripped)
   return stripped
+}
+function marker_token_count(line,   parts, k, c) {
+  c = 0
+  k = split(marker_tags(line), parts, /[[:space:]]+/)
+  while (k > 0) { if (parts[k] != "") { c++ } k-- }
+  return c
 }
 '
 
@@ -207,12 +226,23 @@ sections_for_moment() {  # <file> <moment>
 #
 #   unknown    the marker is well placed but names a moment that does not exist,
 #              so it matches nothing at any moment.
+#   empty      the marker is well placed and well formed but names no moment at
+#              all, which is what deleting the last token out of one leaves.
 #   orphan     the marker is well formed but is not on the line directly below a
 #              `## ` heading - a blank line left between the two is enough - so
 #              no section claims it.
-#   malformed  the line was plainly meant to be a marker but misses the exact
-#              spelling - a missing space after `<!--`, a trailing space, a
-#              leading indent - so the strict recogniser never sees it.
+#   malformed  the line directly below a heading was plainly meant to be that
+#              section marker but misses the exact spelling - a missing space
+#              after `<!--`, a trailing space, a leading indent - so the strict
+#              recogniser never sees it.
+#
+# WHAT IS DELIBERATELY NOT REPORTED, because a knowledge file explaining the tag
+# format is an ordinary thing for one of these files to contain: anything inside
+# a fenced block, and any marker-shaped line in a section BODY rather than in the
+# binding position. Every slip above is by construction the line directly under a
+# heading, so nothing is lost by leaving worked examples alone - and a false
+# "this binds nowhere" printed above a section that IS binding is worse than the
+# silence this whole check exists to remove.
 marker_problems_in() {  # <file>
   awk -v moments="$FM_MOMENTS" "$FM_MARKER_AWK"'
     BEGIN {
@@ -223,18 +253,21 @@ marker_problems_in() {  # <file>
     {
       in_position = expect_marker
       expect_marker = 0
+      if (is_fence($0)) { in_fence = !in_fence; next }
+      if (in_fence) { next }
       if (is_marker($0)) {
         if (in_position) {
           n = split(marker_tags($0), t, /[[:space:]]+/)
           for (i = 1; i <= n; i++) {
             if (t[i] != "" && !(t[i] in known)) { printf "unknown|%s|%s\n", t[i], heading }
           }
+          if (marker_token_count($0) == 0) { printf "empty|%s|%s\n", $0, heading }
         } else {
           printf "orphan|%s|%s\n", $0, (heading == "" ? "(no ## heading above it)" : heading)
         }
         next
       }
-      if (looks_like_marker($0)) {
+      if (in_position && looks_like_marker($0)) {
         printf "malformed|%s|%s\n", $0, (heading == "" ? "(no ## heading above it)" : heading)
       }
     }
@@ -271,6 +304,10 @@ marker_problem_lines() {  # <file> <name>
       malformed)
         printf 'standing-knowledge: data/%s has the line %s where a marker was meant; it does not match the exact marker spelling, so it binds nowhere | %s\n' \
           "$2" "$detail" "$heading"
+        ;;
+      empty)
+        printf 'standing-knowledge: data/%s has the marker %s naming no lifecycle moment at all, so it binds nowhere (known moments: %s) | %s\n' \
+          "$2" "$detail" "$FM_MOMENTS" "$heading"
         ;;
     esac
   done <<EOF
@@ -368,17 +405,24 @@ audit() {
       {
         in_position = expect_marker
         expect_marker = 0
+        # Worked examples inside a knowledge file are left alone, exactly as in
+        # marker_problems_in: a fenced block is not a tag, and neither is a
+        # marker-shaped line in a section body.
+        if (is_fence($0)) { in_fence = !in_fence; next }
+        if (in_fence) { next }
         if (is_marker($0)) {
           if (in_position) {
             tags = marker_tags($0)
-            # An unknown token is called out rather than echoed back as if it
-            # were ordinary, for the same reason.
+            # An unknown or absent token is called out rather than echoed back as
+            # if it were ordinary, for the same reason.
             bad = ""
             n = split(tags, t, /[[:space:]]+/)
             for (i = 1; i <= n; i++) {
               if (t[i] != "" && !(t[i] in known)) { bad = (bad == "" ? t[i] : bad " " t[i]) }
             }
-            if (bad != "") {
+            if (marker_token_count($0) == 0) {
+              printf "data/%s: empty-marker %s | %s\n", file, $0, heading
+            } else if (bad != "") {
               printf "data/%s: %s [unknown moment: %s] | %s\n", file, tags, bad, heading
             } else {
               printf "data/%s: %s | %s\n", file, tags, heading
@@ -394,9 +438,10 @@ audit() {
           }
           next
         }
-        if (looks_like_marker($0)) {
+        if (in_position && looks_like_marker($0)) {
           if (heading != "") {
-            if (defect_kind == "") { defect_kind = "malformed"; defect_line = $0 }
+            defect_kind = "malformed"
+            defect_line = $0
           } else {
             printf "data/%s: malformed-marker %s | %s\n", file, $0, \
               (seen_heading == "" ? "(no ## heading above it)" : seen_heading)
