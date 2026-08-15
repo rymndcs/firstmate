@@ -303,6 +303,77 @@ MD
   pass 'resolver reports a marker that sits out of binding position, in emission and in --audit'
 }
 
+# The third way: the marker is in position but hand-typed a character off. Only
+# the exact spelling ever binds, so each of these unbinds its rule, and none of
+# them may do so silently.
+test_resolver_reports_a_marker_that_misses_the_exact_spelling() {
+  local data out status audit spelling label body
+  while IFS='|' read -r label spelling body; do
+    [ -n "$label" ] || continue
+    data="$TMP_ROOT/malformed-$label/data"
+    mkdir -p "$data"
+    {
+      printf '# Captain preferences\n\n'
+      printf '## A correctly tagged rule (fixture, 2026-01-13)\n<!-- fm-moment: merge -->\n\nCorrect merge body.\n\n'
+      printf '## A rule whose marker is a character off (fixture, 2026-01-14)\n%s\n\n%s\n' "$spelling" "$body"
+    } > "$data/captain.md"
+    printf '# Shared captain preferences\n\n## Shared\n<!-- fm-moment: merge -->\n\nShared body.\n' \
+      > "$data/captain-shared.md"
+    printf '# Learnings\n\n## Learned\n<!-- fm-moment: merge -->\n\nLearned body.\n' \
+      > "$data/learnings.md"
+    out=$(run_know "$data" merge)
+    status=$?
+    expect_code 0 "$status" "$label: a malformed marker must not fail the resolver"
+    assert_contains "$out" 'does not match the exact marker spelling' \
+      "$label: the diagnostic must say what is actually wrong with the line"
+    assert_contains "$out" 'data/captain.md' "$label: the diagnostic must name the owning file"
+    assert_contains "$out" "$spelling" "$label: the diagnostic must quote the line it found"
+    assert_contains "$out" '## A rule whose marker is a character off (fixture, 2026-01-14)' \
+      "$label: the diagnostic must name the section the bad line belongs to"
+    assert_contains "$out" 'Correct merge body.' \
+      "$label: a malformed marker elsewhere must not stop the well-formed sections resolving"
+    assert_contains "$out" 'Learned body.' "$label: the other knowledge files must still resolve"
+    assert_not_contains "$out" "$body" \
+      "$label: only the exact spelling binds, so this section must still not print"
+    audit=$(run_know "$data" --audit)
+    assert_contains "$audit" "malformed-marker $spelling | ## A rule whose marker is a character off (fixture, 2026-01-14)" \
+      "$label: --audit must distinguish a malformed marker from a deliberately untagged section"
+  done <<'ROWS'
+no-space-after-open|<!--fm-moment: merge -->|Body A binds nowhere.
+trailing-space|<!-- fm-moment: merge --> |Body B binds nowhere.
+leading-indent|  <!-- fm-moment: merge -->|Body C binds nowhere.
+ROWS
+  pass 'resolver reports a marker that misses the exact spelling, in emission and in --audit'
+}
+
+# Everything between the banner lines is the owning files' own words. A
+# diagnostic landing under the last line of a quoted rule would read as part of
+# that rule, and an absent data/captain-shared.md makes that the steady state.
+test_diagnostics_print_outside_the_verbatim_banner() {
+  local data out banner_region
+  data="$TMP_ROOT/banner-purity/data"
+  mkdir -p "$data"
+  printf '# Captain preferences\n\n## A tagged rule (fixture, 2026-01-15)\n<!-- fm-moment: merge -->\n\nCaptain merge body.\n' \
+    > "$data/captain.md"
+  printf '# Learnings\n\n## A tagged learning (fixture, 2026-01-16)\n<!-- fm-moment: merge -->\n\nLearned merge body.\n' \
+    > "$data/learnings.md"
+  out=$(run_know "$data" merge)
+  assert_contains "$out" 'data/captain-shared.md is missing' \
+    'the absent shared file must still be reported, not suppressed'
+  assert_contains "$out" 'Captain merge body.' 'the first file must still resolve'
+  assert_contains "$out" 'Learned merge body.' 'the last file must still resolve in the same order'
+  banner_region=$(printf '%s\n' "$out" | sed -n '/^--- standing knowledge: merge ---$/,/^--- end standing knowledge: merge ---$/p')
+  [ -n "$banner_region" ] || fail 'the banner must have opened at all'
+  case "$banner_region" in
+    *standing-knowledge:*)
+      fail "a diagnostic landed inside the verbatim banner: $banner_region"
+      ;;
+  esac
+  printf '%s\n' "$banner_region" | grep -Fq 'Captain merge body.' \
+    || fail 'the banner must still carry the quoted rules it frames'
+  pass 'file diagnostics print outside the verbatim banner, which carries only quoted text'
+}
+
 # The distinction has to cut both ways: a section with no marker anywhere is
 # still reported as plainly untagged, not as a marker slip.
 test_audit_still_calls_a_deliberately_untagged_section_untagged() {
@@ -819,6 +890,8 @@ test_resolver_reads_the_shared_captain_file
 test_resolver_reports_an_absent_shared_captain_file
 test_resolver_reports_an_unknown_moment_tag_in_the_data
 test_resolver_reports_a_marker_out_of_binding_position
+test_resolver_reports_a_marker_that_misses_the_exact_spelling
+test_diagnostics_print_outside_the_verbatim_banner
 test_audit_still_calls_a_deliberately_untagged_section_untagged
 test_resolver_prints_nothing_when_no_section_binds
 test_resolver_writes_only_to_stderr

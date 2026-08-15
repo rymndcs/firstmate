@@ -30,7 +30,10 @@
 #   is deliberately NOT an environment variable: an inherited variable is an
 #   ambient off-switch a shell, session or profile could set once to silence the
 #   rules everywhere, which is the class of failure this whole mechanism exists
-#   to remove.
+#   to remove. Stated no stronger than it is, exactly like the self-attestation
+#   note above: not being ambiently inheritable is the whole property. A caller
+#   that deliberately constructs the argument per invocation still matches, and
+#   that is out of scope for the same reason --captain-pick is self-attested.
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -421,10 +424,14 @@ else
   # The spawn moment's standing rules print on every crew spawn, refused or not,
   # so the captain's own words are in front of the agent making the choice rather
   # than only in front of one it already got wrong. A batch prints them once, in
-  # the parent, rather than once per re-exec'd pair: only the batch loop below
-  # can pass a --fm-batch-child that equals this process's real parent, so
-  # nothing an operator or agent leaves lying around in the environment can
-  # silence the rules for a spawn that is not one of those children.
+  # the parent, rather than once per re-exec'd pair.
+  #
+  # What the --fm-batch-child signal actually buys, stated no stronger than it
+  # is: it is not ambiently inheritable, so unlike an environment variable it
+  # cannot be exported once in a shell, session or profile and silently suppress
+  # the rules for every later spawn. A caller that deliberately constructs it per
+  # invocation still matches - $PPID is knowable - and that is out of scope here
+  # for the same reason --captain-pick is self-attested.
   if [ "$BATCH_CHILD_OF" != "$PPID" ]; then
     "$SCRIPT_DIR/fm-standing-knowledge.sh" spawn || true
   fi
