@@ -760,7 +760,7 @@ run_spawn() {  # <home> <task-id>
     FAKE_LINEAR_HTTP="${FAKE_LINEAR_HTTP:-200}" \
     FAKE_LINEAR_CURL_EXIT="${FAKE_LINEAR_CURL_EXIT:-}" \
     PATH="$home/fakebin:$PATH" \
-    "$SPAWN" "$id" "$home/project" --mode no-mistakes --yolo off
+    "$SPAWN" "$id" "$home/project" --mode no-mistakes --yolo off --captain-pick claude
 }
 
 test_spawn_moves_the_issue_to_in_progress() {

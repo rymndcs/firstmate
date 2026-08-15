@@ -167,7 +167,8 @@ run_spawn() {
     FM_FAKE_BRIEF_REAL="$(cd "$home/data/$id" && pwd -P)/brief.md" \
     FM_KIMI_READY_POLLS=2 FM_KIMI_DELIVERY_POLLS=2 FM_KIMI_POLL_INTERVAL=0 \
     PATH="$fakebin:$BASE_PATH" \
-    "$SPAWN" "$id" "$proj" --harness kimi --mode no-mistakes --yolo off "$@" 2>&1
+    "$SPAWN" "$id" "$proj" --harness kimi --mode no-mistakes --yolo off \
+    --captain-pick "${FM_TEST_CAPTAIN_PICK:-kimi}" "$@" 2>&1
 }
 
 read_spawn_record() {
@@ -184,7 +185,7 @@ test_kimi_launch_then_send_is_verified() {
   rm -rf "$task_tmp"
   rec=$(make_spawn_case success "$id")
   read_spawn_record "$rec"
-  out=$(FM_FAKE_KIMI_SWALLOW_FIRST=yes run_spawn \
+  out=$(FM_FAKE_KIMI_SWALLOW_FIRST=yes FM_TEST_CAPTAIN_PICK=kimi/kimi-code/k3 run_spawn \
     "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id" \
     --model kimi-code/k3 --effort high)
   rc=$?

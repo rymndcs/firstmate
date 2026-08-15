@@ -2,6 +2,7 @@
 
 Empirical record for the merge watch on GitLab, alongside the existing GitHub watch.
 Every command below was run on 2026-07-21 and its output is reproduced exactly.
+As of 2026-08-15 `bin/fm-pr-check.sh` additionally writes the pr-ready standing-knowledge slice and the task project's merge-authority registry entry to stderr, which the transcripts below predate, so they record no such lines while every claim they do record (the stdout `armed:` lines, the exit codes, and the stored records) remains exact.
 
 ## Versions
 

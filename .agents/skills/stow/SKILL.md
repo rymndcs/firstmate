@@ -33,6 +33,8 @@ Every `/stow` invocation performs this complete pass, even when the session cont
    Prefer one concise current rule or authoritative pointer over duplicate prose.
    Remove, merge, or route completed incident and release chronology, stale versions and paths, transient task state, resolved alternatives, old metrics, superseded claims, duplicates, and report-sized procedures.
    Do not remove a unique current fact unless it is preserved directly elsewhere through a stronger existing owner.
+   Rewriting a section must keep its `<!-- fm-moment: ... -->` tag line, if it has one, on the line directly below its `##` heading, and must not introduce a fenced block anywhere in these files, or that section stops reaching the lifecycle moment it binds at.
+   `bin/fm-standing-knowledge.sh` owns that contract, and its `--audit` command reports every tag it can no longer bind.
 5. Run `bin/fm-startup-memory-budget.sh report` again after the complete pass.
    Finish at or below the effective budget unless a concrete inability remains.
    A secondmate must explicitly report `primary-owned-shared-file-alone-exceeds-budget` when the inherited shared file alone exceeds its allowance, because local curation cannot resolve it.

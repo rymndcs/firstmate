@@ -10,6 +10,14 @@
 # auto-approves), and only as a clean fast-forward - it refuses a diverged branch
 # and tells you to have the crewmate rebase. See AGENTS.md prime directives,
 # project management, and task lifecycle.
+#
+# Standing knowledge at the merge moment: before the fast-forward is attempted
+# this prints to stderr the verbatim knowledge-file sections tagged `merge`
+# (bin/fm-standing-knowledge.sh owns the knowledge set and the tag format). A
+# local-only task never passes through bin/fm-pr-check.sh, so this is the only
+# point where those rules reach it. It surfaces the captain's own words and
+# decides nothing; the print adds no refusal, touches no stdout, and can never
+# fail a merge.
 # Usage: fm-merge-local.sh <task-id>
 set -eu
 
@@ -25,6 +33,10 @@ META="$STATE/$ID.meta"
 PROJ=$(grep '^project=' "$META" | cut -d= -f2-)
 MODE=$(grep '^mode=' "$META" | cut -d= -f2- || true)
 [ "$MODE" = local-only ] || { echo "error: task $ID is mode=$MODE, not local-only; merge PR tasks with bin/fm-pr-merge.sh <id> <PR url> after approval" >&2; exit 1; }
+
+# Landing the work is the merge moment, and a local-only task reaches it here
+# only. Quote the captain's rules for it; this changes no merge decision.
+"$SCRIPT_DIR/fm-standing-knowledge.sh" merge || true
 
 default_branch() {
   local ref branch

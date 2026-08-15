@@ -7,6 +7,13 @@
 # Merge method defaults to --squash when the caller passes none of --squash,
 # --merge, --rebase, or --method after the optional -- separator. Extra args
 # must not include --repo or -R because the repository comes only from the URL.
+#
+# Standing knowledge at the merge moment: before the merge is attempted this
+# prints to stderr the verbatim knowledge-file sections tagged `merge`
+# (bin/fm-standing-knowledge.sh owns the knowledge set and the tag format). It surfaces
+# the captain's own words and decides nothing - no merge, authority, or posture
+# verdict is derived here, and the print adds no refusal, touches no stdout, and
+# can never fail a merge.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
 set -eu
 
@@ -38,6 +45,10 @@ PR_REPO=$FM_PR_REPO
 PR_NUMBER=$FM_PR_NUMBER
 shift 2
 [ "${1:-}" = "--" ] && shift
+
+# Landing the work is the merge moment: quote the captain's rules for it before
+# the merge runs. Advisory only - this changes no merge decision.
+"$SCRIPT_DIR/fm-standing-knowledge.sh" merge || true
 
 caller_has_merge_method() {
   local arg
