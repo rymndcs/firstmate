@@ -50,6 +50,13 @@
 # line itself is metadata rather than content and is the only line withheld from
 # the emitted text.
 #
+# A FENCED BLOCK IS CONTENT, never structure. A knowledge file may show the tag
+# format as a worked example, so nothing inside ``` or ~~~ opens a section, binds
+# one, or is reported as a defective marker - it is quoted with the section it
+# sits in, exactly as written. Fence nesting follows Markdown, closing on the
+# same delimiter character at the same run length or longer, so a ````-wrapped
+# example containing ``` stays one block.
+#
 # THE MOMENTS, and why the set is exactly this. Each one is a point where a
 # script already runs, so a tag can actually reach an agent:
 #
@@ -86,19 +93,21 @@
 # hand-written marker can bind nowhere while reading exactly like a section
 # deliberately left untagged: a tag naming a moment outside the set above; a
 # marker naming no moment at all, which is what deleting the last token out of
-# one leaves behind; a well-formed marker that is not on the line directly below
-# a `## ` heading, which a single stray blank line is enough to cause; and a line
-# plainly meant to be a marker that misses the exact spelling, such as a missing
-# space after `<!--`, a trailing space, or a leading indent. Each names the file,
-# the offending marker or token and the section, because the tags are written by
-# hand in files that live outside this repo and nothing else would ever report
-# that a rule quietly stopped arriving. Only the exact spelling ever binds a
-# section, so none of this changes what a moment resolves to. A knowledge file
-# may also DOCUMENT the tag format, so a fenced block and any marker-shaped line
-# in a section body are deliberately left alone: every slip above is by
-# construction the line directly under a heading, and a false "this binds
-# nowhere" printed above a section that IS binding is worse than the silence
-# these checks exist to remove. The caller's primary job is never blocked by
+# one leaves behind; a well-formed marker that opens its section but sits one
+# line too low, which a single stray blank line after the heading is enough to
+# cause; and a line plainly meant to be a marker that misses the exact spelling,
+# such as a missing space after `<!--`, a trailing space, or a leading indent.
+# Each names the file, the offending marker or token and the section, because the
+# tags are written by hand in files that live outside this repo and nothing else
+# would ever report that a rule quietly stopped arriving. Only the exact spelling
+# in the binding position ever binds a section, so none of this changes what a
+# moment resolves to. WHAT IS NOT REPORTED, because a knowledge file may DOCUMENT
+# the tag format: anything inside a fenced block, and any marker-shaped line
+# further into a section body than its first non-blank line. Every slip above is
+# a hand-edit at the top of a section, where the marker was meant to go; a marker
+# quoted mid-body is an example, and a false "this binds nowhere" printed above a
+# section that IS binding is worse than the silence these checks exist to remove.
+# The caller's primary job is never blocked by
 # knowledge that could not be read - the enforcement that DOES block lives in the
 # lifecycle scripts themselves, on inputs they require. data/captain-shared.md in
 # particular is absent in a home that has never been propagated to, and its
@@ -139,29 +148,88 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 FM_KNOWLEDGE_FILES="captain.md captain-shared.md learnings.md"
 FM_MOMENTS="intake spawn pr-ready merge teardown"
 
-# THE MARKER FORMAT HAS EXACTLY ONE OWNER: this awk fragment. Every reader below
-# - the resolver, the problem check, the has-any-tag check and the audit - runs
-# it, so the syntax is written down once and audited from the same place it is
-# written, which is the whole reason the marker sits in one deterministic
-# position.
+# HOW A LINE IN A KNOWLEDGE FILE IS CLASSIFIED HAS EXACTLY ONE OWNER: the awk
+# fragment below. All four readers - the resolver, the problem check, the
+# has-any-tag check and the audit - call classify() once per line and act on what
+# it returns; not one of them keeps its own fence or binding-position bookkeeping.
+# That is deliberate and load-bearing. When each pass re-derived what a line was,
+# they drifted: the reporting passes learned about fenced blocks while the binding
+# pass did not, so a documented example could be quoted as a captain rule and a
+# real rule could be truncated mid-body while --audit reported something else
+# again. Two consumers can no longer disagree about what a line is, because there
+# is only one answer to ask for.
 #
-# is_marker is the STRICT recogniser and is the only thing that ever binds a
-# section. looks_like_marker is deliberately LOOSE - an HTML comment mentioning
-# fm-moment, indented or padded however it was typed - and never binds anything;
-# it exists so a line that was plainly meant to be a marker but misses the exact
-# spelling can be reported instead of vanishing. is_fence is not part of the
-# marker format at all: the problem checks use it to leave a knowledge file's own
-# worked examples alone, since a file explaining the tag format is exactly the
-# kind of note these files carry.
-FM_MARKER_AWK='
+# classify(line) returns one of:
+#
+#   fence     a fenced-block delimiter, opening or closing the block
+#   fenced    a line inside a fenced block
+#   heading   a `## ` heading, outside any fenced block
+#   marker    a line matching the marker spelling EXACTLY, outside any fence
+#   nearmiss  an HTML comment mentioning fm-moment that is not an exact marker
+#   body      anything else
+#
+# and sets two facts about that line:
+#
+#   K_in_position    it is the line DIRECTLY below a `## ` heading, the one and
+#                    only place a marker binds its section
+#   K_first_content  it is the first non-blank line of the current section
+#
+# Fence nesting is tracked by delimiter character and run length, the way
+# Markdown itself closes a fence, so a ````-wrapped example containing ``` stays
+# inside one block - that being the only way to show a fenced example of a fence.
+# Nothing inside a fenced block ever opens a section, binds one, or is reported.
+FM_LINE_AWK='
 function is_marker(line) {
   return line ~ /^<!-- fm-moment:[^>]*-->$/
 }
 function looks_like_marker(line) {
   return line ~ /^[[:space:]]*<!--.*fm-moment.*-->[[:space:]]*$/
 }
-function is_fence(line) {
+function is_fence_delim(line) {
   return line ~ /^[[:space:]]*(```|~~~)/
+}
+function fence_run(line, want,   s, c, n) {
+  s = line
+  sub(/^[[:space:]]*/, "", s)
+  c = substr(s, 1, 1)
+  if (want == "char") { return c }
+  n = 0
+  while (substr(s, n + 1, 1) == c) { n++ }
+  return n
+}
+function classify(line,   c, n) {
+  K_in_position = 0
+  K_first_content = 0
+  if (is_fence_delim(line)) {
+    c = fence_run(line, "char")
+    n = fence_run(line, "len")
+    if (K_fence_open) {
+      if (c == K_fence_char && n >= K_fence_len) { K_fence_open = 0 }
+    } else {
+      K_fence_open = 1
+      K_fence_char = c
+      K_fence_len = n
+    }
+    K_expect = 0
+    K_seen_content = 1
+    return "fence"
+  }
+  if (K_fence_open) { K_expect = 0; K_seen_content = 1; return "fenced" }
+  if (line ~ /^## /) {
+    K_heading = line
+    K_expect = 1
+    K_seen_content = 0
+    return "heading"
+  }
+  K_in_position = K_expect
+  K_expect = 0
+  if (line !~ /^[[:space:]]*$/) {
+    if (!K_seen_content) { K_first_content = 1 }
+    K_seen_content = 1
+  }
+  if (is_marker(line)) { return "marker" }
+  if (looks_like_marker(line)) { return "nearmiss" }
+  return "body"
 }
 function marker_tags(line,   stripped) {
   stripped = line
@@ -194,28 +262,26 @@ moment_known() {  # <moment>
 # Print every tagged section for one moment from one file, verbatim, minus the
 # marker line. Prints nothing when no section in the file binds at the moment.
 sections_for_moment() {  # <file> <moment>
-  awk -v want="$2" "$FM_MARKER_AWK"'
-    # A heading closes any open section and opens a candidate one. Nothing is
-    # emitted until the next line proves the candidate carries a matching tag.
-    /^## / {
-      emit = 0
-      expect_marker = 1
-      heading = $0
-      next
-    }
-    expect_marker {
-      expect_marker = 0
-      # An untagged section binds nowhere: emit stays 0 and its body is skipped.
-      if (!is_marker($0)) { next }
-      n = split(marker_tags($0), t, /[[:space:]]+/)
-      for (i = 1; i <= n; i++) {
-        if (t[i] == want) { emit = 1 }
+  awk -v want="$2" "$FM_LINE_AWK"'
+    {
+      kind = classify($0)
+      # A heading closes any open section and opens a candidate one. Nothing is
+      # emitted until the next line proves the candidate carries a matching tag.
+      if (kind == "heading") { emit = 0; next }
+      if (kind == "marker" && K_in_position) {
+        # An untagged section binds nowhere: emit stays 0 and its body is skipped.
+        n = split(marker_tags($0), t, /[[:space:]]+/)
+        for (i = 1; i <= n; i++) {
+          if (t[i] == want) { emit = 1 }
+        }
+        if (emit) { print K_heading }
+        # The marker itself is metadata, never content: it is withheld here.
+        next
       }
-      if (emit) { print heading }
-      # The marker itself is metadata, never content: it is withheld here.
-      next
+      # Everything else is body, fenced example included, and travels with the
+      # section it sits in rather than cutting it short.
+      if (emit) { print }
     }
-    emit { print }
   ' "$1"
 }
 
@@ -228,9 +294,9 @@ sections_for_moment() {  # <file> <moment>
 #              so it matches nothing at any moment.
 #   empty      the marker is well placed and well formed but names no moment at
 #              all, which is what deleting the last token out of one leaves.
-#   orphan     the marker is well formed but is not on the line directly below a
-#              `## ` heading - a blank line left between the two is enough - so
-#              no section claims it.
+#   orphan     the marker is well formed and is the first thing the section says,
+#              but a blank line was left between it and the heading, so it missed
+#              the binding position and no section claims it.
 #   malformed  the line directly below a heading was plainly meant to be that
 #              section marker but misses the exact spelling - a missing space
 #              after `<!--`, a trailing space, a leading indent - so the strict
@@ -238,47 +304,46 @@ sections_for_moment() {  # <file> <moment>
 #
 # WHAT IS DELIBERATELY NOT REPORTED, because a knowledge file explaining the tag
 # format is an ordinary thing for one of these files to contain: anything inside
-# a fenced block, and any marker-shaped line in a section BODY rather than in the
-# binding position. Every slip above is by construction the line directly under a
-# heading, so nothing is lost by leaving worked examples alone - and a false
-# "this binds nowhere" printed above a section that IS binding is worse than the
-# silence this whole check exists to remove.
+# a fenced block, and any marker-shaped line further into a section body than its
+# first non-blank line. Every slip above is a hand-edit at the top of a section,
+# where the marker was meant to go; a marker quoted mid-body is an example, and a
+# false "this binds nowhere" printed above a section that IS binding is worse
+# than the silence this whole check exists to remove.
 marker_problems_in() {  # <file>
-  awk -v moments="$FM_MOMENTS" "$FM_MARKER_AWK"'
+  awk -v moments="$FM_MOMENTS" "$FM_LINE_AWK"'
     BEGIN {
       km = split(moments, m, /[[:space:]]+/)
       for (j = 1; j <= km; j++) { known[m[j]] = 1 }
     }
-    /^## / { heading = $0; expect_marker = 1; next }
     {
-      in_position = expect_marker
-      expect_marker = 0
-      if (is_fence($0)) { in_fence = !in_fence; next }
-      if (in_fence) { next }
-      if (is_marker($0)) {
-        if (in_position) {
-          n = split(marker_tags($0), t, /[[:space:]]+/)
-          for (i = 1; i <= n; i++) {
-            if (t[i] != "" && !(t[i] in known)) { printf "unknown|%s|%s\n", t[i], heading }
-          }
-          if (marker_token_count($0) == 0) { printf "empty|%s|%s\n", $0, heading }
-        } else {
-          printf "orphan|%s|%s\n", $0, (heading == "" ? "(no ## heading above it)" : heading)
+      kind = classify($0)
+      if (kind == "marker" && K_in_position) {
+        n = split(marker_tags($0), t, /[[:space:]]+/)
+        for (i = 1; i <= n; i++) {
+          if (t[i] != "" && !(t[i] in known)) { printf "unknown|%s|%s\n", t[i], K_heading }
         }
+        if (marker_token_count($0) == 0) { printf "empty|%s|%s\n", $0, K_heading }
         next
       }
-      if (in_position && looks_like_marker($0)) {
-        printf "malformed|%s|%s\n", $0, (heading == "" ? "(no ## heading above it)" : heading)
+      if (kind == "marker" && K_first_content && K_heading != "") {
+        printf "orphan|%s|%s\n", $0, K_heading
+        next
+      }
+      if (kind == "nearmiss" && K_in_position && K_heading != "") {
+        printf "malformed|%s|%s\n", $0, K_heading
       }
     }
   ' "$1"
 }
 
 # A file with no marker at all cannot bind anywhere, which is a real condition an
-# operator must be told about rather than a silent no-match.
+# operator must be told about rather than a silent no-match. A marker quoted
+# inside a fenced example is not one, or a file that only documents the format
+# would look tagged; a marker that merely missed the binding position IS one, so
+# that file still reaches its own sharper diagnostic instead of this blunt one.
 file_has_any_tag() {  # <file>
-  awk "$FM_MARKER_AWK"'
-    is_marker($0) { found = 1; exit }
+  awk "$FM_LINE_AWK"'
+    { if (classify($0) == "marker") { found = 1; exit } }
     END { exit(found ? 0 : 1) }
   ' "$1"
 }
@@ -372,7 +437,7 @@ audit() {
       printf 'data/%s: unavailable at %s\n' "$name" "$path"
       continue
     fi
-    awk -v file="$name" -v moments="$FM_MOMENTS" "$FM_MARKER_AWK"'
+    awk -v file="$name" -v moments="$FM_MOMENTS" "$FM_LINE_AWK"'
       BEGIN {
         km = split(moments, m, /[[:space:]]+/)
         for (j = 1; j <= km; j++) { known[m[j]] = 1 }
@@ -381,71 +446,56 @@ audit() {
       # or written in a spelling the strict recogniser does not accept - is not
       # the same thing as a section deliberately left untagged, so each is
       # reported differently: the audit is the only place any of them can be seen
-      # at all, since they all simply never print.
+      # at all, since they all simply never print. Which lines count is decided by
+      # classify(), the same call the resolver makes, so this can never report a
+      # section as anything other than what actually binds.
       function close_section() {
-        if (heading == "") { return }
+        if (pending == "") { return }
         if (defect_kind == "orphan") {
-          printf "data/%s: orphaned-marker %s | %s\n", file, defect_line, heading
+          printf "data/%s: orphaned-marker %s | %s\n", file, defect_line, pending
         } else if (defect_kind == "malformed") {
-          printf "data/%s: malformed-marker %s | %s\n", file, defect_line, heading
+          printf "data/%s: malformed-marker %s | %s\n", file, defect_line, pending
         } else {
-          printf "data/%s: untagged | %s\n", file, heading
+          printf "data/%s: untagged | %s\n", file, pending
         }
-        heading = ""
+        pending = ""
         defect_kind = ""
         defect_line = ""
       }
-      /^## / {
-        close_section()
-        heading = $0
-        seen_heading = $0
-        expect_marker = 1
-        next
-      }
       {
-        in_position = expect_marker
-        expect_marker = 0
-        # Worked examples inside a knowledge file are left alone, exactly as in
-        # marker_problems_in: a fenced block is not a tag, and neither is a
-        # marker-shaped line in a section body.
-        if (is_fence($0)) { in_fence = !in_fence; next }
-        if (in_fence) { next }
-        if (is_marker($0)) {
-          if (in_position) {
-            tags = marker_tags($0)
-            # An unknown or absent token is called out rather than echoed back as
-            # if it were ordinary, for the same reason.
-            bad = ""
-            n = split(tags, t, /[[:space:]]+/)
-            for (i = 1; i <= n; i++) {
-              if (t[i] != "" && !(t[i] in known)) { bad = (bad == "" ? t[i] : bad " " t[i]) }
-            }
-            if (marker_token_count($0) == 0) {
-              printf "data/%s: empty-marker %s | %s\n", file, $0, heading
-            } else if (bad != "") {
-              printf "data/%s: %s [unknown moment: %s] | %s\n", file, tags, bad, heading
-            } else {
-              printf "data/%s: %s | %s\n", file, tags, heading
-            }
-            heading = ""
-            defect_kind = ""
-            defect_line = ""
-          } else if (heading != "") {
-            if (defect_kind == "") { defect_kind = "orphan"; defect_line = $0 }
-          } else {
-            printf "data/%s: orphaned-marker %s | %s\n", file, $0, \
-              (seen_heading == "" ? "(no ## heading above it)" : seen_heading)
-          }
+        kind = classify($0)
+        if (kind == "heading") {
+          close_section()
+          pending = K_heading
           next
         }
-        if (in_position && looks_like_marker($0)) {
-          if (heading != "") {
-            defect_kind = "malformed"
-            defect_line = $0
-          } else {
-            printf "data/%s: malformed-marker %s | %s\n", file, $0, \
-              (seen_heading == "" ? "(no ## heading above it)" : seen_heading)
+        if (kind == "marker" && K_in_position) {
+          tags = marker_tags($0)
+          # An unknown or absent token is called out rather than echoed back as
+          # if it were ordinary, for the same reason.
+          bad = ""
+          n = split(tags, t, /[[:space:]]+/)
+          for (i = 1; i <= n; i++) {
+            if (t[i] != "" && !(t[i] in known)) { bad = (bad == "" ? t[i] : bad " " t[i]) }
           }
+          if (marker_token_count($0) == 0) {
+            printf "data/%s: empty-marker %s | %s\n", file, $0, K_heading
+          } else if (bad != "") {
+            printf "data/%s: %s [unknown moment: %s] | %s\n", file, tags, bad, K_heading
+          } else {
+            printf "data/%s: %s | %s\n", file, tags, K_heading
+          }
+          pending = ""
+          defect_kind = ""
+          defect_line = ""
+          next
+        }
+        if (kind == "marker" && K_first_content && pending != "") {
+          if (defect_kind == "") { defect_kind = "orphan"; defect_line = $0 }
+          next
+        }
+        if (kind == "nearmiss" && K_in_position && pending != "") {
+          if (defect_kind == "") { defect_kind = "malformed"; defect_line = $0 }
         }
       }
       END { close_section() }

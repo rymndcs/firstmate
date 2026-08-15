@@ -441,6 +441,143 @@ MD
   pass 'resolver leaves a knowledge file its own worked marker examples'
 }
 
+# The two shapes a documenting file actually takes that the body-example case
+# above cannot reach: a flush-left example marker in ordinary prose, and a
+# nested fence, which is the only way to show a fenced example of a fence.
+test_resolver_leaves_flush_left_and_nested_fence_examples_alone() {
+  local data out status audit
+  data="$TMP_ROOT/marker-examples-hard/data"
+  mkdir -p "$data"
+  cat > "$data/captain.md" <<'MD'
+# Captain preferences
+
+## How the tags are written (fixture, 2026-01-21)
+<!-- fm-moment: merge -->
+
+Write the marker as:
+
+<!-- fm-moment: spawn -->
+
+directly under the heading.
+MD
+  cat > "$data/captain-shared.md" <<'MD'
+# Shared captain preferences
+
+## How a fenced example is shown (fixture, 2026-01-22)
+<!-- fm-moment: merge -->
+
+To show a fenced example of a fence:
+
+````markdown
+```
+<!-- fm-moment: spawn -->
+```
+````
+
+That is the shape.
+MD
+  printf '# Learnings\n\n## Learned\n<!-- fm-moment: merge -->\n\nLearned body.\n' \
+    > "$data/learnings.md"
+  out=$(run_know "$data" merge)
+  status=$?
+  expect_code 0 "$status" 'a documented example must not fail the resolver'
+  assert_not_contains "$out" 'binds nowhere' \
+    'neither a flush-left nor a nested-fence example may be reported as defective'
+  assert_contains "$out" '## How the tags are written (fixture, 2026-01-21)' \
+    'the flush-left-example section must still bind and print'
+  assert_contains "$out" 'directly under the heading.' \
+    'the flush-left-example section must print in full'
+  assert_contains "$out" '## How a fenced example is shown (fixture, 2026-01-22)' \
+    'the nested-fence section must still bind and print'
+  assert_contains "$out" 'That is the shape.' 'the nested-fence section must print in full'
+  audit=$(run_know "$data" --audit)
+  assert_not_contains "$audit" 'orphaned-marker' \
+    '--audit must not call a documented example an orphaned marker'
+  assert_not_contains "$audit" 'malformed-marker' \
+    '--audit must not call a documented example a malformed marker'
+  pass 'resolver leaves flush-left and nested-fence marker examples alone'
+}
+
+# A fenced block is content, never structure. A `## ` line inside one must not
+# open a section - which would quote text the captain never wrote as a rule - and
+# must not close the section it sits in, which would truncate a real rule.
+test_fenced_headings_neither_fabricate_a_rule_nor_truncate_one() {
+  local data out status audit
+  data="$TMP_ROOT/fenced-heading/data"
+  mkdir -p "$data"
+  cat > "$data/captain.md" <<'MD'
+# Captain preferences
+
+## How a tagged section looks (fixture, 2026-01-23)
+<!-- fm-moment: spawn -->
+
+A whole tagged section reads:
+
+```markdown
+## Some rule the captain never wrote
+<!-- fm-moment: spawn -->
+
+Fabricated body that must never be quoted as a rule.
+```
+
+That is the shape.
+
+## A real rule with a fenced heading in it (fixture, 2026-01-24)
+<!-- fm-moment: merge -->
+
+Step one.
+
+```md
+## Not a heading, just an example
+```
+
+Step two, which is part of the same rule.
+MD
+  printf '# Shared captain preferences\n\n## Shared\n<!-- fm-moment: merge -->\n\nShared body.\n' \
+    > "$data/captain-shared.md"
+  printf '# Learnings\n\n## Learned\n<!-- fm-moment: merge -->\n\nLearned body.\n' \
+    > "$data/learnings.md"
+
+  out=$(run_know "$data" spawn)
+  status=$?
+  expect_code 0 "$status" 'a fenced heading must not fail the resolver'
+  assert_contains "$out" '## How a tagged section looks (fixture, 2026-01-23)' \
+    'the documenting section must bind at its own moment'
+  assert_contains "$out" '## Some rule the captain never wrote' \
+    'the fenced example must be quoted verbatim inside its owning section'
+  assert_contains "$out" 'That is the shape.' \
+    'the documenting section must print past its fenced example'
+  assert_not_contains "$out" '[data/captain.md]
+## Some rule the captain never wrote' \
+    'a fenced heading must never be quoted as a section of its own'
+
+  out=$(run_know "$data" merge)
+  assert_contains "$out" '## A real rule with a fenced heading in it (fixture, 2026-01-24)' \
+    'the real merge rule must bind'
+  assert_contains "$out" 'Step one.' 'the rule must print from its start'
+  assert_contains "$out" '## Not a heading, just an example' \
+    'a fenced heading inside a rule body must be quoted verbatim'
+  assert_contains "$out" 'Step two, which is part of the same rule.' \
+    'a fenced heading must not truncate the rule it sits in'
+  assert_not_contains "$out" 'Fabricated body that must never be quoted as a rule.' \
+    'a fenced example tagged for another moment must not leak into this one'
+
+  # --audit is the surface a reader is told to trust, so it must name exactly the
+  # sections that bind - no phantom section for a fenced heading.
+  audit=$(run_know "$data" --audit)
+  assert_contains "$audit" 'spawn | ## How a tagged section looks (fixture, 2026-01-23)' \
+    '--audit must report the documenting section by its real tag'
+  assert_contains "$audit" 'merge | ## A real rule with a fenced heading in it (fixture, 2026-01-24)' \
+    '--audit must report the real merge rule by its real tag'
+  assert_not_contains "$audit" '## Some rule the captain never wrote' \
+    '--audit must not invent a section for a fenced heading'
+  assert_not_contains "$audit" '## Not a heading, just an example' \
+    '--audit must not invent a section for a fenced heading in a rule body'
+  assert_not_contains "$audit" 'binds nowhere' \
+    '--audit must report no defect for a file whose fences are examples'
+  pass 'a fenced heading neither fabricates a section nor truncates the one it sits in'
+}
+
 # Everything between the banner lines is the owning files' own words. A
 # diagnostic landing under the last line of a quoted rule would read as part of
 # that rule, and an absent data/captain-shared.md makes that the steady state.
@@ -988,6 +1125,8 @@ test_resolver_reports_a_marker_out_of_binding_position
 test_resolver_reports_a_marker_that_misses_the_exact_spelling
 test_resolver_reports_a_marker_naming_no_moment_at_all
 test_resolver_leaves_documented_marker_examples_alone
+test_resolver_leaves_flush_left_and_nested_fence_examples_alone
+test_fenced_headings_neither_fabricate_a_rule_nor_truncate_one
 test_diagnostics_print_outside_the_verbatim_banner
 test_audit_still_calls_a_deliberately_untagged_section_untagged
 test_resolver_prints_nothing_when_no_section_binds
