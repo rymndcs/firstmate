@@ -149,10 +149,15 @@ Before changing it, inspect the current file and rewrite or prune the matching b
 Shared captain preferences that apply across secondmate domains live only in the primary home's optional `data/captain-shared.md`.
 `secondmate-provisioning` owns its propagation contract, including the required header, read-only secondmate copies, quarantine diagnostics, and the rollout rule that existing homes trim `data/captain.md` by hand after first propagation rather than deleting private content automatically.
 
+Beyond that whole-file digest, a `##` section of either file can be tagged with the lifecycle moments it binds at, and the script that runs at such a moment then quotes the sections tagged for it verbatim on standard error.
+The tag is an HTML comment on the line directly below its heading, so it stays invisible in rendered Markdown; [`bin/fm-standing-knowledge.sh`](../bin/fm-standing-knowledge.sh)'s header owns the exact spelling, the moment vocabulary, the no-fenced-block precondition these files must satisfy, and the diagnostics for a tag that binds nowhere.
+Use `bin/fm-standing-knowledge.sh --audit` to see every heading with its tags.
+
 ## Operational learnings (data/learnings.md)
 
 Fleet-local operational facts and gotchas live locally in `data/learnings.md`; it is gitignored and printed after the captain-preference files in the session-start context digest.
 The file is created lazily on first learning and follows the same dated, evidence-backed, curated style as `data/captain.md`: inspect the current file first, then rewrite or prune stale entries instead of appending forever.
+Its sections can carry the same lifecycle-moment tags as the captain-preference files above.
 There is no shared learnings file by captain decision.
 
 ## Startup memory budget (config/startup-memory-budget)
