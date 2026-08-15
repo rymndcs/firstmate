@@ -7,10 +7,10 @@
 # real executable and reads what an operator would actually see. Nothing asserts
 # the source bytes of any script.
 #
-# The captain's real data/captain.md, data/learnings.md and data/projects.md are
-# private, gitignored, and never consulted: every case builds its own fixture
-# knowledge files under an isolated FM_HOME, so a change to the captain's notes
-# can neither pass nor fail this suite.
+# The captain's real data/captain.md, data/captain-shared.md, data/learnings.md
+# and data/projects.md are private, gitignored, and never consulted: every case
+# builds its own fixture knowledge files under an isolated FM_HOME, so a change
+# to the captain's notes can neither pass nor fail this suite.
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -25,9 +25,9 @@ TMP_ROOT=$(fm_test_tmproot fm-standing-knowledge)
 
 # --- fixture knowledge files -------------------------------------------------
 
-# A data dir carrying one tagged captain file and one tagged learnings file.
-# The exact prose is fixture text so the assertions below pin verbatim quoting
-# rather than any real rule.
+# A data dir carrying the whole knowledge set: a tagged captain file, a tagged
+# shared-captain file, and a tagged learnings file. The exact prose is fixture
+# text so the assertions below pin verbatim quoting rather than any real rule.
 make_data() {  # <name>
   local name=$1 data="$TMP_ROOT/$1/data"
   mkdir -p "$data"
@@ -59,6 +59,19 @@ This section is untagged and must never be printed at any moment.
 <!-- fm-moment: merge -->
 
 Merge green work; never merge red work.
+MD
+  cat > "$data/captain-shared.md" <<'MD'
+# Shared captain preferences
+
+## Name the workspace before dispatching (fixture shared rule, 2026-01-07)
+<!-- fm-moment: spawn -->
+
+Shared preference: every crew launch states which workspace it lands in.
+
+## Say who may land it (fixture shared rule, 2026-01-08)
+<!-- fm-moment: pr-ready merge -->
+
+Shared preference: merge authority is stated, never assumed.
 MD
   cat > "$data/learnings.md" <<'MD'
 # Learnings
@@ -160,12 +173,100 @@ test_resolver_reads_both_knowledge_files() {
   pass 'resolver reads both knowledge files'
 }
 
+# The shared captain-preference file is main-authoritative and propagated
+# read-only into every secondmate home, where a trimmed local captain.md means it
+# is the only place the captain's preferences still live. It must resolve like
+# any other knowledge file.
+test_resolver_reads_the_shared_captain_file() {
+  local data spawn merge
+  data=$(make_data shared-captain)
+  spawn=$(run_know "$data" spawn)
+  assert_contains "$spawn" '## Name the workspace before dispatching (fixture shared rule, 2026-01-07)' \
+    'a tagged shared-captain section must print at its moment'
+  assert_contains "$spawn" 'Shared preference: every crew launch states which workspace it lands in.' \
+    'the shared-captain body must be quoted verbatim'
+  assert_contains "$spawn" 'data/captain-shared.md' \
+    'the shared-captain section must be attributed to its owning file'
+  assert_not_contains "$spawn" 'Shared preference: merge authority is stated, never assumed.' \
+    'a shared-captain section tagged for other moments must not print at spawn'
+  merge=$(run_know "$data" merge)
+  assert_contains "$merge" 'Shared preference: merge authority is stated, never assumed.' \
+    'a multi-moment shared-captain section must print at each moment it names'
+  pass 'resolver reads the shared captain-preference file'
+}
+
+test_resolver_reports_an_absent_shared_captain_file() {
+  local data out status
+  # A home that has never been propagated to: captain-shared.md is simply not
+  # there, which is the expected steady state and must degrade, not fail.
+  data="$TMP_ROOT/no-shared/data"
+  mkdir -p "$data"
+  printf '# Captain preferences\n\n## Local rule\n<!-- fm-moment: spawn -->\n\nLocal body.\n' \
+    > "$data/captain.md"
+  printf '# Learnings\n\n## Local learning\n<!-- fm-moment: spawn -->\n\nLearned body.\n' \
+    > "$data/learnings.md"
+  out=$(run_know "$data" spawn)
+  status=$?
+  expect_code 0 "$status" 'an absent shared captain file must not fail the resolver'
+  assert_contains "$out" 'data/captain-shared.md is missing' \
+    'the absent shared captain file must be named explicitly'
+  assert_contains "$out" 'Local body.' 'the local captain file must still resolve'
+  assert_contains "$out" 'Learned body.' 'the learnings file must still resolve'
+  pass 'resolver reports an absent shared captain file and keeps resolving the rest'
+}
+
+# A tag naming a moment outside the known set binds nowhere, so the section it
+# tags simply never prints. That is indistinguishable from a section left
+# deliberately untagged unless it is reported, which is what this pins.
+test_resolver_reports_an_unknown_moment_tag_in_the_data() {
+  local data out status audit
+  data="$TMP_ROOT/unknown-tag/data"
+  mkdir -p "$data"
+  cat > "$data/captain.md" <<'MD'
+# Captain preferences
+
+## A rule whose tag is misspelled (fixture, 2026-01-09)
+<!-- fm-moment: pr_ready -->
+
+This body binds at no moment because its tag names none.
+
+## A correctly tagged rule (fixture, 2026-01-10)
+<!-- fm-moment: spawn -->
+
+Correct body.
+MD
+  printf '# Shared captain preferences\n\n## Shared\n<!-- fm-moment: spawn -->\n\nShared body.\n' \
+    > "$data/captain-shared.md"
+  printf '# Learnings\n\n## Learned\n<!-- fm-moment: spawn -->\n\nLearned body.\n' \
+    > "$data/learnings.md"
+  out=$(run_know "$data" spawn)
+  status=$?
+  expect_code 0 "$status" 'an unknown moment in the data must not fail the resolver'
+  assert_contains "$out" 'unknown lifecycle moment "pr_ready"' \
+    'the offending token must be named exactly'
+  assert_contains "$out" 'data/captain.md' 'the diagnostic must name the owning file'
+  assert_contains "$out" '## A rule whose tag is misspelled (fixture, 2026-01-09)' \
+    'the diagnostic must name the section the bad tag sits on'
+  assert_contains "$out" 'Correct body.' \
+    'a bad tag elsewhere in the file must not stop the well-tagged sections resolving'
+  assert_not_contains "$out" 'This body binds at no moment because its tag names none.' \
+    'a section whose tag names no known moment must still not print'
+  audit=$(run_know "$data" --audit)
+  assert_contains "$audit" 'unknown moment: pr_ready' \
+    '--audit must mark an unknown tag rather than echo it back as ordinary'
+  pass 'resolver reports a tag naming an unknown lifecycle moment, in emission and in --audit'
+}
+
 test_resolver_prints_nothing_when_no_section_binds() {
   local data out status
+  # Every knowledge file is present and tagged, so "prints nothing" is tested
+  # against a complete set rather than against files that are merely absent.
   data="$TMP_ROOT/empty-moment/data"
   mkdir -p "$data"
   printf '# Captain preferences\n\n## Only a merge rule\n<!-- fm-moment: merge -->\n\nBody.\n' \
     > "$data/captain.md"
+  printf '# Shared captain preferences\n\n## Only a merge shared rule\n<!-- fm-moment: merge -->\n\nBody.\n' \
+    > "$data/captain-shared.md"
   printf '# Learnings\n\n## Only a merge learning\n<!-- fm-moment: merge -->\n\nBody.\n' \
     > "$data/learnings.md"
   out=$(run_know "$data" spawn)
@@ -337,6 +438,45 @@ EOF
   assert_not_contains "$out" 'Never restart the shared daemon during cleanup.' \
     'a teardown rule must not print at the spawn moment'
   pass 'spawn prints the verbatim spawn-moment rules alongside its refusal'
+}
+
+# The print-once signal for a batch must not be reachable from the ambient
+# environment: an exported variable would be a session-wide off switch through
+# the very control this mechanism exists to be. An ordinary single spawn prints
+# the rules no matter what is exported around it.
+test_spawn_rules_print_despite_an_ambient_suppression_variable() {
+  local rec home proj fakebin out
+  rec=$(make_spawn_home spawn-ambient-suppress)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  write_brief "$home" ambient-suppress no-mistakes
+  out=$(
+    export FM_SPAWN_STANDING_KNOWLEDGE_SHOWN=1
+    run_spawn "$home" "$fakebin" ambient-suppress "$proj" claude \
+      --mode no-mistakes --yolo off
+  )
+  assert_contains "$out" 'The captain picks the runtime. Firstmate never picks it alone.' \
+    'no exported variable may suppress the spawn-moment rules on a single spawn'
+  pass 'spawn rules print for a single spawn whatever the ambient environment says'
+}
+
+# The dedup the batch loop needs is still real: one dispatch prints the rules
+# once, in the parent, not once per re-exec'd pair.
+test_spawn_batch_prints_the_rules_once_for_the_whole_batch() {
+  local rec home proj fakebin out count
+  rec=$(make_spawn_home spawn-batch-once)
+  IFS='|' read -r home proj fakebin <<EOF
+$rec
+EOF
+  # Neither pair has a brief, so both fail after the rules would have printed.
+  out=$(run_spawn "$home" "$fakebin" "batch-once-a=$proj" "batch-once-b=$proj" \
+    --harness claude --mode no-mistakes --yolo off --captain-pick claude)
+  assert_contains "$out" 'batch: FAILED to spawn batch-once-a' 'the first pair must be dispatched'
+  assert_contains "$out" 'batch: FAILED to spawn batch-once-b' 'the second pair must be dispatched'
+  count=$(printf '%s\n' "$out" | grep -c -F 'The captain picks the runtime. Firstmate never picks it alone.' || true)
+  [ "$count" = 1 ] || fail "a batch must print the spawn rules exactly once, got $count copies"
+  pass 'a batch prints the spawn-moment rules once in the parent, not once per pair'
 }
 
 test_spawn_refuses_a_pick_that_names_another_runtime() {
@@ -614,6 +754,9 @@ test_resolver_never_prints_an_untagged_section
 test_resolver_withholds_the_marker_from_the_quoted_text
 test_resolver_binds_one_section_at_several_moments
 test_resolver_reads_both_knowledge_files
+test_resolver_reads_the_shared_captain_file
+test_resolver_reports_an_absent_shared_captain_file
+test_resolver_reports_an_unknown_moment_tag_in_the_data
 test_resolver_prints_nothing_when_no_section_binds
 test_resolver_writes_only_to_stderr
 test_resolver_reports_an_unknown_moment_as_a_caller_bug
@@ -624,6 +767,8 @@ test_resolver_reports_an_entirely_untagged_knowledge_file
 test_spawn_refuses_a_ship_launch_with_no_captain_pick
 test_spawn_refuses_a_scout_launch_with_no_captain_pick
 test_spawn_prints_the_spawn_rules_with_its_refusal
+test_spawn_rules_print_despite_an_ambient_suppression_variable
+test_spawn_batch_prints_the_rules_once_for_the_whole_batch
 test_spawn_refuses_a_pick_that_names_another_runtime
 test_spawn_refuses_a_pick_that_omits_the_model_being_launched
 test_spawn_refuses_a_pick_naming_a_model_it_will_not_launch

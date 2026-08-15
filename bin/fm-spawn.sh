@@ -18,13 +18,19 @@
 #   --harness requirement remains the separate proof that the dispatch rules were
 #   consulted at all.
 #   Before either refusal, and on every crew spawn that is not refused, the
-#   verbatim data/captain.md and data/learnings.md sections tagged `spawn` print
-#   to stderr (bin/fm-standing-knowledge.sh owns the tag format and the
-#   selection). Nothing is restated here, no stdout changes, and a missing,
-#   unreadable, or untagged knowledge file prints its own diagnostic and leaves
-#   the spawn's own behavior unchanged. A batch prints them once, in the parent:
-#   the re-exec'd pairs carry FM_SPAWN_STANDING_KNOWLEDGE_SHOWN=1 so one dispatch
-#   does not repeat the same rules per pair.
+#   verbatim data/captain.md, data/captain-shared.md and data/learnings.md
+#   sections tagged `spawn` print to stderr (bin/fm-standing-knowledge.sh owns
+#   the knowledge set, the tag format and the selection). Nothing is restated
+#   here, no stdout changes, and a missing, unreadable, or untagged knowledge
+#   file prints its own diagnostic and leaves the spawn's own behavior unchanged.
+#   A batch prints them once, in the parent: the batch loop re-execs each pair
+#   with the internal `--fm-batch-child=<parent-pid>` argument, which the parser
+#   consumes and the print check accepts only when it equals this process's real
+#   parent, so one dispatch does not repeat the same rules per pair. That signal
+#   is deliberately NOT an environment variable: an inherited variable is an
+#   ambient off-switch a shell, session or profile could set once to silence the
+#   rules everywhere, which is the class of failure this whole mechanism exists
+#   to remove.
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -271,6 +277,9 @@ BACKEND_ARG=
 MODE=
 YOLO=
 TRACEPARENT_ARG=
+# The batch loop's own re-exec signal. Internal, undocumented as a user flag,
+# consumed by the parser below and never forwarded anywhere.
+BATCH_CHILD_OF=
 HARNESS_SET=0
 CAPTAIN_PICK_SET=0
 MODEL_SET=0
@@ -319,6 +328,11 @@ for a in "$@"; do
     --yolo=*) YOLO=${a#--yolo=}; YOLO_SET=1 ;;
     --traceparent) want_value=traceparent ;;
     --traceparent=*) TRACEPARENT_ARG=${a#--traceparent=}; TRACEPARENT_SET=1 ;;
+    --fm-batch-child=*) BATCH_CHILD_OF=${a#--fm-batch-child=} ;;
+    --fm-batch-child)
+      echo "error: --fm-batch-child is an internal batch signal and carries its value inline" >&2
+      exit 1
+      ;;
     *) POS+=("$a") ;;
   esac
 done
@@ -407,8 +421,11 @@ else
   # The spawn moment's standing rules print on every crew spawn, refused or not,
   # so the captain's own words are in front of the agent making the choice rather
   # than only in front of one it already got wrong. A batch prints them once, in
-  # the parent, rather than once per re-exec'd pair.
-  if [ -z "${FM_SPAWN_STANDING_KNOWLEDGE_SHOWN:-}" ]; then
+  # the parent, rather than once per re-exec'd pair: only the batch loop below
+  # can pass a --fm-batch-child that equals this process's real parent, so
+  # nothing an operator or agent leaves lying around in the environment can
+  # silence the rules for a spawn that is not one of those children.
+  if [ "$BATCH_CHILD_OF" != "$PPID" ]; then
     "$SCRIPT_DIR/fm-standing-knowledge.sh" spawn || true
   fi
   if [ "$CAPTAIN_PICK_SET" -eq 0 ]; then
@@ -853,9 +870,9 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
       rc=2
       continue
     elif [ "$KIND" = scout ]; then
-      if FM_SPAWN_NO_GUARD=1 FM_SPAWN_STANDING_KNOWLEDGE_SHOWN=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}" --scout; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
+      if FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "--fm-batch-child=$$" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}" --scout; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
     else
-      if FM_SPAWN_NO_GUARD=1 FM_SPAWN_STANDING_KNOWLEDGE_SHOWN=1 "$FM_ROOT/bin/fm-spawn.sh" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}"; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
+      if FM_SPAWN_NO_GUARD=1 "$FM_ROOT/bin/fm-spawn.sh" "--fm-batch-child=$$" "${pair%%=*}" "${pair#*=}" "${shared_args[@]+"${shared_args[@]}"}"; then :; else echo "batch: FAILED to spawn ${pair%%=*} (${pair#*=})" >&2; rc=1; fi
     fi
   done
   exit "$rc"

@@ -12,8 +12,8 @@
 # project management, and task lifecycle.
 #
 # Standing knowledge at the merge moment: before the fast-forward is attempted
-# this prints to stderr the verbatim data/captain.md and data/learnings.md
-# sections tagged `merge` (bin/fm-standing-knowledge.sh owns the tag format). A
+# this prints to stderr the verbatim knowledge-file sections tagged `merge`
+# (bin/fm-standing-knowledge.sh owns the knowledge set and the tag format). A
 # local-only task never passes through bin/fm-pr-check.sh, so this is the only
 # point where those rules reach it. It surfaces the captain's own words and
 # decides nothing; the print adds no refusal, touches no stdout, and can never

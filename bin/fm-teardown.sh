@@ -116,8 +116,9 @@
 #   when the captain has explicitly said to discard the work.
 #
 # Standing knowledge at the teardown moment: before any cleanup runs, this prints
-# to stderr the verbatim data/captain.md and data/learnings.md sections tagged
-# `teardown` (bin/fm-standing-knowledge.sh owns the tag format and the selection).
+# to stderr the verbatim knowledge-file sections tagged `teardown`
+# (bin/fm-standing-knowledge.sh owns the knowledge set, the tag format and the
+# selection).
 # That is where the captain's instruction moving the completion point to PR
 # creation lives, so a worker sitting idle after its PR is read as finished
 # rather than as waiting on a merge. Nothing is restated here: the knowledge
@@ -207,7 +208,7 @@ FM_LOCK_LOG_PREFIX=teardown
 # cleanup runs - among them the instruction that moved the completion point to
 # PR creation, so a worker idle after its PR reads as finished rather than as
 # waiting for a merge. bin/fm-standing-knowledge.sh owns the selection and
-# quotes data/captain.md and data/learnings.md verbatim; it writes only to
+# quotes the captain's knowledge files verbatim; it writes only to
 # stderr and can never fail a teardown.
 "$SCRIPT_DIR/fm-standing-knowledge.sh" teardown || true
 

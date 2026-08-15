@@ -9,8 +9,8 @@
 # must not include --repo or -R because the repository comes only from the URL.
 #
 # Standing knowledge at the merge moment: before the merge is attempted this
-# prints to stderr the verbatim data/captain.md and data/learnings.md sections
-# tagged `merge` (bin/fm-standing-knowledge.sh owns the tag format). It surfaces
+# prints to stderr the verbatim knowledge-file sections tagged `merge`
+# (bin/fm-standing-knowledge.sh owns the knowledge set and the tag format). It surfaces
 # the captain's own words and decides nothing - no merge, authority, or posture
 # verdict is derived here, and the print adds no refusal, touches no stdout, and
 # can never fail a merge.

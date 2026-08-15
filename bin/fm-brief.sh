@@ -77,9 +77,9 @@
 #
 # Standing knowledge at the intake moment: scaffolding a ship or scout brief is
 # where a task is defined, tiered and scoped, so before the scaffold is written
-# this prints to stderr the verbatim data/captain.md and data/learnings.md
-# sections tagged `intake` (bin/fm-standing-knowledge.sh owns the tag format and
-# the selection). A --secondmate charter takes in no task and prints none.
+# this prints to stderr the verbatim knowledge-file sections tagged `intake`
+# (bin/fm-standing-knowledge.sh owns the knowledge set, the tag format and the
+# selection). A --secondmate charter takes in no task and prints none.
 # Nothing is restated here and nothing is added to the scaffold; the knowledge
 # files remain the sole owners. The print adds no refusal, touches no stdout, and
 # a missing, unreadable, or untagged knowledge file prints its own diagnostic and
@@ -193,8 +193,8 @@ ID=${POS[0]}
 # Scaffolding a ship or scout brief IS the intake moment, so the captain's
 # intake rules print here, before the task is written down. A secondmate charter
 # stands up a persistent home rather than taking in a task, so it prints none.
-# bin/fm-standing-knowledge.sh quotes data/captain.md and data/learnings.md
-# verbatim on stderr and can never fail a scaffold.
+# bin/fm-standing-knowledge.sh quotes the captain's knowledge files verbatim on
+# stderr and can never fail a scaffold.
 if [ "$KIND" != secondmate ]; then
   "$SCRIPT_DIR/fm-standing-knowledge.sh" intake || true
 fi

@@ -8,8 +8,8 @@
 #
 # Standing knowledge at the pr-ready moment, printed to STDERR after the poll is
 # armed, in two parts:
-#   1. The verbatim data/captain.md and data/learnings.md sections tagged
-#      `pr-ready` (bin/fm-standing-knowledge.sh owns the tag format).
+#   1. The verbatim knowledge-file sections tagged `pr-ready`
+#      (bin/fm-standing-knowledge.sh owns the knowledge set and the tag format).
 #   2. The task project's verbatim data/projects.md registry entry, as the
 #      merge-authority source. The ENTRY is printed, not a parsed flag: a
 #      project's merge authority can live in the freeform prose beside its
