@@ -387,10 +387,10 @@ MD
   pass 'resolver reports a marker naming no lifecycle moment, in emission and in --audit'
 }
 
-# A knowledge file may document the tag format itself. A worked example in a
-# section BODY is not a defective marker, and claiming it is would print a false
-# "this binds nowhere" directly above rules that are in fact binding.
-test_resolver_leaves_documented_marker_examples_alone() {
+# A knowledge file may explain the tag format in its own prose. A marker-shaped
+# line deeper in a section BODY is not a defective marker, and claiming it is
+# would print a false "this binds nowhere" directly above rules that ARE binding.
+test_resolver_leaves_marker_examples_in_a_body_alone() {
   local data out status audit
   data="$TMP_ROOT/marker-examples/data"
   mkdir -p "$data"
@@ -409,17 +409,14 @@ MD
   cat > "$data/captain-shared.md" <<'MD'
 # Shared captain preferences
 
-## How the tags are written down (fixture, 2026-01-20)
+## How the tags are written (fixture, 2026-01-21)
 <!-- fm-moment: merge -->
 
-A fenced example:
+Write the marker as:
 
-```markdown
 <!-- fm-moment: spawn -->
-<!--fm-moment: teardown -->
-```
 
-That is the shape.
+directly under the heading.
 MD
   printf '# Learnings\n\n## Learned\n<!-- fm-moment: merge -->\n\nLearned body.\n' \
     > "$data/learnings.md"
@@ -430,152 +427,21 @@ MD
     'a marker example in a section body must not be reported as a defective marker'
   assert_contains "$out" '## How the lifecycle tags work (fixture, 2026-01-19)' \
     'the indented-example section must still bind and print'
-  assert_contains "$out" '## How the tags are written down (fixture, 2026-01-20)' \
-    'the fenced-example section must still bind and print'
-  assert_contains "$out" 'Learned body.' 'the other knowledge files must still resolve'
-  audit=$(run_know "$data" --audit)
-  assert_not_contains "$audit" 'malformed-marker' \
-    '--audit must not call a documented example a malformed marker'
-  assert_contains "$audit" 'merge | ## How the lifecycle tags work (fixture, 2026-01-19)' \
-    '--audit must report the documenting section by its own real tag'
-  pass 'resolver leaves a knowledge file its own worked marker examples'
-}
-
-# The two shapes a documenting file actually takes that the body-example case
-# above cannot reach: a flush-left example marker in ordinary prose, and a
-# nested fence, which is the only way to show a fenced example of a fence.
-test_resolver_leaves_flush_left_and_nested_fence_examples_alone() {
-  local data out status audit
-  data="$TMP_ROOT/marker-examples-hard/data"
-  mkdir -p "$data"
-  cat > "$data/captain.md" <<'MD'
-# Captain preferences
-
-## How the tags are written (fixture, 2026-01-21)
-<!-- fm-moment: merge -->
-
-Write the marker as:
-
-<!-- fm-moment: spawn -->
-
-directly under the heading.
-MD
-  cat > "$data/captain-shared.md" <<'MD'
-# Shared captain preferences
-
-## How a fenced example is shown (fixture, 2026-01-22)
-<!-- fm-moment: merge -->
-
-To show a fenced example of a fence:
-
-````markdown
-```
-<!-- fm-moment: spawn -->
-```
-````
-
-That is the shape.
-MD
-  printf '# Learnings\n\n## Learned\n<!-- fm-moment: merge -->\n\nLearned body.\n' \
-    > "$data/learnings.md"
-  out=$(run_know "$data" merge)
-  status=$?
-  expect_code 0 "$status" 'a documented example must not fail the resolver'
-  assert_not_contains "$out" 'binds nowhere' \
-    'neither a flush-left nor a nested-fence example may be reported as defective'
+  assert_contains "$out" 'on the line directly under the heading.' \
+    'the indented-example section must print in full'
   assert_contains "$out" '## How the tags are written (fixture, 2026-01-21)' \
     'the flush-left-example section must still bind and print'
   assert_contains "$out" 'directly under the heading.' \
     'the flush-left-example section must print in full'
-  assert_contains "$out" '## How a fenced example is shown (fixture, 2026-01-22)' \
-    'the nested-fence section must still bind and print'
-  assert_contains "$out" 'That is the shape.' 'the nested-fence section must print in full'
+  assert_contains "$out" 'Learned body.' 'the other knowledge files must still resolve'
   audit=$(run_know "$data" --audit)
   assert_not_contains "$audit" 'orphaned-marker' \
     '--audit must not call a documented example an orphaned marker'
   assert_not_contains "$audit" 'malformed-marker' \
     '--audit must not call a documented example a malformed marker'
-  pass 'resolver leaves flush-left and nested-fence marker examples alone'
-}
-
-# A fenced block is content, never structure. A `## ` line inside one must not
-# open a section - which would quote text the captain never wrote as a rule - and
-# must not close the section it sits in, which would truncate a real rule.
-test_fenced_headings_neither_fabricate_a_rule_nor_truncate_one() {
-  local data out status audit
-  data="$TMP_ROOT/fenced-heading/data"
-  mkdir -p "$data"
-  cat > "$data/captain.md" <<'MD'
-# Captain preferences
-
-## How a tagged section looks (fixture, 2026-01-23)
-<!-- fm-moment: spawn -->
-
-A whole tagged section reads:
-
-```markdown
-## Some rule the captain never wrote
-<!-- fm-moment: spawn -->
-
-Fabricated body that must never be quoted as a rule.
-```
-
-That is the shape.
-
-## A real rule with a fenced heading in it (fixture, 2026-01-24)
-<!-- fm-moment: merge -->
-
-Step one.
-
-```md
-## Not a heading, just an example
-```
-
-Step two, which is part of the same rule.
-MD
-  printf '# Shared captain preferences\n\n## Shared\n<!-- fm-moment: merge -->\n\nShared body.\n' \
-    > "$data/captain-shared.md"
-  printf '# Learnings\n\n## Learned\n<!-- fm-moment: merge -->\n\nLearned body.\n' \
-    > "$data/learnings.md"
-
-  out=$(run_know "$data" spawn)
-  status=$?
-  expect_code 0 "$status" 'a fenced heading must not fail the resolver'
-  assert_contains "$out" '## How a tagged section looks (fixture, 2026-01-23)' \
-    'the documenting section must bind at its own moment'
-  assert_contains "$out" '## Some rule the captain never wrote' \
-    'the fenced example must be quoted verbatim inside its owning section'
-  assert_contains "$out" 'That is the shape.' \
-    'the documenting section must print past its fenced example'
-  assert_not_contains "$out" '[data/captain.md]
-## Some rule the captain never wrote' \
-    'a fenced heading must never be quoted as a section of its own'
-
-  out=$(run_know "$data" merge)
-  assert_contains "$out" '## A real rule with a fenced heading in it (fixture, 2026-01-24)' \
-    'the real merge rule must bind'
-  assert_contains "$out" 'Step one.' 'the rule must print from its start'
-  assert_contains "$out" '## Not a heading, just an example' \
-    'a fenced heading inside a rule body must be quoted verbatim'
-  assert_contains "$out" 'Step two, which is part of the same rule.' \
-    'a fenced heading must not truncate the rule it sits in'
-  assert_not_contains "$out" 'Fabricated body that must never be quoted as a rule.' \
-    'a fenced example tagged for another moment must not leak into this one'
-
-  # --audit is the surface a reader is told to trust, so it must name exactly the
-  # sections that bind - no phantom section for a fenced heading.
-  audit=$(run_know "$data" --audit)
-  assert_contains "$audit" 'spawn | ## How a tagged section looks (fixture, 2026-01-23)' \
-    '--audit must report the documenting section by its real tag'
-  assert_contains "$audit" 'merge | ## A real rule with a fenced heading in it (fixture, 2026-01-24)' \
-    '--audit must report the real merge rule by its real tag'
-  assert_not_contains "$audit" '## Some rule the captain never wrote' \
-    '--audit must not invent a section for a fenced heading'
-  assert_not_contains "$audit" '## Not a heading, just an example' \
-    '--audit must not invent a section for a fenced heading in a rule body'
-  assert_not_contains "$audit" 'binds nowhere' \
-    '--audit must report no defect for a file whose fences are examples'
-  pass 'a fenced heading neither fabricates a section nor truncates the one it sits in'
+  assert_contains "$audit" 'merge | ## How the lifecycle tags work (fixture, 2026-01-19)' \
+    '--audit must report the documenting section by its own real tag'
+  pass 'resolver leaves marker examples in a section body alone'
 }
 
 # Everything between the banner lines is the owning files' own words. A
@@ -606,200 +472,96 @@ test_diagnostics_print_outside_the_verbatim_banner() {
   pass 'file diagnostics print outside the verbatim banner, which carries only quoted text'
 }
 
-# --- the verbatim contract under deliberately malformed markdown --------------
+# --- the no-fenced-block precondition ----------------------------------------
 #
-# The knowledge files are hand-edited Markdown living outside this repo, so the
-# resolver will meet malformed structure. Every shape below is driven through the
-# real executable and put through ONE shared set of contract assertions, so a
-# newly discovered shape is a new ROW rather than a new test: what must hold is
-# the same for all of them, and stating it once is what keeps it from drifting.
-#
-# Each fixture is built the same way. data/captain.md carries a merge-tagged
-# section whose body contains the malformed structure, then (unless the row ends
-# the file mid-structure) a spawn-tagged captain canary after it.
-# data/learnings.md always carries a well-formed spawn canary, so a malformed
-# file can never take another file's rules down with it.
-malformed_fixture() {  # <label> <tail: followed|ends-file> <fence: matched|unmatched> <malformed-markdown>
-  local label=$1 tail=$2 block=$4 data="$TMP_ROOT/malformed-$1/data"
-  mkdir -p "$data"
-  {
-    printf '# Captain preferences\n\n'
-    printf '## A merge rule holding the malformed markdown (%s)\n' "$label"
-    printf '<!-- fm-moment: merge -->\n\n'
-    printf 'MERGE-BODY-%s\n\n' "$label"
-    printf '%b\n' "$block"
-    if [ "$tail" = followed ]; then
-      printf '\nMERGE-TAIL-%s\n\n' "$label"
-      printf '## A captain spawn canary (%s)\n' "$label"
-      printf '<!-- fm-moment: spawn -->\n\n'
-      printf 'CAPTAIN-CANARY-%s\n' "$label"
-    fi
-  } > "$data/captain.md"
-  printf '# Shared captain preferences\n\n## A shared merge rule (%s)\n<!-- fm-moment: merge -->\n\nSHARED-MERGE-%s\n' \
-    "$label" "$label" > "$data/captain-shared.md"
-  printf '# Learnings\n\n## A learnings spawn canary (%s)\n<!-- fm-moment: spawn -->\n\nLEARN-CANARY-%s\n' \
-    "$label" "$label" > "$data/learnings.md"
-  printf '%s\n' "$data"
-}
+# Knowledge files are read line by line with no notion of example text, so a
+# fenced block is refused at the door rather than parsed around. The two surfaces
+# answer differently on purpose: the inspection command fails, the lifecycle
+# script reports it and keeps going.
 
-# The contract, asserted identically for every shape. Any row that cannot satisfy
-# all of it is a defect in the resolver, not a row to weaken.
-assert_verbatim_contract() {  # <label> <data> <tail> <fence>
-  local label=$1 data=$2 tail=$3 fence=$4
-  local spawn_out merge_out audit stdout status region
-
-  spawn_out=$(run_know "$data" spawn)
-  status=$?
-  expect_code 0 "$status" "$label: malformed markdown must never fail the resolver"
-  merge_out=$(run_know "$data" merge)
-  status=$?
-  expect_code 0 "$status" "$label: malformed markdown must never fail the resolver at merge"
-
-  stdout=$(FM_DATA_OVERRIDE="$data" "$KNOW" spawn 2>/dev/null)
-  [ -z "$stdout" ] || fail "$label: the resolver wrote to stdout: $stdout"
-
-  # A malformed file never takes another file's rules down with it.
-  assert_contains "$spawn_out" "## A learnings spawn canary ($label)" \
-    "$label: the well-formed file's spawn rule must still bind"
-  assert_contains "$spawn_out" "LEARN-CANARY-$label" \
-    "$label: the well-formed file's spawn rule must print its body"
-
-  # Nothing is quoted at a moment it was not tagged with, in either direction.
-  assert_not_contains "$spawn_out" "MERGE-BODY-$label" \
-    "$label: a merge-tagged section must not be quoted at spawn"
-  assert_not_contains "$spawn_out" "SHARED-MERGE-$label" \
-    "$label: a merge-tagged section must not be quoted at spawn"
-  assert_not_contains "$merge_out" "LEARN-CANARY-$label" \
-    "$label: a spawn-tagged section must not be quoted at merge"
-
-  # The merge section that holds the malformed structure still binds, and still
-  # prints past it rather than being cut short by it.
-  assert_contains "$merge_out" "MERGE-BODY-$label" \
-    "$label: the section holding the malformed markdown must still bind"
-  assert_contains "$merge_out" "SHARED-MERGE-$label" \
-    "$label: the other file's merge rule must still bind"
-
-  # A binding marker is metadata and never reaches the quoted text.
-  assert_not_contains "$spawn_out" '<!-- fm-moment: spawn -->' \
-    "$label: a binding marker line must never reach the emitted text"
-
-  # Diagnostics stay outside the region framed as the owning files' own words.
-  for region in spawn merge; do
-    local banner out
-    if [ "$region" = spawn ]; then out=$spawn_out; else out=$merge_out; fi
-    banner=$(printf '%s\n' "$out" | sed -n "/^--- standing knowledge: $region ---\$/,/^--- end standing knowledge: $region ---\$/p")
-    case "$banner" in
-      *standing-knowledge:*) fail "$label: a diagnostic landed inside the $region banner" ;;
-    esac
-  done
-
-  # --audit agrees with what actually binds rather than omitting or renaming it.
-  audit=$(run_know "$data" --audit)
-  assert_contains "$audit" "spawn | ## A learnings spawn canary ($label)" \
-    "$label: --audit must report the well-formed spawn canary"
-  assert_contains "$audit" "merge | ## A merge rule holding the malformed markdown ($label)" \
-    "$label: --audit must report the section holding the malformed markdown"
-
-  # A fence insulates its contents only when it is CLOSED. A matched pair must
-  # keep a heading inside it out of the section list entirely; an unmatched
-  # delimiter opens nothing, so what follows reads as the structure it looks
-  # like - and the compensating control is that the unmatched delimiter is
-  # named on both surfaces rather than left to be inferred from a missing rule.
-  if [ "$fence" = matched ]; then
-    assert_not_contains "$audit" 'A heading that lives inside a fence' \
-      "$label: a closed fence must keep a heading inside it out of the section list"
-    assert_not_contains "$spawn_out" 'is never closed' \
-      "$label: a closed fence must not be reported as unclosed"
-  else
-    assert_contains "$spawn_out" 'is never closed' \
-      "$label: an unmatched fence delimiter must be reported at every moment"
-    assert_contains "$audit" 'unclosed-fence' \
-      "$label: --audit must name an unmatched fence delimiter"
-  fi
-
-  if [ "$tail" = followed ]; then
-    assert_contains "$merge_out" "MERGE-TAIL-$label" \
-      "$label: the section holding the malformed markdown must not be truncated"
-    assert_contains "$spawn_out" "## A captain spawn canary ($label)" \
-      "$label: a spawn rule below the malformed markdown must still bind"
-    assert_contains "$spawn_out" "CAPTAIN-CANARY-$label" \
-      "$label: a spawn rule below the malformed markdown must print its body"
-    assert_not_contains "$merge_out" "CAPTAIN-CANARY-$label" \
-      "$label: a spawn rule below the malformed markdown must not be quoted at merge"
-    assert_contains "$audit" "spawn | ## A captain spawn canary ($label)" \
-      "$label: --audit must report the spawn rule below the malformed markdown"
-  fi
-}
-
-test_verbatim_contract_survives_malformed_markdown() {
-  local label tail fence block data
-  while IFS='|' read -r label tail fence block; do
-    [ -n "$label" ] || continue
-    data=$(malformed_fixture "$label" "$tail" "$fence" "$block")
-    assert_verbatim_contract "$label" "$data" "$tail" "$fence"
-  done <<'ROWS'
-unterminated-fence|followed|unmatched|```markdown\nAn example that forgot its closer.
-nested-fence|followed|matched|````markdown\n```\n<!-- fm-moment: spawn -->\n```\n````
-mismatched-wide-open|followed|unmatched|````markdown\n<!-- fm-moment: spawn -->\n```
-mismatched-narrow-open|followed|matched|```markdown\n<!-- fm-moment: spawn -->\n````
-marker-inside-fence|followed|matched|```markdown\n<!-- fm-moment: spawn -->\n```
-heading-inside-fence|followed|matched|```markdown\n## A heading that lives inside a fence\n<!-- fm-moment: spawn -->\n```
-tilde-fence|followed|matched|~~~markdown\n## A heading that lives inside a fence\n<!-- fm-moment: spawn -->\n~~~
-nested-fence-outer-closer-too-narrow|followed|unmatched|````markdown\n```\n<!-- fm-moment: spawn -->\n```\n```
-ends-mid-fence|ends-file|unmatched|```markdown\n## A heading that lives inside a fence\n<!-- fm-moment: spawn -->
-ROWS
-  pass 'the verbatim contract holds for every malformed-markdown shape'
-}
-
-# An unmatched fence delimiter changes how everything below it reads, so it is
-# named on both surfaces rather than left to be discovered by a missing rule.
-test_resolver_reports_an_unclosed_fence() {
-  local data out status audit
-  data="$TMP_ROOT/unclosed-fence/data"
+# A data dir whose captain.md carries a fenced block, and whose other two files
+# are clean, so the two surfaces can be told apart from the same fixture.
+make_fenced_data() {  # <name>
+  local name=$1 data="$TMP_ROOT/$1/data"
   mkdir -p "$data"
   cat > "$data/captain.md" <<'MD'
 # Captain preferences
 
-## How the tags are written (fixture, 2026-01-25)
+## A rule that binds at merge (fixture, 2026-01-27)
 <!-- fm-moment: merge -->
 
-To show a fenced example of a fence:
+Captain merge body.
 
-````markdown
+## A rule that shows a fenced example (fixture, 2026-01-28)
+<!-- fm-moment: merge -->
+
+```markdown
+## Not meant as a rule
 ```
-<!-- fm-moment: spawn -->
-```
-```
 
-That closer was typed too narrow.
-
-## The rule below the bad fence (fixture, 2026-01-26)
-<!-- fm-moment: spawn -->
-
-This rule must still reach the spawn moment.
+Trailing prose.
 MD
-  printf '# Shared captain preferences\n\n## Shared\n<!-- fm-moment: merge -->\n\nShared body.\n' \
+  printf '# Shared captain preferences\n\n## Shared\n<!-- fm-moment: merge -->\n\nShared merge body.\n' \
     > "$data/captain-shared.md"
-  printf '# Learnings\n\n## Learned\n<!-- fm-moment: spawn -->\n\nLearned body.\n' \
+  printf '# Learnings\n\n## Learned\n<!-- fm-moment: merge -->\n\nLearned merge body.\n' \
     > "$data/learnings.md"
-  out=$(run_know "$data" spawn)
+  printf '%s\n' "$data"
+}
+
+test_audit_fails_loudly_on_a_fenced_knowledge_file() {
+  local data out status clean
+  data=$(make_fenced_data audit-fenced)
+  out=$(run_know "$data" --audit)
   status=$?
-  expect_code 0 "$status" 'an unclosed fence must not fail the resolver'
-  assert_contains "$out" 'is never closed' 'the diagnostic must say what is wrong'
-  assert_contains "$out" 'data/captain.md' 'the diagnostic must name the owning file'
-  assert_contains "$out" '````markdown' 'the diagnostic must quote the unmatched delimiter'
-  assert_contains "$out" '## The rule below the bad fence (fixture, 2026-01-26)' \
-    'a rule below an unclosed fence must still reach its own moment'
-  assert_contains "$out" 'This rule must still reach the spawn moment.' \
-    'that rule must print its body'
-  assert_not_contains "$out" 'That closer was typed too narrow.' \
-    'the merge-tagged section must not be quoted at spawn'
-  audit=$(run_know "$data" --audit)
-  assert_contains "$audit" 'unclosed-fence ````markdown' \
-    '--audit must name the unmatched delimiter'
-  assert_contains "$audit" 'spawn | ## The rule below the bad fence (fixture, 2026-01-26)' \
-    '--audit must report the rule below the unclosed fence rather than omitting it'
-  pass 'resolver reports an unclosed fence and still binds every rule below it'
+  [ "$status" -ne 0 ] || fail '--audit must exit non-zero when a knowledge file carries a fenced block'
+  assert_contains "$out" 'data/captain.md: FENCED BLOCK at line' \
+    '--audit must name the offending file'
+  assert_contains "$out" '```markdown' '--audit must quote the delimiter it found'
+  clean=$(make_data audit-unfenced)
+  run_know "$clean" --audit >/dev/null 2>&1
+  status=$?
+  expect_code 0 "$status" '--audit must still exit 0 for a knowledge set with no fenced block'
+  pass 'audit fails loudly on a knowledge file carrying a fenced block'
+}
+
+test_emission_reports_a_fenced_knowledge_file_without_aborting() {
+  local data out status stdout banner_region
+  data=$(make_fenced_data emit-fenced)
+  out=$(run_know "$data" merge)
+  status=$?
+  expect_code 0 "$status" 'a fenced knowledge file must not fail a lifecycle emission'
+  stdout=$(FM_DATA_OVERRIDE="$data" "$KNOW" merge 2>/dev/null)
+  [ -z "$stdout" ] || fail "the resolver must leave stdout untouched, got: $stdout"
+  assert_contains "$out" 'opens a fenced block' 'the emission path must report the fenced block'
+  assert_contains "$out" 'data/captain.md line' 'the diagnostic must name the file and line'
+  assert_contains "$out" 'Captain merge body.' 'the other rules in that file must still resolve'
+  assert_contains "$out" 'Shared merge body.' 'the other knowledge files must still resolve'
+  assert_contains "$out" 'Learned merge body.' 'the other knowledge files must still resolve'
+  banner_region=$(printf '%s\n' "$out" | sed -n '/^--- standing knowledge: merge ---$/,/^--- end standing knowledge: merge ---$/p')
+  [ -n "$banner_region" ] || fail 'the banner must have opened at all'
+  case "$banner_region" in
+    *standing-knowledge:*)
+      fail "the fenced-block diagnostic landed inside the verbatim banner: $banner_region"
+      ;;
+  esac
+  pass 'emission reports a fenced knowledge file on stderr and still does its work'
+}
+
+# A lifecycle script keeps its own exit code and its own error, whatever the
+# knowledge files look like.
+test_teardown_keeps_its_exit_code_with_a_fenced_knowledge_file() {
+  local home data out status
+  home="$TMP_ROOT/teardown-fenced/home"
+  mkdir -p "$home/state"
+  data=$(make_fenced_data teardown-fenced-data)
+  ln -s "$data" "$home/data"
+  out=$(run_teardown "$home" teardown-fenced-task)
+  status=$?
+  assert_contains "$out" 'opens a fenced block' 'the fenced block must be reported'
+  assert_contains "$out" 'no meta for task teardown-fenced-task' \
+    'teardown must reach and report its own outcome unchanged'
+  expect_code 1 "$status" 'teardown must keep its own exit code'
+  pass 'a lifecycle script keeps its exit code when a knowledge file carries a fenced block'
 }
 
 # The distinction has to cut both ways: a section with no marker anywhere is
@@ -1320,12 +1082,11 @@ test_resolver_reports_an_unknown_moment_tag_in_the_data
 test_resolver_reports_a_marker_out_of_binding_position
 test_resolver_reports_a_marker_that_misses_the_exact_spelling
 test_resolver_reports_a_marker_naming_no_moment_at_all
-test_resolver_leaves_documented_marker_examples_alone
-test_resolver_leaves_flush_left_and_nested_fence_examples_alone
-test_fenced_headings_neither_fabricate_a_rule_nor_truncate_one
+test_resolver_leaves_marker_examples_in_a_body_alone
 test_diagnostics_print_outside_the_verbatim_banner
-test_verbatim_contract_survives_malformed_markdown
-test_resolver_reports_an_unclosed_fence
+test_audit_fails_loudly_on_a_fenced_knowledge_file
+test_emission_reports_a_fenced_knowledge_file_without_aborting
+test_teardown_keeps_its_exit_code_with_a_fenced_knowledge_file
 test_audit_still_calls_a_deliberately_untagged_section_untagged
 test_resolver_prints_nothing_when_no_section_binds
 test_resolver_writes_only_to_stderr
