@@ -53,9 +53,12 @@
 # A FENCED BLOCK IS CONTENT, never structure. A knowledge file may show the tag
 # format as a worked example, so nothing inside ``` or ~~~ opens a section, binds
 # one, or is reported as a defective marker - it is quoted with the section it
-# sits in, exactly as written. Fence nesting follows Markdown, closing on the
-# same delimiter character at the same run length or longer, so a ````-wrapped
-# example containing ``` stays one block.
+# sits in, exactly as written. A block is a MATCHED PAIR: an opening delimiter and
+# the first later one of the same character at the same run length or longer, so
+# a ````-wrapped example containing ``` stays one block. A delimiter that never
+# finds its partner opens nothing and is read as the ordinary text it is, which
+# keeps one mistyped closer from swallowing every section below it; it gets its
+# own diagnostic instead.
 #
 # THE MOMENTS, and why the set is exactly this. Each one is a point where a
 # script already runs, so a tag can actually reach an agent:
@@ -79,8 +82,10 @@
 #                   runs, so pr-ready carries it and merge repeats it for the
 #                   local-only path, which never passes through pr-ready.
 #
-# OUTPUT. Everything this script writes goes to STDERR, never stdout, so no
-# caller's parseable stdout contract changes. A moment with no tagged section
+# OUTPUT. Every quoted rule and every diagnostic goes to STDERR, so no caller's
+# parseable stdout contract changes; the --moments and --audit inspection
+# commands are the only things here that write stdout, and no lifecycle script
+# runs them. A moment with no tagged section
 # prints nothing at all: an empty banner would read as "checked, nothing binds
 # here", which is indistinguishable from "the file lost its tags". Diagnostics
 # print BEFORE the banner opens, so everything between the banner lines is the
@@ -107,6 +112,8 @@
 # a hand-edit at the top of a section, where the marker was meant to go; a marker
 # quoted mid-body is an example, and a false "this binds nowhere" printed above a
 # section that IS binding is worse than the silence these checks exist to remove.
+# A fence delimiter that never finds its partner is reported too, since what it
+# was meant to enclose is then read as structure rather than as example text.
 # The caller's primary job is never blocked by
 # knowledge that could not be read - the enforcement that DOES block lives in the
 # lifecycle scripts themselves, on inputs they require. data/captain-shared.md in
@@ -125,7 +132,8 @@
 #                                         marker that sits out of binding
 #                                         position or misses the exact spelling,
 #                                         rather than calling its section plainly
-#                                         untagged
+#                                         untagged, and naming any fence
+#                                         delimiter left unclosed
 #   fm-standing-knowledge.sh --help       print this usage
 #
 # An unknown moment ON THE COMMAND LINE exits 2 with a diagnostic: moments are
@@ -174,10 +182,22 @@ FM_MOMENTS="intake spawn pr-ready merge teardown"
 #                    only place a marker binds its section
 #   K_first_content  it is the first non-blank line of the current section
 #
-# Fence nesting is tracked by delimiter character and run length, the way
-# Markdown itself closes a fence, so a ````-wrapped example containing ``` stays
-# inside one block - that being the only way to show a fenced example of a fence.
-# Nothing inside a fenced block ever opens a section, binds one, or is reported.
+# A FENCED BLOCK IS A MATCHED PAIR, decided before any line is classified. Every
+# consumer reads its file TWICE: fence_record() collects the lines, fence_pairs()
+# then walks them and pairs each opening delimiter with the first later delimiter
+# of the same character and at least the same run length, the way Markdown itself
+# closes a fence. Only a paired delimiter opens a block, so a ````-wrapped example
+# containing ``` stays inside one block - that being the only way to show a fenced
+# example of a fence.
+#
+# A delimiter that never finds its partner is NOT a fence and is read as the
+# ordinary text it is, which is why the pairing is a whole pass rather than a
+# running toggle. A single mistyped closer would otherwise swallow every section
+# below it: those rules would stop binding at their own moments and would instead
+# be quoted, marker line and all, as part of whatever section preceded the fence.
+# Silently dropping the captain rules from the moment they govern is the exact
+# failure this script exists to remove, so it cannot be reachable from one typo.
+# The unmatched delimiter is reported as its own diagnostic rather than guessed at.
 FM_LINE_AWK='
 function is_marker(line) {
   return line ~ /^<!-- fm-moment:[^>]*-->$/
@@ -197,24 +217,48 @@ function fence_run(line, want,   s, c, n) {
   while (substr(s, n + 1, 1) == c) { n++ }
   return n
 }
-function classify(line,   c, n) {
+function fence_record(line) {
+  P_lines++
+  P_text[P_lines] = line
+}
+function fence_pairs(   i, j, c, n, jc, jn, matched, skip_to) {
+  skip_to = 0
+  for (i = 1; i <= P_lines; i++) {
+    if (i <= skip_to || !is_fence_delim(P_text[i])) { continue }
+    c = fence_run(P_text[i], "char")
+    n = fence_run(P_text[i], "len")
+    matched = 0
+    for (j = i + 1; j <= P_lines; j++) {
+      if (!is_fence_delim(P_text[j])) { continue }
+      jc = fence_run(P_text[j], "char")
+      jn = fence_run(P_text[j], "len")
+      if (jc == c && jn >= n) { matched = j; break }
+    }
+    if (matched) {
+      P_opener[i] = 1
+      P_closer[matched] = 1
+      skip_to = matched
+    } else if (!P_unclosed_line) {
+      P_unclosed_line = i
+      P_unclosed_text = P_text[i]
+    }
+  }
+}
+function classify(line) {
   K_in_position = 0
   K_first_content = 0
-  if (is_fence_delim(line)) {
-    c = fence_run(line, "char")
-    n = fence_run(line, "len")
-    if (K_fence_open) {
-      if (c == K_fence_char && n >= K_fence_len) { K_fence_open = 0 }
-    } else {
-      K_fence_open = 1
-      K_fence_char = c
-      K_fence_len = n
-    }
+  if (K_fence_open) {
+    K_expect = 0
+    K_seen_content = 1
+    if (P_closer[FNR]) { K_fence_open = 0; return "fence" }
+    return "fenced"
+  }
+  if (P_opener[FNR]) {
+    K_fence_open = 1
     K_expect = 0
     K_seen_content = 1
     return "fence"
   }
-  if (K_fence_open) { K_expect = 0; K_seen_content = 1; return "fenced" }
   if (line ~ /^## /) {
     K_heading = line
     K_expect = 1
@@ -263,6 +307,8 @@ moment_known() {  # <moment>
 # marker line. Prints nothing when no section in the file binds at the moment.
 sections_for_moment() {  # <file> <moment>
   awk -v want="$2" "$FM_LINE_AWK"'
+    NR == FNR { fence_record($0); next }
+    FNR == 1 { fence_pairs() }
     {
       kind = classify($0)
       # A heading closes any open section and opens a candidate one. Nothing is
@@ -282,7 +328,7 @@ sections_for_moment() {  # <file> <moment>
       # section it sits in rather than cutting it short.
       if (emit) { print }
     }
-  ' "$1"
+  ' "$1" "$1"
 }
 
 # Every way a written marker can bind nowhere, as "<kind>|<detail>|<heading>".
@@ -301,19 +347,29 @@ sections_for_moment() {  # <file> <moment>
 #              section marker but misses the exact spelling - a missing space
 #              after `<!--`, a trailing space, a leading indent - so the strict
 #              recogniser never sees it.
+#   unclosed   a fence delimiter that never finds its partner. It opens no block,
+#              so a marker or heading below it is read as the structure it looks
+#              like rather than as example text, which may not be what was meant.
 #
 # WHAT IS DELIBERATELY NOT REPORTED, because a knowledge file explaining the tag
 # format is an ordinary thing for one of these files to contain: anything inside
 # a fenced block, and any marker-shaped line further into a section body than its
-# first non-blank line. Every slip above is a hand-edit at the top of a section,
-# where the marker was meant to go; a marker quoted mid-body is an example, and a
-# false "this binds nowhere" printed above a section that IS binding is worse
-# than the silence this whole check exists to remove.
+# first non-blank line. Every marker slip above is a hand-edit at the top of a
+# section, where the marker was meant to go; a marker quoted mid-body is an
+# example, and a false "this binds nowhere" printed above a section that IS
+# binding is worse than the silence this whole check exists to remove.
 marker_problems_in() {  # <file>
   awk -v moments="$FM_MOMENTS" "$FM_LINE_AWK"'
     BEGIN {
       km = split(moments, m, /[[:space:]]+/)
       for (j = 1; j <= km; j++) { known[m[j]] = 1 }
+    }
+    NR == FNR { fence_record($0); next }
+    FNR == 1 {
+      fence_pairs()
+      if (P_unclosed_line) {
+        printf "unclosed|%s|(opened at line %d)\n", P_unclosed_text, P_unclosed_line
+      }
     }
     {
       kind = classify($0)
@@ -333,7 +389,7 @@ marker_problems_in() {  # <file>
         printf "malformed|%s|%s\n", $0, K_heading
       }
     }
-  ' "$1"
+  ' "$1" "$1"
 }
 
 # A file with no marker at all cannot bind anywhere, which is a real condition an
@@ -343,9 +399,11 @@ marker_problems_in() {  # <file>
 # that file still reaches its own sharper diagnostic instead of this blunt one.
 file_has_any_tag() {  # <file>
   awk "$FM_LINE_AWK"'
-    { if (classify($0) == "marker") { found = 1; exit } }
+    NR == FNR { fence_record($0); next }
+    FNR == 1 { fence_pairs() }
+    { if (classify($0) == "marker") { found = 1 } }
     END { exit(found ? 0 : 1) }
-  ' "$1"
+  ' "$1" "$1"
 }
 
 # One rendered diagnostic line per marker that cannot bind, on stdout so the
@@ -373,6 +431,10 @@ marker_problem_lines() {  # <file> <name>
       empty)
         printf 'standing-knowledge: data/%s has the marker %s naming no lifecycle moment at all, so it binds nowhere (known moments: %s) | %s\n' \
           "$2" "$detail" "$FM_MOMENTS" "$heading"
+        ;;
+      unclosed)
+        printf 'standing-knowledge: data/%s opens a fenced block with %s that is never closed; an unmatched delimiter is read as ordinary text, so anything below it that looks like a heading or a marker is treated as one | %s\n' \
+          "$2" "$detail" "$heading"
         ;;
     esac
   done <<EOF
@@ -462,6 +524,13 @@ audit() {
         defect_kind = ""
         defect_line = ""
       }
+      NR == FNR { fence_record($0); next }
+      FNR == 1 {
+        fence_pairs()
+        if (P_unclosed_line) {
+          printf "data/%s: unclosed-fence %s | (opened at line %d)\n", file, P_unclosed_text, P_unclosed_line
+        }
+      }
       {
         kind = classify($0)
         if (kind == "heading") {
@@ -499,7 +568,7 @@ audit() {
         }
       }
       END { close_section() }
-    ' "$path"
+    ' "$path" "$path"
   done
 }
 

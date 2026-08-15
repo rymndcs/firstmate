@@ -606,6 +606,202 @@ test_diagnostics_print_outside_the_verbatim_banner() {
   pass 'file diagnostics print outside the verbatim banner, which carries only quoted text'
 }
 
+# --- the verbatim contract under deliberately malformed markdown --------------
+#
+# The knowledge files are hand-edited Markdown living outside this repo, so the
+# resolver will meet malformed structure. Every shape below is driven through the
+# real executable and put through ONE shared set of contract assertions, so a
+# newly discovered shape is a new ROW rather than a new test: what must hold is
+# the same for all of them, and stating it once is what keeps it from drifting.
+#
+# Each fixture is built the same way. data/captain.md carries a merge-tagged
+# section whose body contains the malformed structure, then (unless the row ends
+# the file mid-structure) a spawn-tagged captain canary after it.
+# data/learnings.md always carries a well-formed spawn canary, so a malformed
+# file can never take another file's rules down with it.
+malformed_fixture() {  # <label> <tail: followed|ends-file> <fence: matched|unmatched> <malformed-markdown>
+  local label=$1 tail=$2 block=$4 data="$TMP_ROOT/malformed-$1/data"
+  mkdir -p "$data"
+  {
+    printf '# Captain preferences\n\n'
+    printf '## A merge rule holding the malformed markdown (%s)\n' "$label"
+    printf '<!-- fm-moment: merge -->\n\n'
+    printf 'MERGE-BODY-%s\n\n' "$label"
+    printf '%b\n' "$block"
+    if [ "$tail" = followed ]; then
+      printf '\nMERGE-TAIL-%s\n\n' "$label"
+      printf '## A captain spawn canary (%s)\n' "$label"
+      printf '<!-- fm-moment: spawn -->\n\n'
+      printf 'CAPTAIN-CANARY-%s\n' "$label"
+    fi
+  } > "$data/captain.md"
+  printf '# Shared captain preferences\n\n## A shared merge rule (%s)\n<!-- fm-moment: merge -->\n\nSHARED-MERGE-%s\n' \
+    "$label" "$label" > "$data/captain-shared.md"
+  printf '# Learnings\n\n## A learnings spawn canary (%s)\n<!-- fm-moment: spawn -->\n\nLEARN-CANARY-%s\n' \
+    "$label" "$label" > "$data/learnings.md"
+  printf '%s\n' "$data"
+}
+
+# The contract, asserted identically for every shape. Any row that cannot satisfy
+# all of it is a defect in the resolver, not a row to weaken.
+assert_verbatim_contract() {  # <label> <data> <tail> <fence>
+  local label=$1 data=$2 tail=$3 fence=$4
+  local spawn_out merge_out audit stdout status region
+
+  spawn_out=$(run_know "$data" spawn)
+  status=$?
+  expect_code 0 "$status" "$label: malformed markdown must never fail the resolver"
+  merge_out=$(run_know "$data" merge)
+  status=$?
+  expect_code 0 "$status" "$label: malformed markdown must never fail the resolver at merge"
+
+  stdout=$(FM_DATA_OVERRIDE="$data" "$KNOW" spawn 2>/dev/null)
+  [ -z "$stdout" ] || fail "$label: the resolver wrote to stdout: $stdout"
+
+  # A malformed file never takes another file's rules down with it.
+  assert_contains "$spawn_out" "## A learnings spawn canary ($label)" \
+    "$label: the well-formed file's spawn rule must still bind"
+  assert_contains "$spawn_out" "LEARN-CANARY-$label" \
+    "$label: the well-formed file's spawn rule must print its body"
+
+  # Nothing is quoted at a moment it was not tagged with, in either direction.
+  assert_not_contains "$spawn_out" "MERGE-BODY-$label" \
+    "$label: a merge-tagged section must not be quoted at spawn"
+  assert_not_contains "$spawn_out" "SHARED-MERGE-$label" \
+    "$label: a merge-tagged section must not be quoted at spawn"
+  assert_not_contains "$merge_out" "LEARN-CANARY-$label" \
+    "$label: a spawn-tagged section must not be quoted at merge"
+
+  # The merge section that holds the malformed structure still binds, and still
+  # prints past it rather than being cut short by it.
+  assert_contains "$merge_out" "MERGE-BODY-$label" \
+    "$label: the section holding the malformed markdown must still bind"
+  assert_contains "$merge_out" "SHARED-MERGE-$label" \
+    "$label: the other file's merge rule must still bind"
+
+  # A binding marker is metadata and never reaches the quoted text.
+  assert_not_contains "$spawn_out" '<!-- fm-moment: spawn -->' \
+    "$label: a binding marker line must never reach the emitted text"
+
+  # Diagnostics stay outside the region framed as the owning files' own words.
+  for region in spawn merge; do
+    local banner out
+    if [ "$region" = spawn ]; then out=$spawn_out; else out=$merge_out; fi
+    banner=$(printf '%s\n' "$out" | sed -n "/^--- standing knowledge: $region ---\$/,/^--- end standing knowledge: $region ---\$/p")
+    case "$banner" in
+      *standing-knowledge:*) fail "$label: a diagnostic landed inside the $region banner" ;;
+    esac
+  done
+
+  # --audit agrees with what actually binds rather than omitting or renaming it.
+  audit=$(run_know "$data" --audit)
+  assert_contains "$audit" "spawn | ## A learnings spawn canary ($label)" \
+    "$label: --audit must report the well-formed spawn canary"
+  assert_contains "$audit" "merge | ## A merge rule holding the malformed markdown ($label)" \
+    "$label: --audit must report the section holding the malformed markdown"
+
+  # A fence insulates its contents only when it is CLOSED. A matched pair must
+  # keep a heading inside it out of the section list entirely; an unmatched
+  # delimiter opens nothing, so what follows reads as the structure it looks
+  # like - and the compensating control is that the unmatched delimiter is
+  # named on both surfaces rather than left to be inferred from a missing rule.
+  if [ "$fence" = matched ]; then
+    assert_not_contains "$audit" 'A heading that lives inside a fence' \
+      "$label: a closed fence must keep a heading inside it out of the section list"
+    assert_not_contains "$spawn_out" 'is never closed' \
+      "$label: a closed fence must not be reported as unclosed"
+  else
+    assert_contains "$spawn_out" 'is never closed' \
+      "$label: an unmatched fence delimiter must be reported at every moment"
+    assert_contains "$audit" 'unclosed-fence' \
+      "$label: --audit must name an unmatched fence delimiter"
+  fi
+
+  if [ "$tail" = followed ]; then
+    assert_contains "$merge_out" "MERGE-TAIL-$label" \
+      "$label: the section holding the malformed markdown must not be truncated"
+    assert_contains "$spawn_out" "## A captain spawn canary ($label)" \
+      "$label: a spawn rule below the malformed markdown must still bind"
+    assert_contains "$spawn_out" "CAPTAIN-CANARY-$label" \
+      "$label: a spawn rule below the malformed markdown must print its body"
+    assert_not_contains "$merge_out" "CAPTAIN-CANARY-$label" \
+      "$label: a spawn rule below the malformed markdown must not be quoted at merge"
+    assert_contains "$audit" "spawn | ## A captain spawn canary ($label)" \
+      "$label: --audit must report the spawn rule below the malformed markdown"
+  fi
+}
+
+test_verbatim_contract_survives_malformed_markdown() {
+  local label tail fence block data
+  while IFS='|' read -r label tail fence block; do
+    [ -n "$label" ] || continue
+    data=$(malformed_fixture "$label" "$tail" "$fence" "$block")
+    assert_verbatim_contract "$label" "$data" "$tail" "$fence"
+  done <<'ROWS'
+unterminated-fence|followed|unmatched|```markdown\nAn example that forgot its closer.
+nested-fence|followed|matched|````markdown\n```\n<!-- fm-moment: spawn -->\n```\n````
+mismatched-wide-open|followed|unmatched|````markdown\n<!-- fm-moment: spawn -->\n```
+mismatched-narrow-open|followed|matched|```markdown\n<!-- fm-moment: spawn -->\n````
+marker-inside-fence|followed|matched|```markdown\n<!-- fm-moment: spawn -->\n```
+heading-inside-fence|followed|matched|```markdown\n## A heading that lives inside a fence\n<!-- fm-moment: spawn -->\n```
+tilde-fence|followed|matched|~~~markdown\n## A heading that lives inside a fence\n<!-- fm-moment: spawn -->\n~~~
+nested-fence-outer-closer-too-narrow|followed|unmatched|````markdown\n```\n<!-- fm-moment: spawn -->\n```\n```
+ends-mid-fence|ends-file|unmatched|```markdown\n## A heading that lives inside a fence\n<!-- fm-moment: spawn -->
+ROWS
+  pass 'the verbatim contract holds for every malformed-markdown shape'
+}
+
+# An unmatched fence delimiter changes how everything below it reads, so it is
+# named on both surfaces rather than left to be discovered by a missing rule.
+test_resolver_reports_an_unclosed_fence() {
+  local data out status audit
+  data="$TMP_ROOT/unclosed-fence/data"
+  mkdir -p "$data"
+  cat > "$data/captain.md" <<'MD'
+# Captain preferences
+
+## How the tags are written (fixture, 2026-01-25)
+<!-- fm-moment: merge -->
+
+To show a fenced example of a fence:
+
+````markdown
+```
+<!-- fm-moment: spawn -->
+```
+```
+
+That closer was typed too narrow.
+
+## The rule below the bad fence (fixture, 2026-01-26)
+<!-- fm-moment: spawn -->
+
+This rule must still reach the spawn moment.
+MD
+  printf '# Shared captain preferences\n\n## Shared\n<!-- fm-moment: merge -->\n\nShared body.\n' \
+    > "$data/captain-shared.md"
+  printf '# Learnings\n\n## Learned\n<!-- fm-moment: spawn -->\n\nLearned body.\n' \
+    > "$data/learnings.md"
+  out=$(run_know "$data" spawn)
+  status=$?
+  expect_code 0 "$status" 'an unclosed fence must not fail the resolver'
+  assert_contains "$out" 'is never closed' 'the diagnostic must say what is wrong'
+  assert_contains "$out" 'data/captain.md' 'the diagnostic must name the owning file'
+  assert_contains "$out" '````markdown' 'the diagnostic must quote the unmatched delimiter'
+  assert_contains "$out" '## The rule below the bad fence (fixture, 2026-01-26)' \
+    'a rule below an unclosed fence must still reach its own moment'
+  assert_contains "$out" 'This rule must still reach the spawn moment.' \
+    'that rule must print its body'
+  assert_not_contains "$out" 'That closer was typed too narrow.' \
+    'the merge-tagged section must not be quoted at spawn'
+  audit=$(run_know "$data" --audit)
+  assert_contains "$audit" 'unclosed-fence ````markdown' \
+    '--audit must name the unmatched delimiter'
+  assert_contains "$audit" 'spawn | ## The rule below the bad fence (fixture, 2026-01-26)' \
+    '--audit must report the rule below the unclosed fence rather than omitting it'
+  pass 'resolver reports an unclosed fence and still binds every rule below it'
+}
+
 # The distinction has to cut both ways: a section with no marker anywhere is
 # still reported as plainly untagged, not as a marker slip.
 test_audit_still_calls_a_deliberately_untagged_section_untagged() {
@@ -1128,6 +1324,8 @@ test_resolver_leaves_documented_marker_examples_alone
 test_resolver_leaves_flush_left_and_nested_fence_examples_alone
 test_fenced_headings_neither_fabricate_a_rule_nor_truncate_one
 test_diagnostics_print_outside_the_verbatim_banner
+test_verbatim_contract_survives_malformed_markdown
+test_resolver_reports_an_unclosed_fence
 test_audit_still_calls_a_deliberately_untagged_section_untagged
 test_resolver_prints_nothing_when_no_section_binds
 test_resolver_writes_only_to_stderr
