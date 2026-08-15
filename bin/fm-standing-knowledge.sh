@@ -79,15 +79,18 @@
 #
 # DEGRADED KNOWLEDGE FILES never abort the caller. A missing, unreadable, or
 # entirely untagged file prints its own explicit diagnostic naming the file and
-# what cannot be surfaced, and the run still exits 0. A tag naming a moment that
-# is not in the set above is reported the same way, naming the file, the token
-# and the section it tags, because a typo'd or renamed moment is otherwise
-# indistinguishable from a section deliberately left untagged. The caller's
-# primary job is never blocked by knowledge that could not be read - the
-# enforcement that DOES block lives in the lifecycle scripts themselves, on
-# inputs they require. data/captain-shared.md in particular is absent in a home
-# that has never been propagated to, and its diagnostic is the expected steady
-# state there rather than a fault.
+# what cannot be surfaced, and the run still exits 0. So are the two ways a
+# hand-written marker can bind nowhere while reading exactly like a section
+# deliberately left untagged - a tag naming a moment outside the set above, and a
+# well-formed marker that is not on the line directly below a `## ` heading,
+# which a single stray blank line is enough to cause. Both name the file, the
+# offending marker or token and the section, because the tags are written by hand
+# in files that live outside this repo and nothing else would ever report that a
+# rule quietly stopped arriving. The caller's primary job is never blocked by
+# knowledge that could not be read - the enforcement that DOES block lives in the
+# lifecycle scripts themselves, on inputs they require. data/captain-shared.md in
+# particular is absent in a home that has never been propagated to, and its
+# diagnostic is the expected steady state there rather than a fault.
 #
 # Usage:
 #   fm-standing-knowledge.sh <moment>     print the verbatim sections binding at
@@ -96,7 +99,10 @@
 #   fm-standing-knowledge.sh --audit      print every `##` heading in each
 #                                         knowledge file with its tags, or
 #                                         "untagged", to stdout, marking any tag
-#                                         that names an unknown moment
+#                                         that names an unknown moment and any
+#                                         marker that sits out of binding
+#                                         position rather than calling its
+#                                         section plainly untagged
 #   fm-standing-knowledge.sh --help       print this usage
 #
 # An unknown moment ON THE COMMAND LINE exits 2 with a diagnostic: moments are
@@ -178,23 +184,36 @@ sections_for_moment() {  # <file> <moment>
   ' "$1"
 }
 
-# Every tag token in a file that names no known moment, as "<token>|<heading>".
-# A section whose only tag is misspelled or renamed reads exactly like a section
-# deliberately left untagged - it simply never prints - so the difference is
-# reported here rather than left for someone to notice a rule stopped arriving.
-unknown_tags_in() {  # <file>
+# Every way a written marker can bind nowhere, as "<kind>|<detail>|<heading>".
+# The tags are hand-written in captain-private files outside this repo, and both
+# slips below produce a section that simply stops arriving at its lifecycle
+# script while reading exactly like a section deliberately left untagged:
+#
+#   unknown  the marker is well placed but names a moment that does not exist,
+#            so it matches nothing at any moment.
+#   orphan   the marker is well formed but is not on the line directly below a
+#            `## ` heading - a blank line left between the two is enough - so no
+#            section claims it.
+marker_problems_in() {  # <file>
   awk -v moments="$FM_MOMENTS" "$FM_MARKER_AWK"'
     BEGIN {
       km = split(moments, m, /[[:space:]]+/)
       for (j = 1; j <= km; j++) { known[m[j]] = 1 }
     }
     /^## / { heading = $0; expect_marker = 1; next }
-    expect_marker {
-      expect_marker = 0
-      if (!is_marker($0)) { next }
-      n = split(marker_tags($0), t, /[[:space:]]+/)
-      for (i = 1; i <= n; i++) {
-        if (t[i] != "" && !(t[i] in known)) { printf "%s|%s\n", t[i], heading }
+    {
+      if (expect_marker) {
+        expect_marker = 0
+        if (is_marker($0)) {
+          n = split(marker_tags($0), t, /[[:space:]]+/)
+          for (i = 1; i <= n; i++) {
+            if (t[i] != "" && !(t[i] in known)) { printf "unknown|%s|%s\n", t[i], heading }
+          }
+          next
+        }
+      }
+      if (is_marker($0)) {
+        printf "orphan|%s|%s\n", $0, (heading == "" ? "(no ## heading above it)" : heading)
       }
     }
   ' "$1"
@@ -209,19 +228,27 @@ file_has_any_tag() {  # <file>
   ' "$1"
 }
 
-# Warn about every tag that names a moment this script does not know. Stderr
-# only, exit status untouched: a typo in captain-private data must never abort
-# the lifecycle script whose primary job is running.
-report_unknown_tags() {  # <file> <name>
-  local unknown token heading
-  unknown=$(unknown_tags_in "$1") || unknown=
-  [ -n "$unknown" ] || return 0
-  while IFS='|' read -r token heading; do
-    [ -n "$token" ] || continue
-    printf 'standing-knowledge: data/%s tags a section with unknown lifecycle moment "%s"; that tag binds nowhere (known moments: %s) | %s\n' \
-      "$2" "$token" "$FM_MOMENTS" "$heading" >&2
+# Warn about every marker that cannot bind. Stderr only, exit status untouched:
+# a slip in captain-private data must never abort the lifecycle script whose
+# primary job is running.
+report_marker_problems() {  # <file> <name>
+  local problems kind detail heading
+  problems=$(marker_problems_in "$1") || problems=
+  [ -n "$problems" ] || return 0
+  while IFS='|' read -r kind detail heading; do
+    case "$kind" in
+      unknown)
+        printf 'standing-knowledge: data/%s tags a section with unknown lifecycle moment "%s"; that tag binds nowhere (known moments: %s) | %s\n' \
+          "$2" "$detail" "$FM_MOMENTS" "$heading" >&2
+        ;;
+      orphan)
+        # shellcheck disable=SC2016 # literal Markdown heading syntax, not a substitution
+        printf 'standing-knowledge: data/%s has the marker %s on a line that is not directly below a `## ` heading, so it binds nowhere | %s\n' \
+          "$2" "$detail" "$heading" >&2
+        ;;
+    esac
   done <<EOF
-$unknown
+$problems
 EOF
 }
 
@@ -244,7 +271,7 @@ emit_moment() {  # <moment>
         "$name" "$moment" >&2
       continue
     fi
-    report_unknown_tags "$path" "$name"
+    report_marker_problems "$path" "$name"
     body=$(sections_for_moment "$path" "$moment") || body=
     [ -n "$body" ] || continue
     if [ "$printed" -eq 0 ]; then
@@ -271,33 +298,59 @@ audit() {
         km = split(moments, m, /[[:space:]]+/)
         for (j = 1; j <= km; j++) { known[m[j]] = 1 }
       }
+      # A section that never got its marker in the binding position is not the
+      # same thing as a section deliberately left untagged, so the two are
+      # reported differently: the audit is the only place either can be seen at
+      # all, since both simply never print.
+      function close_section() {
+        if (heading == "") { return }
+        if (orphan != "") {
+          printf "data/%s: orphaned-marker %s | %s\n", file, orphan, heading
+        } else {
+          printf "data/%s: untagged | %s\n", file, heading
+        }
+        heading = ""
+        orphan = ""
+      }
       /^## / {
-        if (heading != "") { printf "data/%s: untagged | %s\n", file, heading }
+        close_section()
         heading = $0
+        seen_heading = $0
         expect_marker = 1
         next
       }
-      expect_marker {
-        expect_marker = 0
+      {
+        if (expect_marker) {
+          expect_marker = 0
+          if (is_marker($0)) {
+            tags = marker_tags($0)
+            # An unknown token is called out rather than echoed back as if it
+            # were ordinary, for the same reason.
+            bad = ""
+            n = split(tags, t, /[[:space:]]+/)
+            for (i = 1; i <= n; i++) {
+              if (t[i] != "" && !(t[i] in known)) { bad = (bad == "" ? t[i] : bad " " t[i]) }
+            }
+            if (bad != "") {
+              printf "data/%s: %s [unknown moment: %s] | %s\n", file, tags, bad, heading
+            } else {
+              printf "data/%s: %s | %s\n", file, tags, heading
+            }
+            heading = ""
+            orphan = ""
+            next
+          }
+        }
         if (is_marker($0)) {
-          tags = marker_tags($0)
-          # An unknown token is called out here rather than echoed back as if it
-          # were ordinary: the audit is the one place a misspelled moment can be
-          # seen at all, since it binds nowhere and so never prints.
-          bad = ""
-          n = split(tags, t, /[[:space:]]+/)
-          for (i = 1; i <= n; i++) {
-            if (t[i] != "" && !(t[i] in known)) { bad = (bad == "" ? t[i] : bad " " t[i]) }
-          }
-          if (bad != "") {
-            printf "data/%s: %s [unknown moment: %s] | %s\n", file, tags, bad, heading
+          if (heading != "") {
+            if (orphan == "") { orphan = $0 }
           } else {
-            printf "data/%s: %s | %s\n", file, tags, heading
+            printf "data/%s: orphaned-marker %s | %s\n", file, $0, \
+              (seen_heading == "" ? "(no ## heading above it)" : seen_heading)
           }
-          heading = ""
         }
       }
-      END { if (heading != "") { printf "data/%s: untagged | %s\n", file, heading } }
+      END { close_section() }
     ' "$path"
   done
 }

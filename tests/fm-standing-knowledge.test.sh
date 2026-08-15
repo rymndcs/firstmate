@@ -257,6 +257,65 @@ MD
   pass 'resolver reports a tag naming an unknown lifecycle moment, in emission and in --audit'
 }
 
+# The other way a hand-written marker binds nowhere: a stray blank line between
+# a heading and its marker. The rule silently stops arriving at its lifecycle
+# script, and the section reads exactly like one deliberately left untagged.
+test_resolver_reports_a_marker_out_of_binding_position() {
+  local data out status audit
+  data="$TMP_ROOT/orphan-marker/data"
+  mkdir -p "$data"
+  cat > "$data/captain.md" <<'MD'
+# Captain preferences
+
+## A correctly tagged rule (fixture, 2026-01-11)
+<!-- fm-moment: merge -->
+
+Correct merge body.
+
+## A rule whose marker slipped a line (fixture, 2026-01-12)
+
+<!-- fm-moment: merge -->
+
+This body binds at no moment because its marker is out of position.
+MD
+  printf '# Shared captain preferences\n\n## Shared\n<!-- fm-moment: merge -->\n\nShared body.\n' \
+    > "$data/captain-shared.md"
+  printf '# Learnings\n\n## Learned\n<!-- fm-moment: merge -->\n\nLearned body.\n' \
+    > "$data/learnings.md"
+  out=$(run_know "$data" merge)
+  status=$?
+  expect_code 0 "$status" 'a misplaced marker must not fail the resolver'
+  # shellcheck disable=SC2016 # literal Markdown heading syntax, not a substitution
+  assert_contains "$out" 'not directly below a `## ` heading' \
+    'the diagnostic must say what is actually wrong with the marker'
+  assert_contains "$out" 'data/captain.md' 'the diagnostic must name the owning file'
+  assert_contains "$out" '<!-- fm-moment: merge -->' 'the diagnostic must quote the marker it found'
+  assert_contains "$out" '## A rule whose marker slipped a line (fixture, 2026-01-12)' \
+    'the diagnostic must name the section the misplaced marker belongs to'
+  assert_contains "$out" 'Correct merge body.' \
+    'a misplaced marker elsewhere must not stop the well-placed sections resolving'
+  assert_contains "$out" 'Learned body.' 'the other knowledge files must still resolve'
+  assert_not_contains "$out" 'This body binds at no moment because its marker is out of position.' \
+    'a section whose marker is out of position must still not print'
+  audit=$(run_know "$data" --audit)
+  assert_contains "$audit" 'orphaned-marker <!-- fm-moment: merge --> | ## A rule whose marker slipped a line (fixture, 2026-01-12)' \
+    '--audit must distinguish an out-of-position marker from a deliberately untagged section'
+  pass 'resolver reports a marker that sits out of binding position, in emission and in --audit'
+}
+
+# The distinction has to cut both ways: a section with no marker anywhere is
+# still reported as plainly untagged, not as a marker slip.
+test_audit_still_calls_a_deliberately_untagged_section_untagged() {
+  local data audit
+  data=$(make_data audit-untagged)
+  audit=$(run_know "$data" --audit)
+  assert_contains "$audit" 'untagged | ## A rule that governs no lifecycle moment (fixture, 2026-01-03)' \
+    'a section carrying no marker at all must still audit as plainly untagged'
+  assert_not_contains "$audit" 'orphaned-marker' \
+    'a knowledge set with every marker in position must report no orphaned marker'
+  pass 'audit still reports a section with no marker at all as plainly untagged'
+}
+
 test_resolver_prints_nothing_when_no_section_binds() {
   local data out status
   # Every knowledge file is present and tagged, so "prints nothing" is tested
@@ -572,6 +631,7 @@ make_pr_home() {  # <name> [<registry-line>...]
   home="$TMP_ROOT/$name/home"
   proj="$TMP_ROOT/$name/projects/wms"
   fakebin=$(fm_fakebin "$TMP_ROOT/$name/fake")
+  fm_fake_exit0 "$fakebin" gh
   mkdir -p "$home/state" "$home/config" "$proj"
   data=$(make_data "$name")
   ln -s "$data" "$home/data"
@@ -659,6 +719,7 @@ test_pr_check_survives_missing_knowledge_files() {
   home="$TMP_ROOT/pr-nodata/home"
   proj="$TMP_ROOT/pr-nodata/projects/wms"
   fakebin=$(fm_fakebin "$TMP_ROOT/pr-nodata/fake")
+  fm_fake_exit0 "$fakebin" gh
   mkdir -p "$home/state" "$home/data" "$proj"
   fm_write_meta "$home/state/pr-nodata.meta" \
     "window=firstmate:fm-pr-nodata" "worktree=$proj" "project=$proj" \
@@ -757,6 +818,8 @@ test_resolver_reads_both_knowledge_files
 test_resolver_reads_the_shared_captain_file
 test_resolver_reports_an_absent_shared_captain_file
 test_resolver_reports_an_unknown_moment_tag_in_the_data
+test_resolver_reports_a_marker_out_of_binding_position
+test_audit_still_calls_a_deliberately_untagged_section_untagged
 test_resolver_prints_nothing_when_no_section_binds
 test_resolver_writes_only_to_stderr
 test_resolver_reports_an_unknown_moment_as_a_caller_bug
