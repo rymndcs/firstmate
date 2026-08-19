@@ -1933,14 +1933,93 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
   return 0
 }
 
+# fm_backend_herdr_projection_worktree_tab_create_best_effort: add one extra
+# idle-shell tab, rooted at the task's own worktree, alongside the existing
+# task tab in an already-created projected workspace.
+# This tab is presentation-only, exactly like the task tab and workspace
+# themselves: its existence, label, and cwd grant no task ownership, send,
+# capture, teardown, or recovery authority.
+# It is created here, never inside fm_backend_herdr_projection_create_task,
+# because the worktree does not exist until the launching agent later runs
+# `treehouse get`; <cwd> must be the validated worktree path, never the
+# project directory create_task itself used.
+# Never fatal: every failure prints a warning (not an error) and returns 1
+# with both globals left empty, so the caller degrades to the working
+# one-tab shape exactly as the presentation ordering step already does. A
+# create that succeeds but fails its own shape verification is rolled back
+# (its new pane is closed, focus-preserving, best-effort) so a rare
+# double-failure never strands an unverified extra tab.
+# On success it sets:
+#   FM_BACKEND_HERDR_PROJECTION_WORKTREE_TAB_ID
+#   FM_BACKEND_HERDR_PROJECTION_WORKTREE_PANE_ID
+fm_backend_herdr_projection_worktree_tab_create_best_effort() {  # <session> <workspace_id> <task_tab_id> <task_label> <cwd> <label>
+  local session=$1 wsid=$2 task_tab=$3 task_label=$4 cwd=$5 label=$6
+  local focus_before out tab_id pane_id tabs panes tab_count pane_count
+  FM_BACKEND_HERDR_PROJECTION_WORKTREE_TAB_ID=""
+  FM_BACKEND_HERDR_PROJECTION_WORKTREE_PANE_ID=""
+  focus_before=$(fm_backend_herdr_projection_focus_snapshot "$session") || {
+    echo "warning: herdr presentation worktree tab could not capture exact active workspace and tab; leaving the worker in its working one-tab shape" >&2
+    return 1
+  }
+  if out=$(fm_backend_herdr_cli "$session" tab create \
+    --workspace "$wsid" --cwd "$cwd" --label "$label" --no-focus 2>/dev/null); then
+    :
+  else
+    fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "worktree tab create" || true
+    echo "warning: herdr presentation worktree tab create failed; leaving the worker in its working one-tab shape" >&2
+    return 1
+  fi
+  if ! fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "worktree tab create"; then
+    echo "warning: herdr presentation worktree tab create did not preserve exact active focus; leaving the worker in its working one-tab shape" >&2
+    return 1
+  fi
+  tab_id=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
+  pane_id=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
+  if [ -z "$tab_id" ] || [ -z "$pane_id" ]; then
+    echo "warning: herdr presentation worktree tab create returned incomplete IDs; leaving the worker in its working one-tab shape" >&2
+    return 1
+  fi
+  tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || tabs=
+  panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$wsid" 2>/dev/null) || panes=
+  if [ -z "$tabs" ] || [ -z "$panes" ] \
+     || ! printf '%s' "$tabs" | jq -e '(.result.tabs | type) == "array"' >/dev/null 2>&1 \
+     || ! printf '%s' "$panes" | jq -e '(.result.panes | type) == "array"' >/dev/null 2>&1; then
+    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" || true
+    echo "warning: herdr presentation worktree tab shape could not be verified; leaving the worker in its working one-tab shape" >&2
+    return 1
+  fi
+  tab_count=$(printf '%s' "$tabs" | jq -r '.result.tabs | length' 2>/dev/null)
+  pane_count=$(printf '%s' "$panes" | jq -r '.result.panes | length' 2>/dev/null)
+  if [ "$tab_count" != 2 ] || [ "$pane_count" != 2 ] \
+     || ! printf '%s' "$tabs" | jq -e --arg task "$task_tab" --arg task_label "$task_label" --arg wt "$tab_id" '
+       ([.result.tabs[] | select(.tab_id == $task and .label == $task_label)] | length) == 1
+       and ([.result.tabs[] | select(.tab_id == $wt)] | length) == 1
+     ' >/dev/null 2>&1 \
+     || ! printf '%s' "$panes" | jq -e --arg pane "$pane_id" --arg wt "$tab_id" '
+       ([.result.panes[] | select(.pane_id == $pane and .tab_id == $wt)] | length) == 1
+     ' >/dev/null 2>&1; then
+    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" || true
+    echo "warning: herdr presentation worktree tab did not converge to the exact two-tab shape; leaving the worker in its working one-tab shape" >&2
+    return 1
+  fi
+  # shellcheck disable=SC2034  # caller consumes the response-derived globals
+  FM_BACKEND_HERDR_PROJECTION_WORKTREE_TAB_ID=$tab_id
+  # shellcheck disable=SC2034  # caller consumes the response-derived globals
+  FM_BACKEND_HERDR_PROJECTION_WORKTREE_PANE_ID=$pane_id
+  return 0
+}
+
 # fm_backend_herdr_projection_cleanup_exact: same-process abort cleanup for a
 # projection whose create calls returned complete exact IDs.
 # It performs no lookup and never calls workspace close.
-fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-pane>
-  local session=$1 task_pane=$2 seeded_pane=$3
+fm_backend_herdr_projection_cleanup_exact() {  # <session> <task-pane> <seeded-pane> <worktree-pane>
+  local session=$1 task_pane=$2 seeded_pane=$3 worktree_pane=${4:-}
   [ -z "$task_pane" ] || fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$task_pane" || true
   if [ -n "$seeded_pane" ] && [ "$seeded_pane" != "$task_pane" ]; then
     fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$seeded_pane" || true
+  fi
+  if [ -n "$worktree_pane" ] && [ "$worktree_pane" != "$task_pane" ] && [ "$worktree_pane" != "$seeded_pane" ]; then
+    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$worktree_pane" || true
   fi
 }
 
@@ -1963,12 +2042,19 @@ fm_backend_herdr_projection_parent_workspace_exact() {  # <session> <parent-labe
 }
 
 # fm_backend_herdr_projection_live_binding_matches: verify one exact projected
-# workspace, its single task tab/pane, its unique token label, and its current
+# workspace, its task tab/pane, its unique token label, and its current
 # position inside the exact parent workspace's contiguous child block.
 # This read-only predicate grants no mutation authority by itself.
-fm_backend_herdr_projection_live_binding_matches() {  # <session> <token> <workspace> <tab> <pane> <parent-workspace> <parent-label> <workspace-label> <task-label>
+# <worktree-tab-id> (10th arg, optional) is empty for the ordinary one-tab
+# shape (the workspace must then contain exactly the one task tab/pane), or
+# the exact tab id of an already-created worktree tab, in which case the
+# workspace must contain exactly two tabs (the task tab, matched by id and
+# label, and this exact worktree tab, matched by id only) and exactly two
+# panes (the task pane, matched by id and tab, and one other). The worktree
+# tab's own pane is never authoritative and is not identified by id here.
+fm_backend_herdr_projection_live_binding_matches() {  # <session> <token> <workspace> <tab> <pane> <parent-workspace> <parent-label> <workspace-label> <task-label> [<worktree-tab-id>]
   local session=$1 token=$2 workspace=$3 tab=$4 pane=$5 parent_workspace=$6
-  local parent_label=$7 workspace_label=$8 task_label=$9 list tabs panes
+  local parent_label=$7 workspace_label=$8 task_label=$9 worktree_tab=${10:-} list tabs panes
   list=$(fm_backend_herdr_cli "$session" workspace list 2>/dev/null) || return 1
   printf '%s' "$list" | jq -e \
     --arg token "$token" \
@@ -2001,19 +2087,36 @@ fm_backend_herdr_projection_live_binding_matches() {  # <session> <token> <works
       | select(. == true)
     ' >/dev/null 2>&1 || return 1
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$workspace" 2>/dev/null) || return 1
-  printf '%s' "$tabs" | jq -e --arg tab "$tab" --arg task_label "$task_label" '
-    (.result.tabs | type) == "array"
-    and (.result.tabs | length) == 1
-    and .result.tabs[0].tab_id == $tab
-    and .result.tabs[0].label == $task_label
-  ' >/dev/null 2>&1 || return 1
+  if [ -z "$worktree_tab" ]; then
+    printf '%s' "$tabs" | jq -e --arg tab "$tab" --arg task_label "$task_label" '
+      (.result.tabs | type) == "array"
+      and (.result.tabs | length) == 1
+      and .result.tabs[0].tab_id == $tab
+      and .result.tabs[0].label == $task_label
+    ' >/dev/null 2>&1 || return 1
+  else
+    printf '%s' "$tabs" | jq -e --arg tab "$tab" --arg task_label "$task_label" --arg wt "$worktree_tab" '
+      (.result.tabs | type) == "array"
+      and (.result.tabs | length) == 2
+      and ([.result.tabs[] | select(.tab_id == $tab and .label == $task_label)] | length) == 1
+      and ([.result.tabs[] | select(.tab_id == $wt)] | length) == 1
+    ' >/dev/null 2>&1 || return 1
+  fi
   panes=$(fm_backend_herdr_cli "$session" pane list --workspace "$workspace" 2>/dev/null) || return 1
-  printf '%s' "$panes" | jq -e --arg tab "$tab" --arg pane "$pane" '
-    (.result.panes | type) == "array"
-    and (.result.panes | length) == 1
-    and .result.panes[0].pane_id == $pane
-    and .result.panes[0].tab_id == $tab
-  ' >/dev/null 2>&1
+  if [ -z "$worktree_tab" ]; then
+    printf '%s' "$panes" | jq -e --arg tab "$tab" --arg pane "$pane" '
+      (.result.panes | type) == "array"
+      and (.result.panes | length) == 1
+      and .result.panes[0].pane_id == $pane
+      and .result.panes[0].tab_id == $tab
+    ' >/dev/null 2>&1
+  else
+    printf '%s' "$panes" | jq -e --arg tab "$tab" --arg pane "$pane" '
+      (.result.panes | type) == "array"
+      and (.result.panes | length) == 2
+      and ([.result.panes[] | select(.pane_id == $pane and .tab_id == $tab)] | length) == 1
+    ' >/dev/null 2>&1
+  fi
 }
 
 fm_backend_herdr_projection_reclaim_rollback() {  # <session> <new-pane>
@@ -2035,9 +2138,15 @@ fm_backend_herdr_projection_reclaim_rollback() {  # <session> <new-pane>
 # Return 0 means exact reclaim, 2 means non-mutating or exactly rolled-back
 # refusal with flat fallback permitted, and 1 means a live/unknown or
 # post-mutation uncertainty that must refuse the launch.
-fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <home> <meta-workspace> <meta-tab> <meta-pane> <parent-label> <task-label> <cwd>
+# <worktree-tab-id> (11th arg, optional) is the exact tab id of a worktree
+# tab already sitting in <meta-workspace> from the original spawn (read from
+# that task's own durable metadata, never re-derived or re-created here).
+# Empty means the original spawn never had one. Either way this function
+# never creates, closes, or otherwise touches it - only live_binding_matches
+# is told to expect it alongside the husk it is replacing.
+fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <home> <meta-workspace> <meta-tab> <meta-pane> <parent-label> <task-label> <cwd> [<worktree-tab-id>]
   local session=$1 journal=$2 id=$3 home=$4 meta_workspace=$5 meta_tab=$6 meta_pane=$7
-  local parent_label=$8 task_label=$9 cwd=${10} canonical_home state focus_before active_tab out new_tab new_pane info close_status
+  local parent_label=$8 task_label=$9 cwd=${10} worktree_tab=${11:-} canonical_home state focus_before active_tab out new_tab new_pane info close_status
   FM_BACKEND_HERDR_PROJECTION_TAB_ID=""
   FM_BACKEND_HERDR_PROJECTION_PANE_ID=""
   fm_backend_herdr_projection_journal_snapshot "$journal" "$id" || return 1
@@ -2063,7 +2172,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
     "$session" "$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID" \
     "$meta_workspace" "$meta_tab" "$meta_pane" \
     "$FM_BACKEND_HERDR_JOURNAL_PARENT_WORKSPACE_ID" "$parent_label" \
-    "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL" "$task_label"; then
+    "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL" "$task_label" "$worktree_tab"; then
     echo "warning: herdr presentation binding for $id has an ambiguous, renamed, foreign, or non-nested live shape; spawning flat" >&2
     return 2
   fi
@@ -2162,7 +2271,7 @@ fm_backend_herdr_projection_reclaim_task() {  # <session> <journal> <task-id> <h
     "$session" "$FM_BACKEND_HERDR_JOURNAL_PROJECTION_ID" \
     "$meta_workspace" "$new_tab" "$new_pane" \
     "$FM_BACKEND_HERDR_JOURNAL_PARENT_WORKSPACE_ID" "$parent_label" \
-    "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL" "$task_label"; then
+    "$FM_BACKEND_HERDR_JOURNAL_WORKSPACE_LABEL" "$task_label" "$worktree_tab"; then
     fm_backend_herdr_projection_reclaim_rollback "$session" "$new_pane" || return 1
     echo "warning: herdr presentation reclaim for $id did not converge exactly; spawning flat" >&2
     return 2

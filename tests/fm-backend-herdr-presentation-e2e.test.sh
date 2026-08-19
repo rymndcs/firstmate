@@ -401,11 +401,17 @@ teardown_task() {  # <id> <home>
 }
 
 normalize_meta() {  # <meta>
+  # herdr_worktree_tab_id/herdr_worktree_pane_id exist only on the projected
+  # path's best-effort extra tab (never on the flat path), so they are
+  # dropped entirely rather than normalized like the shared container-id
+  # fields above.
   sed -E \
     -e 's|^window=.*$|window=<herdr-container-id>|' \
     -e 's|^herdr_workspace_id=.*$|herdr_workspace_id=<herdr-container-id>|' \
     -e 's|^herdr_tab_id=.*$|herdr_tab_id=<herdr-container-id>|' \
     -e 's|^herdr_pane_id=.*$|herdr_pane_id=<herdr-container-id>|' \
+    -e '/^herdr_worktree_tab_id=/d' \
+    -e '/^herdr_worktree_pane_id=/d' \
     "$1"
 }
 
@@ -538,18 +544,31 @@ PROJECTED_INFO=$(lab workspace get "$PROJECTED_WSID") || fail "could not inspect
 PROJECTED_LABEL=$(printf '%s' "$PROJECTED_INFO" | jq -r '.result.workspace.label // empty')
 [ "$PROJECTED_LABEL" = "└ shape · p:$TOKEN" ] \
   || fail "projected workspace label did not use the corner format with full token: $PROJECTED_LABEL"
+PROJECTED_WORKTREE_TAB=$(grep '^herdr_worktree_tab_id=' "$ON_META" | cut -d= -f2-)
+PROJECTED_WORKTREE_PANE=$(grep '^herdr_worktree_pane_id=' "$ON_META" | cut -d= -f2-)
+[ -n "$PROJECTED_WORKTREE_TAB" ] && [ -n "$PROJECTED_WORKTREE_PANE" ] \
+  || fail "projected spawn did not record a worktree tab in its metadata"
 PROJECTED_TABS=$(lab tab list --workspace "$PROJECTED_WSID")
 PROJECTED_PANES=$(lab pane list --workspace "$PROJECTED_WSID")
-[ "$(printf '%s' "$PROJECTED_TABS" | jq -r '.result.tabs | length')" = 1 ] \
-  || fail "projected workspace retained a seeded or placeholder tab"
-[ "$(printf '%s' "$PROJECTED_PANES" | jq -r '.result.panes | length')" = 1 ] \
-  || fail "projected workspace did not contain exactly one task pane"
+[ "$(printf '%s' "$PROJECTED_TABS" | jq -r '.result.tabs | length')" = 2 ] \
+  || fail "projected workspace did not contain exactly the task tab and its worktree tab"
+[ "$(printf '%s' "$PROJECTED_PANES" | jq -r '.result.panes | length')" = 2 ] \
+  || fail "projected workspace did not contain exactly the task pane and its worktree pane"
 printf '%s' "$PROJECTED_TABS" | jq -e --arg tab "$PROJECTED_TAB" \
-  '.result.tabs[0].tab_id == $tab and .result.tabs[0].label == "fm-shape"' >/dev/null 2>&1 \
-  || fail "projected workspace's only tab was not the normal fm-shape task tab"
-printf '%s' "$PROJECTED_PANES" | jq -e --arg pane "$PROJECTED_PANE" \
-  '.result.panes[0].pane_id == $pane' >/dev/null 2>&1 \
-  || fail "projected workspace's only pane was not the exact recorded task pane"
+  '([.result.tabs[] | select(.tab_id == $tab and .label == "fm-shape")] | length) == 1' >/dev/null 2>&1 \
+  || fail "projected workspace's task tab was not the normal fm-shape task tab"
+printf '%s' "$PROJECTED_TABS" | jq -e --arg tab "$PROJECTED_WORKTREE_TAB" \
+  '([.result.tabs[] | select(.tab_id == $tab)] | length) == 1' >/dev/null 2>&1 \
+  || fail "projected workspace's recorded worktree tab is not the live second tab"
+printf '%s' "$PROJECTED_PANES" | jq -e --arg pane "$PROJECTED_PANE" --arg tab "$PROJECTED_TAB" \
+  '([.result.panes[] | select(.pane_id == $pane and .tab_id == $tab)] | length) == 1' >/dev/null 2>&1 \
+  || fail "projected workspace's task pane was not the exact recorded task pane"
+printf '%s' "$PROJECTED_PANES" | jq -e --arg pane "$PROJECTED_WORKTREE_PANE" --arg tab "$PROJECTED_WORKTREE_TAB" \
+  '([.result.panes[] | select(.pane_id == $pane and .tab_id == $tab)] | length) == 1' >/dev/null 2>&1 \
+  || fail "projected workspace's worktree pane was not the exact recorded worktree pane"
+WORKTREE_PANE_CWD=$(lab pane get "$PROJECTED_WORKTREE_PANE" | jq -r '.result.pane.foreground_cwd // empty')
+[ "$WORKTREE_PANE_CWD" = "$ON_WT" ] \
+  || fail "projected worktree tab's shell was not rooted at the task's own worktree (got '$WORKTREE_PANE_CWD', want '$ON_WT')"
 SECOND_TWO_INFO=$(lab workspace get "$SECOND_TWO_WSID") || fail "focused secondmate disappeared during projected create"
 [ "$(printf '%s' "$SECOND_TWO_INFO" | jq -r '.result.workspace.focused')" = true ] \
   || fail "projected create or workspace.move stole focus from the captain's current space"
@@ -786,6 +805,7 @@ SHAPE_CLEANUP_AUDIT_START=$(focus_audit_line_count)
 teardown_task shape "$HOME_DIR" > "$TMP_ROOT/on-teardown.out" 2> "$TMP_ROOT/on-teardown.err" \
   || fail "projected teardown failed: $(cat "$TMP_ROOT/on-teardown.err")"
 assert_focus_is "$CAPTAIN_FOCUS" "projected teardown"
+assert_cleanup_focus_preserved "$SHAPE_CLEANUP_AUDIT_START" "$PROJECTED_WORKTREE_PANE" "$CAPTAIN_FOCUS"
 assert_cleanup_focus_preserved "$SHAPE_CLEANUP_AUDIT_START" "$PROJECTED_PANE" "$CAPTAIN_FOCUS"
 pass "real Herdr lab: Treehouse commands and metadata shape are byte-identical except for Herdr container IDs"
 if lab workspace get "$PROJECTED_WSID" >/dev/null 2>&1; then

@@ -729,6 +729,7 @@ HERDR_PROJECTION_ABORT_CLEANUP=0
 HERDR_PROJECTION_ABORT_SESSION=
 HERDR_PROJECTION_ABORT_TASK_PANE=
 HERDR_PROJECTION_ABORT_SEEDED_PANE=
+HERDR_PROJECTION_ABORT_WORKTREE_PANE=
 HERDR_PRESENTATION_ORDER_LOCK=
 HERDR_PRESENTATION_ORDER_LOCK_HELD=0
 SPAWN_TASK_LOCK=
@@ -767,7 +768,8 @@ spawn_abort_cleanup() {
     fm_backend_herdr_projection_cleanup_exact \
       "$HERDR_PROJECTION_ABORT_SESSION" \
       "$HERDR_PROJECTION_ABORT_TASK_PANE" \
-      "$HERDR_PROJECTION_ABORT_SEEDED_PANE" || true
+      "$HERDR_PROJECTION_ABORT_SEEDED_PANE" \
+      "$HERDR_PROJECTION_ABORT_WORKTREE_PANE" || true
   fi
   if [ "$HERDR_PRESENTATION_ORDER_LOCK_HELD" = 1 ]; then
     HERDR_PRESENTATION_ORDER_LOCK_HELD=0
@@ -1566,6 +1568,20 @@ herdr_projection_meta_field_exact() {  # <meta> <key>
   grep "^${key}=" "$meta" 2>/dev/null | cut -d= -f2-
 }
 
+# herdr_projection_meta_field_optional: like herdr_projection_meta_field_exact,
+# but a missing key (never written for a task whose worktree tab was never
+# created) is empty rather than a refusal; a duplicate key is still ambiguous.
+herdr_projection_meta_field_optional() {  # <meta> <key>
+  local meta=$1 key=$2 count
+  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
+  count=$(grep -c "^${key}=" "$meta" 2>/dev/null || true)
+  case "$count" in
+    0) printf '' ;;
+    1) grep "^${key}=" "$meta" 2>/dev/null | cut -d= -f2- ;;
+    *) return 1 ;;
+  esac
+}
+
 # A stale presentation journal never grants launch authority.
 # Under the session lock, authoritative metadata must identify one positively
 # dead or agent-free endpoint before token inspection may allow flat fallback.
@@ -1576,6 +1592,8 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
   HERDR_RECOVERY_WORKSPACE_ID=""
   HERDR_RECOVERY_TAB_ID=""
   HERDR_RECOVERY_PANE_ID=""
+  HERDR_RECOVERY_WORKTREE_TAB_ID=""
+  HERDR_RECOVERY_WORKTREE_PANE_ID=""
   old_backend=$(fm_backend_of_meta "$meta")
   old_target=$(fm_backend_target_of_meta "$meta")
   [ -n "$old_target" ] || {
@@ -1611,6 +1629,14 @@ herdr_projection_existing_meta_allows_flat() {  # <meta>
       return 1
     }
     HERDR_RECOVERY_PANE_ID=$old_pane
+    HERDR_RECOVERY_WORKTREE_TAB_ID=$(herdr_projection_meta_field_optional "$meta" herdr_worktree_tab_id) || {
+      echo "error: existing herdr metadata for $ID has an ambiguous worktree tab; refusing duplicate launch" >&2
+      return 1
+    }
+    HERDR_RECOVERY_WORKTREE_PANE_ID=$(herdr_projection_meta_field_optional "$meta" herdr_worktree_pane_id) || {
+      echo "error: existing herdr metadata for $ID has an ambiguous worktree pane; refusing duplicate launch" >&2
+      return 1
+    }
     fm_backend_herdr_server_ensure "$old_session" || {
       echo "error: existing herdr endpoint for $ID could not be inspected; refusing duplicate launch" >&2
       return 1
@@ -1675,6 +1701,8 @@ case "$BACKEND" in
     fi
     HERDR_PRESENTATION_JOURNAL=$(fm_backend_herdr_projection_journal_path "$STATE" "$ID")
     HERDR_PROJECTED=0
+    HERDR_WORKTREE_TAB_ID=
+    HERDR_WORKTREE_PANE_ID=
     if [ "$KIND" != secondmate ] && [ -f "$CONFIG/herdr-presentation-spaces" ]; then
       HERDR_SES=$(fm_backend_herdr_session)
       HERDR_PARENT_LABEL=$(FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_workspace_label)
@@ -1697,7 +1725,7 @@ case "$BACKEND" in
           FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_reclaim_task \
             "$HERDR_SES" "$HERDR_PRESENTATION_JOURNAL" "$ID" "$HERDR_LABEL_HOME" \
             "$HERDR_RECOVERY_WORKSPACE_ID" "$HERDR_RECOVERY_TAB_ID" "$HERDR_RECOVERY_PANE_ID" \
-            "$HERDR_PARENT_LABEL" "$W" "$PROJ_ABS"
+            "$HERDR_PARENT_LABEL" "$W" "$PROJ_ABS" "$HERDR_RECOVERY_WORKTREE_TAB_ID"
           HERDR_RECLAIM_STATUS=$?
           set -e
           case "$HERDR_RECLAIM_STATUS" in
@@ -1707,6 +1735,18 @@ case "$BACKEND" in
               HERDR_SEEDED_DEFAULT_TAB_ID=""
               HERDR_TAB_ID=$FM_BACKEND_HERDR_PROJECTION_TAB_ID
               HERDR_PANE_ID=$FM_BACKEND_HERDR_PROJECTION_PANE_ID
+              # The pre-existing worktree tab (if any) was never touched by
+              # reclaim; carry it forward into the refreshed metadata only
+              # once its own pane is independently reconfirmed still present -
+              # presentation is non-authoritative, so a vanished worktree pane
+              # here is silently dropped, never a launch refusal.
+              HERDR_WORKTREE_TAB_ID=""
+              HERDR_WORKTREE_PANE_ID=""
+              if [ -n "$HERDR_RECOVERY_WORKTREE_PANE_ID" ] \
+                 && [ "$(fm_backend_herdr_pane_presence_state "$HERDR_SES" "$HERDR_RECOVERY_WORKTREE_PANE_ID")" = present ]; then
+                HERDR_WORKTREE_TAB_ID=$HERDR_RECOVERY_WORKTREE_TAB_ID
+                HERDR_WORKTREE_PANE_ID=$HERDR_RECOVERY_WORKTREE_PANE_ID
+              fi
               HERDR_PROJECTION_ABORT_CLEANUP=1
               HERDR_PROJECTION_ABORT_SESSION=$HERDR_SES
               HERDR_PROJECTION_ABORT_TASK_PANE=$HERDR_PANE_ID
@@ -2008,6 +2048,25 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   fi
 
   validate_spawn_worktree "treehouse get" "$T"
+
+  # A second, presentation-only tab rooted at this task's own worktree, added
+  # only now: the worktree did not exist (and $WT was not validated) at
+  # projection-create time above. Never fatal - a create or verify failure
+  # here only warns and leaves the worker in its already-working one-tab
+  # shape, exactly like the ordering step's own best-effort degrade.
+  # HERDR_WORKTREE_PANE_ID already non-empty (a reclaimed task's pre-existing
+  # worktree tab, reconfirmed present above) means this run never touches it.
+  if [ "${HERDR_PROJECTED:-0}" -eq 1 ] && [ -z "${HERDR_WORKTREE_PANE_ID:-}" ]; then
+    HERDR_WORKTREE_LABEL="$W (worktree)"
+    if FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_worktree_tab_create_best_effort \
+      "$HERDR_SES" "$HERDR_WORKSPACE_ID" "$HERDR_TAB_ID" "$W" "$WT" "$HERDR_WORKTREE_LABEL"; then
+      HERDR_WORKTREE_TAB_ID=$FM_BACKEND_HERDR_PROJECTION_WORKTREE_TAB_ID
+      HERDR_WORKTREE_PANE_ID=$FM_BACKEND_HERDR_PROJECTION_WORKTREE_PANE_ID
+      if [ "$HERDR_PROJECTION_ABORT_CLEANUP" = 1 ]; then
+        HERDR_PROJECTION_ABORT_WORKTREE_PANE=$HERDR_WORKTREE_PANE_ID
+      fi
+    fi
+  fi
 fi
 
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
@@ -2335,6 +2394,11 @@ esac
     echo "herdr_workspace_id=$HERDR_WORKSPACE_ID"
     echo "herdr_tab_id=$HERDR_TAB_ID"
     echo "herdr_pane_id=$HERDR_PANE_ID"
+    # Absent for a flat (non-projected) task and for a projected task whose
+    # worktree tab was never created or verified - presentation-only, so its
+    # absence never changes endpoint authority.
+    [ -z "$HERDR_WORKTREE_TAB_ID" ] || echo "herdr_worktree_tab_id=$HERDR_WORKTREE_TAB_ID"
+    [ -z "$HERDR_WORKTREE_PANE_ID" ] || echo "herdr_worktree_pane_id=$HERDR_WORKTREE_PANE_ID"
   fi
   if [ "$BACKEND" = zellij ]; then
     echo "zellij_session=$ZELLIJ_SES"

@@ -87,6 +87,13 @@ Only the exact seeded default tab returned by the same workspace-create response
 Before and after create, prune, order, abort cleanup, and normal cleanup, Firstmate verifies exact workspace, tab, pane, and active-focus ids.
 An ambiguous response grants no mutation or cleanup authority.
 
+Once the launching agent's own `treehouse get` has claimed and validated the task's isolated copy, Firstmate best-effort adds one more tab in the same projected workspace: an idle shell rooted at that exact validated worktree path, so the captain can switch straight into a worker's own copy without navigating there by hand.
+This tab is created after the normal task tab, never inside the same create call, because the worktree does not exist yet at projection-create time.
+It carries the same non-authoritative status as the task tab and workspace themselves - its existence, label, and cwd grant no ownership, send, capture, teardown, or recovery authority, and normal task metadata remains the sole endpoint authority.
+A create or shape-verification failure here only warns and leaves the worker on its already-working one-tab shape; it never fails or retries the spawn, and a verified-but-unconverged attempt rolls back its own new pane.
+A restart-reclaimed task never creates a new worktree tab; an already-recorded one is carried forward once its pane is reconfirmed present, and reclaim's own exact-shape check accepts the recorded worktree tab as a second live tab alongside the husk being replaced.
+Because closing a workspace's last remaining tab deletes the whole workspace, cleanup always closes this extra tab first (leaving the task tab as the workspace's last one) before closing the task tab itself, so the projected workspace never outlives the task on a successful teardown; an unconfirmed worktree-tab close refuses the whole teardown and retains every durable record, exactly like an unconfirmed task-pane close already does.
+
 Protocol 16 exposes `workspace.move` over the named session socket but no CLI subcommand.
 `bin/backends/herdr-workspace-move.py` sends only that whitelisted method and verifies the complete returned workspace order.
 Projected children are placed in one contiguous block immediately after their owning home when the session layout, protocol, socket, `python3`, and machine-private per-session lock are all verifiable.
@@ -98,7 +105,7 @@ Firstmate does not retry, adopt, reuse, close, delete, or rename anything in res
 The worker remains on the ordinary flat or Herdr-current-order path.
 
 Normal task metadata remains the sole endpoint authority after creation.
-Cleanup closes only the exact recorded task pane and never calls `workspace close`.
+Cleanup closes only the exact recorded task pane, plus the exact recorded worktree pane when one exists, and never calls `workspace close`.
 Herdr 0.7.5's explicit close moves focus to a neighbor whenever it empties a non-focused workspace, while its pane-death removal preserves the focused workspace whenever the dying workspace sits behind it or the focused workspace is last; both behaviors are fixed on the upstream default branch but in no release, and the exact rules live in the adapter header of `bin/backends/herdr.sh`.
 Projected cleanup therefore runs under the same session lock, captures the exact active tab, refuses to delete the active tab, and treats a workspace-emptying close as a focus-safe removal: it verifies the close would empty the workspace, repositions the doomed workspace behind the focused one through the verified `workspace.move` transport when needed, proves the pane holds one lone idle shell, and ends that shell so Herdr removes the emptied workspace through its focus-preserving pane-death path.
 The repositioning move-to-last preserves every surviving workspace's relative order, and removal is confirmed against the exact moved workspace rather than inferred from pane disappearance before an unconfirmed removal makes one verified attempt under the same session lock to roll the doomed workspace back to its exact original position.
@@ -176,11 +183,14 @@ herdr_session=<session>
 herdr_workspace_id=<workspace-id>
 herdr_tab_id=<tab-id>
 herdr_pane_id=<pane-id>
+herdr_worktree_tab_id=<tab-id>
+herdr_worktree_pane_id=<pane-id>
 ```
 
 A Herdr pane id contains a colon, so the adapter splits `window=` on the first colon only.
 The recorded pane is the operational fast path.
 Workspace and tab ids support verification and cleanup but are not inferred from mutable labels during normal operation.
+The `herdr_worktree_*` fields are present only for a projected task whose best-effort extra worktree tab was created and verified; they are absent for every flat task and for a projected task that never got one.
 
 ## Current transport behavior
 
