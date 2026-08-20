@@ -2310,9 +2310,11 @@ test_forced_secondmate_projected_child_retains_records_when_worktree_close_uncon
     || fail "herdr-child-worktree-unconfirmed: the failed child cleanup erased the parent record"
   [ -d "$home" ] \
     || fail "herdr-child-worktree-unconfirmed: the failed child cleanup removed the secondmate home"
+  [ -z "$(herdr_log_close_index "$log" wC:p1)" ] \
+    || fail "herdr-child-worktree-unconfirmed: the refusal destroyed the child's task pane before checking the worktree tab, leaving it half torn down"
   assert_grep "worktree tab pane wC:p9 for child child-herdr is not confirmed gone" "$case_dir/stderr" \
     "herdr-child-worktree-unconfirmed: the refusal did not name the child's unconfirmed worktree pane"
-  pass "forced secondmate teardown retains a projected child's records until its worktree pane is confirmed gone"
+  pass "forced secondmate teardown leaves a projected child's task pane and records intact until its worktree pane is confirmed gone"
 }
 
 test_forced_secondmate_projected_child_closes_worktree_pane_before_task_pane() {

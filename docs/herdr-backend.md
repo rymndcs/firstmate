@@ -109,7 +109,9 @@ Because closing a workspace's last remaining tab deletes the whole workspace, cl
 That worktree-tab-first close and its confirmation run on every path that closes a projected task's pane before erasing its records - the normal retire path, the quarantined-journal plain-kill fallback, and forced whole-secondmate-home cleanup alike - so no path can delete the only record of a live worktree pane.
 Cleanup that runs for a task while the captain is sitting in that task's own worktree tab cannot close the captain's active tab without moving focus, so it refuses instead.
 Every durable record is retained, and each rerun refuses the same way for as long as focus stays on that tab.
-Switching to any other tab lets the next run finish normally; no data or work is lost at any point.
+Switching to any other tab lets the next run finish normally.
+That refusal is narrower than the pre-return refusals earlier in a teardown: it fires after the isolated copy has already been returned to the Treehouse pool and its local branch deleted, so what it guarantees is that this task's metadata and presentation journal survive - its identity, and the fact that a worktree tab still needs closing, are not lost - not that the worktree and branch are still intact for an untouched rerun.
+Forced whole-secondmate-home cleanup confirms a child's worktree tab before killing that child's task pane, so the same refusal there leaves the child's agent pane and every record untouched.
 
 Protocol 16 exposes `workspace.move` over the named session socket but no CLI subcommand.
 `bin/backends/herdr-workspace-move.py` sends only that whitelisted method and verifies the complete returned workspace order.

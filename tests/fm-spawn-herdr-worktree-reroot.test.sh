@@ -322,10 +322,17 @@ test_unreadable_worktree_tab_cwd_is_rerooted() {
 }
 
 # The stale tab is presentation-only, so a close that cannot be confirmed still
-# drops the recorded ids and still re-roots, warning by exact pane id rather
-# than keeping a handle to a tab known to show the wrong copy.
+# drops the recorded ids and still attempts a fresh create, warning by exact
+# pane id rather than keeping a handle to a tab known to show the wrong copy.
+#
+# The end state is the residue docs/herdr-backend.md commits to: the stale tab
+# is still there, so the workspace now holds three tabs and the create's own
+# exact-shape check refuses and rolls its new pane back, leaving the task with
+# no worktree ids recorded at all. This pins that, so a regression that let a
+# three-tab workspace converge - recording a duplicate worktree tab and
+# defeating the shape check the rest of the feature relies on - cannot pass.
 test_unconfirmed_stale_close_still_clears_and_recreates() {
-  local rec
+  local rec create_at rollback_at
   rec=$(make_reroot_case reroot-refused)
   read_reroot_record "$rec"
 
@@ -335,11 +342,19 @@ test_unconfirmed_stale_close_still_clears_and_recreates() {
     || fail "the refused-close fixture never attempted the stale close"
   assert_grep "pane 'w1:p9'" "$CASE_DIR/stderr" \
     "an unconfirmed stale-pane close did not name the exact pane an operator must close by hand"
-  [ -n "$(herdr_call_index "--cwd $WT_DIR --label fm-reroot-z1 (worktree)")" ] \
+  create_at=$(herdr_call_index "--cwd $WT_DIR --label fm-reroot-z1 (worktree)")
+  [ -n "$create_at" ] \
     || fail "an unconfirmed close must still fall through to the fresh correctly-rooted create"
-  assert_no_grep 'herdr_worktree_pane_id=w1:p9' "$HOME_DIR/state/reroot-z1.meta" \
-    "an unconfirmed close must still drop the stale recorded pane id"
-  pass "an unconfirmed stale-pane close still clears the recorded ids and re-roots the tab"
+  rollback_at=$(herdr_call_index 'pane close w1:p8')
+  [ -n "$rollback_at" ] \
+    || fail "a create landing in a three-tab workspace must roll its own new pane back"
+  [ "$create_at" -lt "$rollback_at" ] \
+    || fail "the rollback must follow the create it is undoing"
+  assert_no_grep 'herdr_worktree_pane_id=' "$HOME_DIR/state/reroot-z1.meta" \
+    "a rolled-back create must leave no worktree pane id recorded at all"
+  assert_no_grep 'herdr_worktree_tab_id=' "$HOME_DIR/state/reroot-z1.meta" \
+    "a rolled-back create must leave no worktree tab id recorded at all"
+  pass "an unconfirmed stale-pane close clears the recorded ids and leaves the documented no-ids residue"
 }
 
 test_worktree_tab_at_the_current_worktree_is_kept

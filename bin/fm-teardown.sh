@@ -1947,13 +1947,17 @@ cleanup_firstmate_home_children() {
         if [ -n "$child_worktree_pane" ]; then
           fm_backend_herdr_projection_close_pane_focus_preserving \
             "$FM_BACKEND_HERDR_SESSION" "$child_worktree_pane" 2>/dev/null || true
+          # Confirmed before the task pane is killed, not after: an
+          # unconfirmed worktree tab means that kill could not empty the
+          # workspace anyway, so refusing here leaves the child's agent pane
+          # and every record intact for a plain rerun instead of destroying
+          # the pane and then refusing.
+          if [ "$(fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$child_worktree_pane")" != dead ]; then
+            echo "error: herdr worktree tab pane $child_worktree_pane for child $child_id is not confirmed gone; retaining that child's durable identity records and its task pane, and stopping forced cleanup" >&2
+            return 1
+          fi
         fi
         fm_backend_herdr_kill_serialized "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true
-        if [ -n "$child_worktree_pane" ] \
-           && [ "$(fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$child_worktree_pane")" != dead ]; then
-          echo "error: herdr worktree tab pane $child_worktree_pane for child $child_id is not confirmed gone; retaining that child's durable identity records and stopping forced cleanup" >&2
-          return 1
-        fi
         if ! fm_backend_herdr_endpoint_confirmed_gone "$child_t"; then
           echo "error: herdr pane $child_t for child $child_id is not confirmed gone; retaining that child's durable identity records and stopping forced cleanup" >&2
           return 1
@@ -2286,8 +2290,14 @@ if [ "$BACKEND" = herdr ]; then
   # Applies to every path that closes the task pane, the retire path and the
   # quarantined-journal plain-kill fallback alike, since both reach the same
   # record removal below.
+  # Unlike the pre-return refusals earlier in this file, this gate sits AFTER
+  # the worktree return and branch delete, so it guarantees only that the
+  # durable records survive - not that nothing has changed yet. The isolated
+  # copy is already back in the pool and its local branch already gone by the
+  # time it fires, so a rerun resumes from that state rather than from an
+  # untouched one; the message says so rather than implying otherwise.
   if [ "$HERDR_WORKTREE_TAB_CONFIRMED_GONE" != 1 ]; then
-    echo "error: herdr worktree tab pane $HERDR_PRESENTATION_WORKTREE_PANE for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - the usual cause is the captain sitting in that worktree tab, which is never closed out from under an active focus, so move focus to any other tab and rerun teardown once the close can run under the session lock" >&2
+    echo "error: herdr worktree tab pane $HERDR_PRESENTATION_WORKTREE_PANE for $ID is not confirmed gone after its close was refused, skipped, or failed; the usual cause is the captain sitting in that worktree tab, which is never closed out from under an active focus, so move focus to any other tab and rerun teardown - this task's durable metadata and presentation journal are retained so its identity and that pending tab close are not lost, but note this refusal lands after the isolated copy was already returned to the Treehouse pool and its local branch deleted, so unlike an earlier-stage refusal it does not leave the worktree and branch intact" >&2
     exit 1
   fi
   if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
