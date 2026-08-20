@@ -1560,17 +1560,10 @@ validate_spawn_worktree() {  # <source> <inspect-target>
   fi
 }
 
-herdr_projection_meta_field_exact() {  # <meta> <key>
-  local meta=$1 key=$2 count
-  [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
-  count=$(grep -c "^${key}=" "$meta" 2>/dev/null || true)
-  [ "$count" = 1 ] || return 1
-  grep "^${key}=" "$meta" 2>/dev/null | cut -d= -f2-
-}
-
-# herdr_projection_meta_field_optional: like herdr_projection_meta_field_exact,
-# but a missing key (never written for a task whose worktree tab was never
-# created) is empty rather than a refusal; a duplicate key is still ambiguous.
+# herdr_projection_meta_field_optional: read one meta key that a task may
+# legitimately not carry (never written for a task whose worktree tab was
+# never created), so a missing key is empty rather than a refusal; an
+# unreadable meta and a duplicate key are still ambiguous and refuse.
 herdr_projection_meta_field_optional() {  # <meta> <key>
   local meta=$1 key=$2 count
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 1
@@ -1580,6 +1573,15 @@ herdr_projection_meta_field_optional() {  # <meta> <key>
     1) grep "^${key}=" "$meta" 2>/dev/null | cut -d= -f2- ;;
     *) return 1 ;;
   esac
+}
+
+# herdr_projection_meta_field_exact: the same single read, but a key a task
+# must carry, so an absent one is ambiguity that refuses too.
+herdr_projection_meta_field_exact() {  # <meta> <key>
+  local value
+  value=$(herdr_projection_meta_field_optional "$1" "$2") || return 1
+  [ -n "$value" ] || return 1
+  printf '%s' "$value"
 }
 
 # A stale presentation journal never grants launch authority.
@@ -1736,14 +1738,16 @@ case "$BACKEND" in
               HERDR_TAB_ID=$FM_BACKEND_HERDR_PROJECTION_TAB_ID
               HERDR_PANE_ID=$FM_BACKEND_HERDR_PROJECTION_PANE_ID
               # The pre-existing worktree tab (if any) was never touched by
-              # reclaim; carry it forward into the refreshed metadata only
-              # once its own pane is independently reconfirmed still present -
-              # presentation is non-authoritative, so a vanished worktree pane
-              # here is silently dropped, never a launch refusal.
+              # reclaim; carry it forward into the refreshed metadata unless
+              # its own pane is independently confirmed gone. Only a
+              # structured pane_not_found licenses dropping the ids: the
+              # recorded pane id is the sole handle teardown has for closing
+              # that tab, so an unknown read must keep it (a stale id costs a
+              # no-op close, a lost live one strands the workspace forever).
               HERDR_WORKTREE_TAB_ID=""
               HERDR_WORKTREE_PANE_ID=""
               if [ -n "$HERDR_RECOVERY_WORKTREE_PANE_ID" ] \
-                 && [ "$(fm_backend_herdr_pane_presence_state "$HERDR_SES" "$HERDR_RECOVERY_WORKTREE_PANE_ID")" = present ]; then
+                 && [ "$(fm_backend_herdr_pane_presence_state "$HERDR_SES" "$HERDR_RECOVERY_WORKTREE_PANE_ID")" != dead ]; then
                 HERDR_WORKTREE_TAB_ID=$HERDR_RECOVERY_WORKTREE_TAB_ID
                 HERDR_WORKTREE_PANE_ID=$HERDR_RECOVERY_WORKTREE_PANE_ID
               fi

@@ -1800,6 +1800,7 @@ teardown_herdr_require_prerequisites() {  # <task-id>
     fm_backend_herdr_workspace_presence_state \
     fm_backend_herdr_endpoint_confirmed_gone \
     fm_backend_herdr_explicit_close_pane_confirmed \
+    fm_backend_herdr_projection_close_pane_focus_preserving \
     fm_backend_herdr_presentation_session_lock_path; do
     if ! declare -F "$prerequisite" >/dev/null 2>&1; then
       echo "error: herdr teardown prerequisites are unavailable for $task_id; nothing was changed - restore the adapter and rerun teardown" >&2
@@ -1907,7 +1908,7 @@ preflight_firstmate_home_herdr_children() {  # <home>
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen child_worktree_pane
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -1936,7 +1937,23 @@ cleanup_firstmate_home_children() {
           echo "error: herdr session presentation lock is not held for child $child_id; retaining that child's durable identity records and stopping forced cleanup" >&2
           return 1
         fi
+        # A projected child carries a presentation-only worktree tab whose
+        # pane id lives only in the metadata deleted at the bottom of this
+        # loop, so close it here - first, so the task pane's own close is
+        # still what empties and removes the workspace - and refuse the whole
+        # forced cleanup unless it is confirmed gone, exactly like the task
+        # pane below. Empty for a flat child, which then behaves as before.
+        child_worktree_pane=$(meta_value "$child_meta" herdr_worktree_pane_id)
+        if [ -n "$child_worktree_pane" ]; then
+          fm_backend_herdr_projection_close_pane_focus_preserving \
+            "$FM_BACKEND_HERDR_SESSION" "$child_worktree_pane" 2>/dev/null || true
+        fi
         fm_backend_herdr_kill_serialized "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true
+        if [ -n "$child_worktree_pane" ] \
+           && [ "$(fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$child_worktree_pane")" != dead ]; then
+          echo "error: herdr worktree tab pane $child_worktree_pane for child $child_id is not confirmed gone; retaining that child's durable identity records and stopping forced cleanup" >&2
+          return 1
+        fi
         if ! fm_backend_herdr_endpoint_confirmed_gone "$child_t"; then
           echo "error: herdr pane $child_t for child $child_id is not confirmed gone; retaining that child's durable identity records and stopping forced cleanup" >&2
           return 1
@@ -2168,17 +2185,23 @@ HERDR_PRESENTATION_RETIRE_CANDIDATE=0
 HERDR_PRESENTATION_SESSION=
 HERDR_PRESENTATION_PANE=
 HERDR_PRESENTATION_WORKTREE_PANE=
+# Only ever written for a projected task whose extra worktree tab was
+# created and verified at spawn time (bin/backends/herdr.sh
+# fm_backend_herdr_projection_worktree_tab_create_best_effort); empty for
+# every other task, including a projected one that never got one. Read for
+# every herdr task, not just a journal-backed one: its pane id lives only in
+# the metadata erased below, so every path that reaches that removal - the
+# retire path and the plain-kill fallback a quarantined journal takes alike -
+# needs it to close the tab before its only record is gone.
+if [ "$BACKEND" = herdr ]; then
+  fm_backend_source herdr || true
+  HERDR_PRESENTATION_WORKTREE_PANE=$(meta_value "$META" herdr_worktree_pane_id)
+fi
 if [ "$BACKEND" = herdr ] \
    && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
-  fm_backend_source herdr || true
   HERDR_PRESENTATION_SESSION=$(meta_value "$META" herdr_session)
   HERDR_PRESENTATION_WORKSPACE=$(meta_value "$META" herdr_workspace_id)
   HERDR_PRESENTATION_PANE=$(meta_value "$META" herdr_pane_id)
-  # Only ever written for a projected task whose extra worktree tab was
-  # created and verified at spawn time (bin/backends/herdr.sh
-  # fm_backend_herdr_projection_worktree_tab_create_best_effort); empty for
-  # every other task, including a projected one that never got one.
-  HERDR_PRESENTATION_WORKTREE_PANE=$(meta_value "$META" herdr_worktree_pane_id)
   if [ -n "$HERDR_PRESENTATION_SESSION" ] \
      && [ -n "$HERDR_PRESENTATION_WORKSPACE" ] \
      && [ -n "$HERDR_PRESENTATION_PANE" ] \
@@ -2210,6 +2233,14 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   fi
 elif [ "$BACKEND" = herdr ]; then
   if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
+    # Same worktree-tab-first, focus-preserving close as the retire path
+    # above: this fallback also erases the metadata holding the worktree
+    # pane id, so a projected task whose journal is quarantined must still
+    # get its extra tab closed here or nothing can ever close it again.
+    if [ -n "$HERDR_PRESENTATION_WORKTREE_PANE" ]; then
+      fm_backend_herdr_projection_close_pane_focus_preserving \
+        "$TEARDOWN_HERDR_SESSION" "$HERDR_PRESENTATION_WORKTREE_PANE" 2>/dev/null || true
+    fi
     fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null || true
   else
     echo "warning: herdr session presentation lock path is unavailable; skipping the pane close rather than closing unlocked" >&2
@@ -2217,12 +2248,15 @@ elif [ "$BACKEND" = herdr ]; then
 elif [ "$BACKEND" != orca ]; then
   fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
 fi
+# One probe of the worktree pane for the whole run, read once here and reused
+# by both the journal-retire decision and the durable-record gate below, so
+# the two can never disagree about the same pane.
+HERDR_WORKTREE_TAB_CONFIRMED_GONE=1
+if [ "$BACKEND" = herdr ] && [ -n "$HERDR_PRESENTATION_WORKTREE_PANE" ] \
+   && [ "$(fm_backend_herdr_pane_presence_state "$TEARDOWN_HERDR_SESSION" "$HERDR_PRESENTATION_WORKTREE_PANE")" != dead ]; then
+  HERDR_WORKTREE_TAB_CONFIRMED_GONE=0
+fi
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
-  HERDR_WORKTREE_TAB_CONFIRMED_GONE=1
-  if [ -n "$HERDR_PRESENTATION_WORKTREE_PANE" ] \
-     && [ "$(fm_backend_herdr_pane_presence_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKTREE_PANE")" != dead ]; then
-    HERDR_WORKTREE_TAB_CONFIRMED_GONE=0
-  fi
   if [ "$HERDR_WORKTREE_TAB_CONFIRMED_GONE" = 1 ] \
      && [ "$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")" = dead ]; then
     rm -f "$HERDR_PRESENTATION_JOURNAL"
@@ -2249,13 +2283,10 @@ if [ "$BACKEND" = herdr ]; then
   # is only deleted below, so an unconfirmed worktree tab must refuse here
   # too: without this gate its pane id would be lost forever with no route
   # left to close it, stranding it (and the workspace it lives in) for good.
-  # Scoped to the same retire-candidate path that ever attempts this close;
-  # a quarantined-journal task falls back to the pre-existing plain-kill
-  # path above and its worktree tab is left for the same manual Herdr-UI
-  # cleanup every other quarantined presentation remnant already requires.
-  if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ] \
-     && [ -n "$HERDR_PRESENTATION_WORKTREE_PANE" ] \
-     && [ "$(fm_backend_herdr_pane_presence_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKTREE_PANE")" != dead ]; then
+  # Applies to every path that closes the task pane, the retire path and the
+  # quarantined-journal plain-kill fallback alike, since both reach the same
+  # record removal below.
+  if [ "$HERDR_WORKTREE_TAB_CONFIRMED_GONE" != 1 ]; then
     echo "error: herdr worktree tab pane $HERDR_PRESENTATION_WORKTREE_PANE for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - rerun teardown once the close can run under the session lock" >&2
     exit 1
   fi

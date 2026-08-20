@@ -91,8 +91,12 @@ Once the launching agent's own `treehouse get` has claimed and validated the tas
 This tab is created after the normal task tab, never inside the same create call, because the worktree does not exist yet at projection-create time.
 It carries the same non-authoritative status as the task tab and workspace themselves - its existence, label, and cwd grant no ownership, send, capture, teardown, or recovery authority, and normal task metadata remains the sole endpoint authority.
 A create or shape-verification failure here only warns and leaves the worker on its already-working one-tab shape; it never fails or retries the spawn, and a verified-but-unconverged attempt rolls back its own new pane.
-A restart-reclaimed task never creates a new worktree tab; an already-recorded one is carried forward once its pane is reconfirmed present, and reclaim's own exact-shape check accepts the recorded worktree tab as a second live tab alongside the husk being replaced.
+A restart-reclaimed task never creates a new worktree tab; an already-recorded one is carried forward unless its pane is positively confirmed gone, and reclaim's own exact-shape check accepts the recorded worktree tab as a second live tab alongside the husk being replaced.
+Only a structured pane-not-found drops the recorded ids, because that recorded pane id is the only handle cleanup has for closing the tab and an ambiguous read must not discard it.
+If the captain manually closes a task's worktree tab, the next restart's reclaim no longer sees the recorded two-tab shape and falls back to the flat layout instead of staying projected.
+That is an accepted presentation degrade, not data loss: the task relaunches normally and keeps its own metadata, endpoint, and worktree.
 Because closing a workspace's last remaining tab deletes the whole workspace, cleanup always closes this extra tab first (leaving the task tab as the workspace's last one) before closing the task tab itself, so the projected workspace never outlives the task on a successful teardown; an unconfirmed worktree-tab close refuses the whole teardown and retains every durable record, exactly like an unconfirmed task-pane close already does.
+That worktree-tab-first close and its confirmation run on every path that closes a projected task's pane before erasing its records - the normal retire path, the quarantined-journal plain-kill fallback, and forced whole-secondmate-home cleanup alike - so no path can delete the only record of a live worktree pane.
 
 Protocol 16 exposes `workspace.move` over the named session socket but no CLI subcommand.
 `bin/backends/herdr-workspace-move.py` sends only that whitelisted method and verifies the complete returned workspace order.
