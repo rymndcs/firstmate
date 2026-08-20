@@ -1004,6 +1004,7 @@ test_projection_worktree_tab_create_rolls_back_on_shape_mismatch() {
   printf '{"result":{"tab":{"tab_id":"w9:t9"},"root_pane":{"pane_id":"w9:p9"}}}\n' > "$resp/1.out"
   printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t9","label":"fm-task-p2 (worktree)","workspace_id":"w9"},{"tab_id":"w9:t10","label":"stray","workspace_id":"w9"}]}}\n' > "$resp/2.out"
   printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p9","tab_id":"w9:t9"},{"pane_id":"w9:p10","tab_id":"w9:t10"}]}}\n' > "$resp/3.out"
+  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/4.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
     bash -c '
@@ -1020,7 +1021,36 @@ test_projection_worktree_tab_create_rolls_back_on_shape_mismatch() {
     "worktree tab create did not report the shape mismatch"
   assert_contains "$out" "rollback:w9:p9" \
     "a verify mismatch did not roll back the worktree tab's own new pane"
+  assert_not_contains "$out" "recorded in no metadata or journal" \
+    "a rollback that confirmed the pane gone must not report a stranded tab"
   pass "herdr presentation worktree tab: a verify mismatch rolls back its own new pane and refuses"
+}
+
+test_projection_worktree_tab_create_reports_a_rollback_it_cannot_confirm() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/projection-worktree-strand"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tab":{"tab_id":"w9:t9"},"root_pane":{"pane_id":"w9:p9"}}}\n' > "$resp/1.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t9","label":"fm-task-p2 (worktree)","workspace_id":"w9"},{"tab_id":"w9:t10","label":"stray","workspace_id":"w9"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p9","tab_id":"w9:t9"},{"pane_id":"w9:p10","tab_id":"w9:t10"}]}}\n' > "$resp/3.out"
+  printf '{"result":{"pane":{"pane_id":"w9:p9","tab_id":"w9:t9","workspace_id":"w9"}}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }
+      fm_backend_herdr_projection_focus_restore() { return 0; }
+      fm_backend_herdr_projection_close_pane_focus_preserving() { return 1; }
+      fm_backend_herdr_projection_worktree_tab_create_best_effort \
+        fmtest w9 w9:t1 fm-task-p2 /tmp/wt "fm-task-p2 (worktree)"
+    ' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a refused rollback should still refuse the worktree tab, not succeed"
+  assert_contains "$out" "recorded in no metadata or journal" \
+    "a rollback that left the pane alive did not report that nothing records it"
+  assert_contains "$out" "session 'fmtest' workspace 'w9' tab 'w9:t9' pane 'w9:p9'" \
+    "a stranded worktree pane was not named precisely enough to close by hand"
+  pass "herdr presentation worktree tab: a rollback that cannot confirm the close names the stranded pane"
 }
 
 test_projection_worktree_tab_create_rolls_back_when_focus_restore_fails() {
@@ -1028,6 +1058,7 @@ test_projection_worktree_tab_create_rolls_back_when_focus_restore_fails() {
   dir="$TMP_ROOT/projection-worktree-focus-restore"; mkdir -p "$dir/responses"
   log="$dir/log"; resp="$dir/responses"; : > "$log"
   printf '{"result":{"tab":{"tab_id":"w9:t9"},"root_pane":{"pane_id":"w9:p9"}}}\n' > "$resp/1.out"
+  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/2.out"
   fb=$(make_herdr_fakebin "$dir")
   out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
     bash -c '
@@ -4181,6 +4212,7 @@ test_wait_transition_bad_ack_returns_2_and_cleans_up
 test_wait_transition_clean_timeout_returns_1
 test_projection_worktree_tab_create_uses_exact_response_ids
 test_projection_worktree_tab_create_rolls_back_on_shape_mismatch
+test_projection_worktree_tab_create_reports_a_rollback_it_cannot_confirm
 test_projection_worktree_tab_create_rolls_back_when_focus_restore_fails
 test_projection_worktree_tab_create_never_fatal_on_incomplete_ids
 test_projection_cleanup_exact_closes_task_seeded_and_worktree_panes

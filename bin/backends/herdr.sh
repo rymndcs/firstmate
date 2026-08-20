@@ -1946,12 +1946,29 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
 # Never fatal: every failure prints a warning (not an error) and returns 1
 # with both globals left empty, so the caller degrades to the working
 # one-tab shape exactly as the presentation ordering step already does. A
-# create that succeeds but fails its own shape verification is rolled back
-# (its new pane is closed, focus-preserving, best-effort) so a rare
-# double-failure never strands an unverified extra tab.
+# create that succeeds but fails its own shape verification has its new pane
+# rolled back (closed, focus-preserving, best-effort). That rollback can
+# itself refuse - the same transient that failed the verification can also
+# fail the close's own focus snapshot - and nothing durable is ever written
+# for an unverified tab, so a rollback that cannot confirm the pane gone
+# reports the exact session, workspace, tab, and pane on stderr. That
+# warning is the only trace of such a tab; it is not silently stranded, but
+# it does have to be closed by hand in Herdr.
 # On success it sets:
 #   FM_BACKEND_HERDR_PROJECTION_WORKTREE_TAB_ID
 #   FM_BACKEND_HERDR_PROJECTION_WORKTREE_PANE_ID
+
+# fm_backend_herdr_projection_worktree_tab_rollback: close one unverified
+# worktree pane and prove it gone from its structured presence, never from
+# the close's exit status. An unproven removal names every id an operator
+# needs to finish the close by hand.
+fm_backend_herdr_projection_worktree_tab_rollback() {  # <session> <workspace_id> <tab_id> <pane_id>
+  local session=$1 wsid=$2 tab_id=$3 pane_id=$4
+  fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" || true
+  [ "$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")" = dead ] && return 0
+  echo "warning: herdr presentation worktree tab rollback could not confirm its own new pane is gone; session '$session' workspace '$wsid' tab '$tab_id' pane '$pane_id' is left open and is recorded in no metadata or journal - close that exact pane by hand in Herdr" >&2
+  return 1
+}
 fm_backend_herdr_projection_worktree_tab_create_best_effort() {  # <session> <workspace_id> <task_tab_id> <task_label> <cwd> <label>
   local session=$1 wsid=$2 task_tab=$3 task_label=$4 cwd=$5 label=$6
   local focus_before out tab_id pane_id tabs panes tab_count pane_count
@@ -1976,15 +1993,16 @@ fm_backend_herdr_projection_worktree_tab_create_best_effort() {  # <session> <wo
   pane_id=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   if [ -z "$tab_id" ] || [ -z "$pane_id" ]; then
     if [ -n "$pane_id" ]; then
-      fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" || true
+      fm_backend_herdr_projection_worktree_tab_rollback "$session" "$wsid" "$tab_id" "$pane_id" || true
     else
       fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "worktree tab create" || true
+      echo "warning: herdr presentation worktree tab create named no pane to close by; session '$session' workspace '$wsid' tab '${tab_id:-unknown}' may have been created and is recorded nowhere - inspect that workspace by hand in Herdr" >&2
     fi
-    echo "warning: herdr presentation worktree tab create returned incomplete IDs; a tab may have been created and left in place with no pane id to close it by; leaving the worker in its working one-tab shape" >&2
+    echo "warning: herdr presentation worktree tab create returned incomplete IDs; leaving the worker in its working one-tab shape" >&2
     return 1
   fi
   if ! fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "worktree tab create"; then
-    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" || true
+    fm_backend_herdr_projection_worktree_tab_rollback "$session" "$wsid" "$tab_id" "$pane_id" || true
     echo "warning: herdr presentation worktree tab create did not preserve exact active focus; leaving the worker in its working one-tab shape" >&2
     return 1
   fi
@@ -1993,7 +2011,7 @@ fm_backend_herdr_projection_worktree_tab_create_best_effort() {  # <session> <wo
   if [ -z "$tabs" ] || [ -z "$panes" ] \
      || ! printf '%s' "$tabs" | jq -e '(.result.tabs | type) == "array"' >/dev/null 2>&1 \
      || ! printf '%s' "$panes" | jq -e '(.result.panes | type) == "array"' >/dev/null 2>&1; then
-    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" || true
+    fm_backend_herdr_projection_worktree_tab_rollback "$session" "$wsid" "$tab_id" "$pane_id" || true
     echo "warning: herdr presentation worktree tab shape could not be verified; leaving the worker in its working one-tab shape" >&2
     return 1
   fi
@@ -2007,7 +2025,7 @@ fm_backend_herdr_projection_worktree_tab_create_best_effort() {  # <session> <wo
      || ! printf '%s' "$panes" | jq -e --arg pane "$pane_id" --arg wt "$tab_id" '
        ([.result.panes[] | select(.pane_id == $pane and .tab_id == $wt)] | length) == 1
      ' >/dev/null 2>&1; then
-    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" || true
+    fm_backend_herdr_projection_worktree_tab_rollback "$session" "$wsid" "$tab_id" "$pane_id" || true
     echo "warning: herdr presentation worktree tab did not converge to the exact two-tab shape; leaving the worker in its working one-tab shape" >&2
     return 1
   fi

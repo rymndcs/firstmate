@@ -675,6 +675,9 @@ pass "real Herdr lab: bounded lock contention warns and falls back flat without 
 PROJECTION_ORDER_START=$(log_line_count)
 
 [ "$OFF_WT" = "$ON_WT" ] || fail "Treehouse did not reuse the same fixture worktree, so byte comparison is inconclusive"
+if grep -q '^herdr_worktree_' "$OFF_META"; then
+  fail "the flat presentation-spaces-off path wrote a herdr_worktree_ field; normalize_meta drops those lines, so the diff below cannot catch it"
+fi
 normalize_meta "$OFF_META" > "$TMP_ROOT/off.meta.normalized"
 normalize_meta "$ON_META" > "$TMP_ROOT/on.meta.normalized"
 cmp -s "$TMP_ROOT/off.meta.normalized" "$TMP_ROOT/on.meta.normalized" \

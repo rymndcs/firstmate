@@ -2287,7 +2287,7 @@ if [ "$BACKEND" = herdr ]; then
   # quarantined-journal plain-kill fallback alike, since both reach the same
   # record removal below.
   if [ "$HERDR_WORKTREE_TAB_CONFIRMED_GONE" != 1 ]; then
-    echo "error: herdr worktree tab pane $HERDR_PRESENTATION_WORKTREE_PANE for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - rerun teardown once the close can run under the session lock" >&2
+    echo "error: herdr worktree tab pane $HERDR_PRESENTATION_WORKTREE_PANE for $ID is not confirmed gone after its close was refused, skipped, or failed; retaining every durable task record - the usual cause is the captain sitting in that worktree tab, which is never closed out from under an active focus, so move focus to any other tab and rerun teardown once the close can run under the session lock" >&2
     exit 1
   fi
   if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then
