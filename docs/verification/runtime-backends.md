@@ -325,6 +325,10 @@ ok - real Herdr lab: missing, renamed, and duplicate tokens trigger zero destruc
 ok - real Herdr lab validation completed on Herdr 0.7.5 with the default-session tripwire intact
 ```
 
+The projected workspace's two-tab shape - the normal task tab plus a worktree tab whose idle shell is rooted at that task's own validated worktree - and the worktree-tab-first teardown that closes both tabs and removes the workspace are NOT YET VERIFIED against a real Herdr.
+The `shape` scenario of `tests/fm-backend-herdr-presentation-e2e.test.sh` asserts both, but no lab run of that suite exists for the code that shipped them: GitHub Actions has been unavailable account-wide since 2026-08-15, and the sandbox that authored the change could not safely re-run the lab against the final committed state.
+Until a dated run is recorded here, only the deterministic coverage in `tests/fm-backend-herdr.test.sh` and `tests/fm-teardown.test.sh` backs these two guarantees.
+
 The restored-shell session-start cleanup ran on 2026-07-24 against Herdr 0.7.5 protocol 17:
 
 ```sh
