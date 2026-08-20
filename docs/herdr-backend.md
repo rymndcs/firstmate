@@ -101,6 +101,9 @@ The one further consequence is that the flat-fallback relaunch abandons the old 
 That a Herdr daemon restart preserves the worktree tab the same way it preserves a task's own husk pane is an INFERRED ASSUMPTION, not a verified fact: it is extrapolated from the separately verified task-pane-survives-restart behavior and has never been checked for an idle worktree shell.
 Because closing a workspace's last remaining tab deletes the whole workspace, cleanup always closes this extra tab first (leaving the task tab as the workspace's last one) before closing the task tab itself, so the projected workspace never outlives the task on a successful teardown; an unconfirmed worktree-tab close refuses the whole teardown and retains every durable record, exactly like an unconfirmed task-pane close already does.
 That worktree-tab-first close and its confirmation run on every path that closes a projected task's pane before erasing its records - the normal retire path, the quarantined-journal plain-kill fallback, and forced whole-secondmate-home cleanup alike - so no path can delete the only record of a live worktree pane.
+Cleanup that runs for a task while the captain is sitting in that task's own worktree tab cannot close the captain's active tab without moving focus, so it refuses instead.
+Every durable record is retained, and each rerun refuses the same way for as long as focus stays on that tab.
+Switching to any other tab lets the next run finish normally; no data or work is lost at any point.
 
 Protocol 16 exposes `workspace.move` over the named session socket but no CLI subcommand.
 `bin/backends/herdr-workspace-move.py` sends only that whitelisted method and verifies the complete returned workspace order.

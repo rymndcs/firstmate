@@ -2206,10 +2206,19 @@ case "\${1:-} \${2:-}" in
       printf '%s\n' '{"sessions":[{"name":"childsession","running":true,"socket_path":"$case_dir/child.sock"}]}'
     fi
     ;;
-  "workspace list") exit 1 ;;
+  "workspace list")
+    printf '%s\n' '{"result":{"workspaces":[{"workspace_id":"wF","active_tab_id":"wF:t1","label":"captain","focused":true},{"workspace_id":"wC","active_tab_id":"wC:t1","label":"child","focused":false}]}}'
+    ;;
+  "tab list")
+    case "\$*" in
+      *"--workspace wF"*) printf '%s\n' '{"result":{"tabs":[{"tab_id":"wF:t1","focused":true}]}}' ;;
+      *) printf '%s\n' '{"result":{"tabs":[]}}' ;;
+    esac
+    ;;
   "pane get")
     if grep -qxF "\${3:-}" "\${FM_FAKE_HERDR_CLOSED:?}" 2>/dev/null; then
-      if [ "\${FM_FAKE_HERDR_PRESENCE_UNKNOWN:-0}" = 1 ]; then
+      if [ "\${FM_FAKE_HERDR_PRESENCE_UNKNOWN:-0}" = 1 ] \
+         || [ "\${FM_FAKE_HERDR_PRESENCE_UNKNOWN_PANE:-}" = "\${3:-}" ]; then
         printf '%s\n' 'not-json'
       else
         printf '%s\n' '{"error":{"code":"pane_not_found"}}' >&2
@@ -2287,9 +2296,12 @@ test_forced_secondmate_projected_child_retains_records_when_worktree_close_uncon
   log="$case_dir/herdr.log"; closed="$case_dir/closed"; : > "$log"
   rc=0
   FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+    FM_FAKE_HERDR_PRESENCE_UNKNOWN_PANE=wC:p9 \
     run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" || rc=$?
   [ "$rc" -ne 0 ] \
     || fail "herdr-child-worktree-unconfirmed: forced cleanup erased a projected child whose worktree pane is still live"
+  [ -n "$(herdr_log_close_index "$log" wC:p9)" ] \
+    || fail "herdr-child-worktree-unconfirmed: the regression did not exercise an attempted child worktree-pane close"
   [ -e "$home/state/child-herdr.meta" ] \
     || fail "herdr-child-worktree-unconfirmed: an unconfirmed worktree close erased the only record of the worktree pane"
   [ -e "$home/state/child-herdr.status" ] \
@@ -2301,6 +2313,37 @@ test_forced_secondmate_projected_child_retains_records_when_worktree_close_uncon
   assert_grep "worktree tab pane wC:p9 for child child-herdr is not confirmed gone" "$case_dir/stderr" \
     "herdr-child-worktree-unconfirmed: the refusal did not name the child's unconfirmed worktree pane"
   pass "forced secondmate teardown retains a projected child's records until its worktree pane is confirmed gone"
+}
+
+test_forced_secondmate_projected_child_closes_worktree_pane_before_task_pane() {
+  local case_dir home log closed thlog wt_at task_at
+  case_dir=$(make_case herdr-child-worktree-close)
+  write_meta "$case_dir" local-only secondmate
+  configure_secondmate_with_herdr_child "$case_dir" projected
+  home="$case_dir/secondmate-home"
+  log="$case_dir/herdr.log"; closed="$case_dir/closed"; thlog="$case_dir/treehouse.log"
+  : > "$log"; : > "$thlog"
+  cat > "$case_dir/fakebin/treehouse" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$thlog"
+exit 0
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+  FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
+    run_teardown "$case_dir" --force > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "herdr-child-worktree-close: forced cleanup failed for a fully confirmed projected child"
+  wt_at=$(herdr_log_close_index "$log" wC:p9)
+  task_at=$(herdr_log_close_index "$log" wC:p1)
+  [ -n "$wt_at" ] \
+    || fail "herdr-child-worktree-close: forced cleanup erased the child meta without closing its worktree pane"
+  [ -n "$task_at" ] || fail "herdr-child-worktree-close: forced cleanup never closed the child task pane"
+  [ "$wt_at" -lt "$task_at" ] \
+    || fail "herdr-child-worktree-close: the worktree pane must close before the task pane so the task pane's own close still empties the workspace"
+  [ ! -e "$home/state/child-herdr.meta" ] \
+    || fail "herdr-child-worktree-close: a fully confirmed close left the child's durable metadata behind"
+  [ ! -d "$home" ] \
+    || fail "herdr-child-worktree-close: a fully confirmed close left the secondmate home behind"
+  pass "forced secondmate teardown closes a projected child's worktree pane before its task pane and then completes"
 }
 
 configure_nested_secondmate_with_herdr_grandchild() {  # <case-dir>
@@ -2700,6 +2743,7 @@ test_herdr_flat_teardown_preflight_refuses_before_changes
 test_forced_secondmate_herdr_child_preflight_refuses_before_changes
 test_forced_secondmate_herdr_child_retains_records_when_close_unconfirmed
 test_forced_secondmate_projected_child_retains_records_when_worktree_close_unconfirmed
+test_forced_secondmate_projected_child_closes_worktree_pane_before_task_pane
 test_forced_teardown_retains_nested_secondmate_home_when_grandchild_close_unconfirmed
 test_herdr_projection_teardown_retires_journal_only_after_confirmed_close
 test_herdr_projection_teardown_retains_journal_when_close_unconfirmed

@@ -1755,6 +1755,7 @@ case "$BACKEND" in
               HERDR_PROJECTION_ABORT_SESSION=$HERDR_SES
               HERDR_PROJECTION_ABORT_TASK_PANE=$HERDR_PANE_ID
               HERDR_PROJECTION_ABORT_SEEDED_PANE=""
+              HERDR_PROJECTION_ABORT_WORKTREE_PANE=$HERDR_WORKTREE_PANE_ID
               ;;
             2)
               spawn_herdr_presentation_order_lock_release
