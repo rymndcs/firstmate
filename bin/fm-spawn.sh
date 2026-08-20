@@ -2054,13 +2054,35 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 
   validate_spawn_worktree "treehouse get" "$T"
 
+  # A carried-forward worktree tab is an idle shell fixed at the --cwd of the
+  # copy the PREVIOUS run held. `treehouse get` draws an interchangeable
+  # worktree from a shared pool and takes no task binding, so this run's $WT
+  # can be a different copy - and a recycled one can later belong to another
+  # task. Verify the recorded pane's live cwd against the exact validated $WT
+  # and re-root on any mismatch (an unreadable cwd counts as one) rather than
+  # leaving the captain a tab pointed at an abandoned copy.
+  if [ "${HERDR_PROJECTED:-0}" -eq 1 ] && [ -n "${HERDR_WORKTREE_PANE_ID:-}" ]; then
+    HERDR_WORKTREE_PANE_CWD=$(spawn_current_path "$HERDR_SES:$HERDR_WORKTREE_PANE_ID" 2>/dev/null || true)
+    if [ -z "$HERDR_WORKTREE_PANE_CWD" ] \
+       || [ "$(real_path_or_raw "$HERDR_WORKTREE_PANE_CWD")" != "$(real_path_or_raw "$WT")" ]; then
+      fm_backend_herdr_projection_close_pane_focus_preserving \
+        "$HERDR_SES" "$HERDR_WORKTREE_PANE_ID" 2>/dev/null || true
+      if [ "$(fm_backend_herdr_pane_presence_state "$HERDR_SES" "$HERDR_WORKTREE_PANE_ID")" != dead ]; then
+        echo "warning: herdr presentation could not confirm the stale worktree pane is gone; session '$HERDR_SES' pane '$HERDR_WORKTREE_PANE_ID' is left open and is dropped from this task's metadata - close that exact pane by hand in Herdr" >&2
+      fi
+      HERDR_WORKTREE_TAB_ID=""
+      HERDR_WORKTREE_PANE_ID=""
+    fi
+  fi
+
   # A second, presentation-only tab rooted at this task's own worktree, added
   # only now: the worktree did not exist (and $WT was not validated) at
   # projection-create time above. Never fatal - a create or verify failure
   # here only warns and leaves the worker in its already-working one-tab
   # shape, exactly like the ordering step's own best-effort degrade.
-  # HERDR_WORKTREE_PANE_ID already non-empty (a reclaimed task's pre-existing
-  # worktree tab, reconfirmed present above) means this run never touches it.
+  # HERDR_WORKTREE_PANE_ID still non-empty here means a reclaimed task's
+  # pre-existing worktree tab was reconfirmed present AND proved to be rooted
+  # at this run's own worktree, so this run leaves it alone.
   if [ "${HERDR_PROJECTED:-0}" -eq 1 ] && [ -z "${HERDR_WORKTREE_PANE_ID:-}" ]; then
     HERDR_WORKTREE_LABEL="$W (worktree)"
     if FM_HOME="$HERDR_LABEL_HOME" fm_backend_herdr_projection_worktree_tab_create_best_effort \

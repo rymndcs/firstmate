@@ -1100,6 +1100,31 @@ test_projection_worktree_tab_create_never_fatal_on_incomplete_ids() {
   pass "herdr presentation worktree tab: an incomplete create response warns and refuses without further calls"
 }
 
+test_projection_worktree_tab_create_restores_focus_when_only_the_tab_id_is_missing() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/projection-worktree-no-tab-id"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"root_pane":{"pane_id":"w9:p9"}}}\n' > "$resp/1.out"
+  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }
+      fm_backend_herdr_projection_focus_restore() { printf "restore:%s:%s\n" "$2" "$3"; return 0; }
+      fm_backend_herdr_projection_close_pane_focus_preserving() { printf "rollback:%s\n" "$2"; }
+      fm_backend_herdr_projection_worktree_tab_create_best_effort \
+        fmtest w9 w9:t1 fm-task-p2 /tmp/wt "fm-task-p2 (worktree)"
+    ' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a create response missing its tab id should refuse, not succeed"
+  assert_contains "$out" "restore:captain-ws	captain-tab:worktree tab create" \
+    "a create that returned no tab id skipped verifying focus against the exact pre-create snapshot"
+  assert_contains "$out" "rollback:w9:p9" \
+    "a create that returned no tab id did not roll back the pane it did return"
+  pass "herdr presentation worktree tab: a create missing only its tab id still verifies pre-create focus"
+}
+
 # --- projection_cleanup_exact: task, seeded, and worktree pane teardown -----
 
 test_projection_cleanup_exact_closes_task_seeded_and_worktree_panes() {
@@ -4215,6 +4240,7 @@ test_projection_worktree_tab_create_rolls_back_on_shape_mismatch
 test_projection_worktree_tab_create_reports_a_rollback_it_cannot_confirm
 test_projection_worktree_tab_create_rolls_back_when_focus_restore_fails
 test_projection_worktree_tab_create_never_fatal_on_incomplete_ids
+test_projection_worktree_tab_create_restores_focus_when_only_the_tab_id_is_missing
 test_projection_cleanup_exact_closes_task_seeded_and_worktree_panes
 test_projection_cleanup_exact_skips_duplicate_worktree_pane
 test_live_binding_matches_accepts_exact_two_tab_worktree_shape

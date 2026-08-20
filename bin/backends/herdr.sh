@@ -1992,10 +1992,10 @@ fm_backend_herdr_projection_worktree_tab_create_best_effort() {  # <session> <wo
   tab_id=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   pane_id=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   if [ -z "$tab_id" ] || [ -z "$pane_id" ]; then
+    fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "worktree tab create" || true
     if [ -n "$pane_id" ]; then
-      fm_backend_herdr_projection_worktree_tab_rollback "$session" "$wsid" "$tab_id" "$pane_id" || true
+      fm_backend_herdr_projection_worktree_tab_rollback "$session" "$wsid" "${tab_id:-unknown}" "$pane_id" || true
     else
-      fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "worktree tab create" || true
       echo "warning: herdr presentation worktree tab create named no pane to close by; session '$session' workspace '$wsid' tab '${tab_id:-unknown}' may have been created and is recorded nowhere - inspect that workspace by hand in Herdr" >&2
     fi
     echo "warning: herdr presentation worktree tab create returned incomplete IDs; leaving the worker in its working one-tab shape" >&2
