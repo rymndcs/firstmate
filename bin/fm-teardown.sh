@@ -1800,6 +1800,7 @@ teardown_herdr_require_prerequisites() {  # <task-id>
     fm_backend_herdr_workspace_presence_state \
     fm_backend_herdr_endpoint_confirmed_gone \
     fm_backend_herdr_explicit_close_pane_confirmed \
+    fm_backend_herdr_projection_close_pane_focus_preserving \
     fm_backend_herdr_presentation_session_lock_path; do
     if ! declare -F "$prerequisite" >/dev/null 2>&1; then
       echo "error: herdr teardown prerequisites are unavailable for $task_id; nothing was changed - restore the adapter and rerun teardown" >&2
@@ -1907,7 +1908,7 @@ preflight_firstmate_home_herdr_children() {  # <home>
 }
 
 cleanup_firstmate_home_children() {
-  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen
+  local home=$1 sub_state child_meta child_id child_t child_wt child_proj child_kind child_home child_backend child_orca_worktree_id child_return_rc child_busy_gen child_worktree_pane
   sub_state="$home/state"
   [ -d "$sub_state" ] || return 0
   for child_meta in "$sub_state"/*.meta; do
@@ -1935,6 +1936,26 @@ cleanup_firstmate_home_children() {
         if ! teardown_herdr_session_lock_held "$FM_BACKEND_HERDR_SESSION"; then
           echo "error: herdr session presentation lock is not held for child $child_id; retaining that child's durable identity records and stopping forced cleanup" >&2
           return 1
+        fi
+        # A projected child carries a presentation-only worktree tab whose
+        # pane id lives only in the metadata deleted at the bottom of this
+        # loop, so close it here - first, so the task pane's own close is
+        # still what empties and removes the workspace - and refuse the whole
+        # forced cleanup unless it is confirmed gone, exactly like the task
+        # pane below. Empty for a flat child, which then behaves as before.
+        child_worktree_pane=$(meta_value "$child_meta" herdr_worktree_pane_id)
+        if [ -n "$child_worktree_pane" ]; then
+          fm_backend_herdr_projection_close_pane_focus_preserving \
+            "$FM_BACKEND_HERDR_SESSION" "$child_worktree_pane" 2>/dev/null || true
+          # Confirmed before the task pane is killed, not after: an
+          # unconfirmed worktree tab means that kill could not empty the
+          # workspace anyway, so refusing here leaves the child's agent pane
+          # and every record intact for a plain rerun instead of destroying
+          # the pane and then refusing.
+          if [ "$(fm_backend_herdr_pane_presence_state "$FM_BACKEND_HERDR_SESSION" "$child_worktree_pane")" != dead ]; then
+            echo "error: herdr worktree tab pane $child_worktree_pane for child $child_id is not confirmed gone; retaining that child's durable identity records and its task pane, and stopping forced cleanup" >&2
+            return 1
+          fi
         fi
         fm_backend_herdr_kill_serialized "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" 2>/dev/null || true
         if ! fm_backend_herdr_endpoint_confirmed_gone "$child_t"; then
@@ -2167,9 +2188,21 @@ HERDR_PRESENTATION_JOURNAL="$STATE/$ID.herdr-presentation"
 HERDR_PRESENTATION_RETIRE_CANDIDATE=0
 HERDR_PRESENTATION_SESSION=
 HERDR_PRESENTATION_PANE=
+HERDR_PRESENTATION_WORKTREE_PANE=
+# Only ever written for a projected task whose extra worktree tab was
+# created and verified at spawn time (bin/backends/herdr.sh
+# fm_backend_herdr_projection_worktree_tab_create_best_effort); empty for
+# every other task, including a projected one that never got one. Read for
+# every herdr task, not just a journal-backed one: its pane id lives only in
+# the metadata erased below, so every path that reaches that removal - the
+# retire path and the plain-kill fallback a quarantined journal takes alike -
+# needs it to close the tab before its only record is gone.
+if [ "$BACKEND" = herdr ]; then
+  fm_backend_source herdr || true
+  HERDR_PRESENTATION_WORKTREE_PANE=$(meta_value "$META" herdr_worktree_pane_id)
+fi
 if [ "$BACKEND" = herdr ] \
    && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
-  fm_backend_source herdr || true
   HERDR_PRESENTATION_SESSION=$(meta_value "$META" herdr_session)
   HERDR_PRESENTATION_WORKSPACE=$(meta_value "$META" herdr_workspace_id)
   HERDR_PRESENTATION_PANE=$(meta_value "$META" herdr_pane_id)
@@ -2188,6 +2221,15 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   # The presentation lock was acquired before the worktree return above; a
   # contended lock already refused this teardown while everything was intact.
   if teardown_herdr_session_lock_held "$HERDR_PRESENTATION_SESSION"; then
+    # Close the worktree tab first: with it gone the task pane below is the
+    # workspace's last tab, so closing it is what removes the whole
+    # workspace, exactly as it already did before this tab existed. Closing
+    # them in the other order would leave the worktree tab as a residual
+    # single-tab space once the task pane's own close empties nothing.
+    if [ -n "$HERDR_PRESENTATION_WORKTREE_PANE" ]; then
+      fm_backend_herdr_projection_close_pane_focus_preserving \
+        "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_WORKTREE_PANE" 2>/dev/null || true
+    fi
     fm_backend_herdr_projection_close_pane_focus_preserving \
       "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE" 2>/dev/null || true
   else
@@ -2195,6 +2237,14 @@ if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
   fi
 elif [ "$BACKEND" = herdr ]; then
   if teardown_herdr_session_lock_held "$TEARDOWN_HERDR_SESSION"; then
+    # Same worktree-tab-first, focus-preserving close as the retire path
+    # above: this fallback also erases the metadata holding the worktree
+    # pane id, so a projected task whose journal is quarantined must still
+    # get its extra tab closed here or nothing can ever close it again.
+    if [ -n "$HERDR_PRESENTATION_WORKTREE_PANE" ]; then
+      fm_backend_herdr_projection_close_pane_focus_preserving \
+        "$TEARDOWN_HERDR_SESSION" "$HERDR_PRESENTATION_WORKTREE_PANE" 2>/dev/null || true
+    fi
     fm_backend_herdr_kill_serialized "$TEARDOWN_HERDR_SESSION" "$TEARDOWN_HERDR_PANE" 2>/dev/null || true
   else
     echo "warning: herdr session presentation lock path is unavailable; skipping the pane close rather than closing unlocked" >&2
@@ -2202,11 +2252,20 @@ elif [ "$BACKEND" = herdr ]; then
 elif [ "$BACKEND" != orca ]; then
   fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
 fi
+# One probe of the worktree pane for the whole run, read once here and reused
+# by both the journal-retire decision and the durable-record gate below, so
+# the two can never disagree about the same pane.
+HERDR_WORKTREE_TAB_CONFIRMED_GONE=1
+if [ "$BACKEND" = herdr ] && [ -n "$HERDR_PRESENTATION_WORKTREE_PANE" ] \
+   && [ "$(fm_backend_herdr_pane_presence_state "$TEARDOWN_HERDR_SESSION" "$HERDR_PRESENTATION_WORKTREE_PANE")" != dead ]; then
+  HERDR_WORKTREE_TAB_CONFIRMED_GONE=0
+fi
 if [ "$HERDR_PRESENTATION_RETIRE_CANDIDATE" = 1 ]; then
-  if [ "$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")" = dead ]; then
+  if [ "$HERDR_WORKTREE_TAB_CONFIRMED_GONE" = 1 ] \
+     && [ "$(fm_backend_herdr_pane_agent_state "$HERDR_PRESENTATION_SESSION" "$HERDR_PRESENTATION_PANE")" = dead ]; then
     rm -f "$HERDR_PRESENTATION_JOURNAL"
   else
-    echo "warning: exact herdr task-pane close could not be confirmed for $ID; retaining the presentation journal and attempting no workspace cleanup" >&2
+    echo "warning: exact herdr task-pane or worktree-tab close could not be confirmed for $ID; retaining the presentation journal and attempting no workspace cleanup" >&2
   fi
 elif [ "$BACKEND" = herdr ] \
      && { [ -e "$HERDR_PRESENTATION_JOURNAL" ] || [ -L "$HERDR_PRESENTATION_JOURNAL" ]; }; then
@@ -2222,6 +2281,23 @@ if [ "$BACKEND" = herdr ]; then
   fm_backend_source herdr || true
   if ! declare -F fm_backend_herdr_endpoint_confirmed_gone >/dev/null 2>&1; then
     echo "error: herdr endpoint confirmation is unavailable for $ID; retaining every durable task record" >&2
+    exit 1
+  fi
+  # Every durable record - including this task's own herdr_worktree_pane_id -
+  # is only deleted below, so an unconfirmed worktree tab must refuse here
+  # too: without this gate its pane id would be lost forever with no route
+  # left to close it, stranding it (and the workspace it lives in) for good.
+  # Applies to every path that closes the task pane, the retire path and the
+  # quarantined-journal plain-kill fallback alike, since both reach the same
+  # record removal below.
+  # Unlike the pre-return refusals earlier in this file, this gate sits AFTER
+  # the worktree return and branch delete, so it guarantees only that the
+  # durable records survive - not that nothing has changed yet. The isolated
+  # copy is already back in the pool and its local branch already gone by the
+  # time it fires, so a rerun resumes from that state rather than from an
+  # untouched one; the message says so rather than implying otherwise.
+  if [ "$HERDR_WORKTREE_TAB_CONFIRMED_GONE" != 1 ]; then
+    echo "error: herdr worktree tab pane $HERDR_PRESENTATION_WORKTREE_PANE for $ID is not confirmed gone after its close was refused, skipped, or failed; the usual cause is the captain sitting in that worktree tab, which is never closed out from under an active focus, so move focus to any other tab and rerun teardown - this task's durable metadata and presentation journal are retained so its identity and that pending tab close are not lost, but note this refusal lands after the isolated copy was already returned to the Treehouse pool and its local branch deleted, so unlike an earlier-stage refusal it does not leave the worktree and branch intact" >&2
     exit 1
   fi
   if ! fm_backend_herdr_endpoint_confirmed_gone "$T"; then

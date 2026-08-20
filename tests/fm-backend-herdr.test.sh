@@ -972,6 +972,289 @@ test_projection_create_never_closes_a_concurrent_same_label_tab() {
   pass "herdr presentation create: concurrent same-label tabs are never prune targets"
 }
 
+# --- projection_worktree_tab_create_best_effort: worker-space worktree tab --
+
+test_projection_worktree_tab_create_uses_exact_response_ids() {
+  local dir log resp fb out
+  dir="$TMP_ROOT/projection-worktree-create"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tab":{"tab_id":"w9:t9"},"root_pane":{"pane_id":"w9:p9"}}}\n' > "$resp/1.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t9","label":"fm-task-p2 (worktree)","workspace_id":"w9"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p9","tab_id":"w9:t9"}]}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }
+      fm_backend_herdr_projection_focus_restore() { return 0; }
+      fm_backend_herdr_projection_worktree_tab_create_best_effort \
+        fmtest w9 w9:t1 fm-task-p2 /tmp/wt "fm-task-p2 (worktree)" || exit 1
+      printf "%s %s\n" "$FM_BACKEND_HERDR_PROJECTION_WORKTREE_TAB_ID" "$FM_BACKEND_HERDR_PROJECTION_WORKTREE_PANE_ID"
+    ' "$ROOT") || fail "worktree tab create should succeed from complete exact responses"
+  [ "$out" = "w9:t9 w9:p9" ] || fail "worktree tab create did not retain exact response IDs: $out"
+  assert_contains "$(cat "$log")" $'tab\x1fcreate\x1f--workspace\x1fw9\x1f--cwd\x1f/tmp/wt\x1f--label\x1ffm-task-p2 (worktree)\x1f--no-focus' \
+    "worktree tab create did not target the exact workspace, cwd, label, and --no-focus"
+  pass "herdr presentation worktree tab: exact response IDs converge to the two-tab shape"
+}
+
+test_projection_worktree_tab_create_rolls_back_on_shape_mismatch() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/projection-worktree-mismatch"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tab":{"tab_id":"w9:t9"},"root_pane":{"pane_id":"w9:p9"}}}\n' > "$resp/1.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t9","label":"fm-task-p2 (worktree)","workspace_id":"w9"},{"tab_id":"w9:t10","label":"stray","workspace_id":"w9"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p9","tab_id":"w9:t9"},{"pane_id":"w9:p10","tab_id":"w9:t10"}]}}\n' > "$resp/3.out"
+  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }
+      fm_backend_herdr_projection_focus_restore() { return 0; }
+      fm_backend_herdr_projection_close_pane_focus_preserving() { printf "rollback:%s\n" "$2"; }
+      fm_backend_herdr_projection_worktree_tab_create_best_effort \
+        fmtest w9 w9:t1 fm-task-p2 /tmp/wt "fm-task-p2 (worktree)"
+    ' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "an unexpected extra tab should refuse worktree tab convergence"
+  assert_contains "$out" "did not converge to the exact two-tab shape" \
+    "worktree tab create did not report the shape mismatch"
+  assert_contains "$out" "rollback:w9:p9" \
+    "a verify mismatch did not roll back the worktree tab's own new pane"
+  assert_not_contains "$out" "recorded in no metadata or journal" \
+    "a rollback that confirmed the pane gone must not report a stranded tab"
+  pass "herdr presentation worktree tab: a verify mismatch rolls back its own new pane and refuses"
+}
+
+test_projection_worktree_tab_create_reports_a_rollback_it_cannot_confirm() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/projection-worktree-strand"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tab":{"tab_id":"w9:t9"},"root_pane":{"pane_id":"w9:p9"}}}\n' > "$resp/1.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"fm-task-p2","workspace_id":"w9"},{"tab_id":"w9:t9","label":"fm-task-p2 (worktree)","workspace_id":"w9"},{"tab_id":"w9:t10","label":"stray","workspace_id":"w9"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p9","tab_id":"w9:t9"},{"pane_id":"w9:p10","tab_id":"w9:t10"}]}}\n' > "$resp/3.out"
+  printf '{"result":{"pane":{"pane_id":"w9:p9","tab_id":"w9:t9","workspace_id":"w9"}}}\n' > "$resp/4.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }
+      fm_backend_herdr_projection_focus_restore() { return 0; }
+      fm_backend_herdr_projection_close_pane_focus_preserving() { return 1; }
+      fm_backend_herdr_projection_worktree_tab_create_best_effort \
+        fmtest w9 w9:t1 fm-task-p2 /tmp/wt "fm-task-p2 (worktree)"
+    ' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a refused rollback should still refuse the worktree tab, not succeed"
+  assert_contains "$out" "recorded in no metadata or journal" \
+    "a rollback that left the pane alive did not report that nothing records it"
+  assert_contains "$out" "session 'fmtest' workspace 'w9' tab 'w9:t9' pane 'w9:p9'" \
+    "a stranded worktree pane was not named precisely enough to close by hand"
+  pass "herdr presentation worktree tab: a rollback that cannot confirm the close names the stranded pane"
+}
+
+test_projection_worktree_tab_create_rolls_back_when_focus_restore_fails() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/projection-worktree-focus-restore"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tab":{"tab_id":"w9:t9"},"root_pane":{"pane_id":"w9:p9"}}}\n' > "$resp/1.out"
+  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }
+      fm_backend_herdr_projection_focus_restore() { return 1; }
+      fm_backend_herdr_projection_close_pane_focus_preserving() { printf "rollback:%s\n" "$2"; }
+      fm_backend_herdr_projection_worktree_tab_create_best_effort \
+        fmtest w9 w9:t1 fm-task-p2 /tmp/wt "fm-task-p2 (worktree)"
+    ' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a failed focus restoration should refuse, not succeed"
+  assert_contains "$out" "did not preserve exact active focus" \
+    "a failed focus restoration did not report why the tab was refused"
+  assert_contains "$out" "rollback:w9:p9" \
+    "a created tab whose focus restoration failed was stranded instead of rolled back"
+  pass "herdr presentation worktree tab: a failed focus restoration still rolls back its own new pane"
+}
+
+test_projection_worktree_tab_create_never_fatal_on_incomplete_ids() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/projection-worktree-incomplete"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"tab":{"tab_id":"w9:t9"}}}\n' > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }
+      fm_backend_herdr_projection_focus_restore() { return 0; }
+      fm_backend_herdr_projection_worktree_tab_create_best_effort \
+        fmtest w9 w9:t1 fm-task-p2 /tmp/wt "fm-task-p2 (worktree)"
+    ' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "an incomplete create response should refuse, not succeed"
+  assert_contains "$out" "warning:" "an incomplete create response must warn, never error"
+  assert_not_contains "$(cat "$log")" $'\x1ftab\x1flist' \
+    "an incomplete create response should never proceed to shape verification"
+  pass "herdr presentation worktree tab: an incomplete create response warns and refuses without further calls"
+}
+
+test_projection_worktree_tab_create_restores_focus_when_only_the_tab_id_is_missing() {
+  local dir log resp fb out status
+  dir="$TMP_ROOT/projection-worktree-no-tab-id"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"root_pane":{"pane_id":"w9:p9"}}}\n' > "$resp/1.out"
+  printf '{"error":{"code":"pane_not_found"}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  out=$(PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_focus_snapshot() { printf "captain-ws\tcaptain-tab"; }
+      fm_backend_herdr_projection_focus_restore() { printf "restore:%s:%s\n" "$2" "$3"; return 0; }
+      fm_backend_herdr_projection_close_pane_focus_preserving() { printf "rollback:%s\n" "$2"; }
+      fm_backend_herdr_projection_worktree_tab_create_best_effort \
+        fmtest w9 w9:t1 fm-task-p2 /tmp/wt "fm-task-p2 (worktree)"
+    ' "$ROOT" 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "a create response missing its tab id should refuse, not succeed"
+  assert_contains "$out" "restore:captain-ws	captain-tab:worktree tab create" \
+    "a create that returned no tab id skipped verifying focus against the exact pre-create snapshot"
+  assert_contains "$out" "rollback:w9:p9" \
+    "a create that returned no tab id did not roll back the pane it did return"
+  pass "herdr presentation worktree tab: a create missing only its tab id still verifies pre-create focus"
+}
+
+# --- projection_worktree_tab_rooted_at: carried-forward tab re-root check ---
+
+# assert_worktree_tab_rooted <case> <expected-rc> <pane-get-response-json>
+# <worktree-arg> <message>: drive the real check against a fake `pane get`.
+# Each case builds its own real directories so the symlink resolution both
+# sides go through is exercised, not stubbed.
+assert_worktree_tab_rooted() {  # <case> <expected-rc> <response> <worktree> <message>
+  local case_name=$1 expected=$2 response=$3 worktree=$4 message=$5
+  local dir log resp fb status
+  dir="$TMP_ROOT/worktree-rooted-$case_name"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' "$response" > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_worktree_tab_rooted_at fmtest w9:p9 "$1"
+    ' "$ROOT" "$worktree"
+  status=$?
+  [ "$status" -eq "$expected" ] || fail "$message (expected rc $expected, got $status)"
+}
+
+test_projection_worktree_tab_rooted_at_accepts_the_worktree_and_its_subdirectories() {
+  local wt
+  wt="$TMP_ROOT/worktree-rooted-fixture/wt"; mkdir -p "$wt/src/deep"
+  assert_worktree_tab_rooted root 0 \
+    "{\"result\":{\"pane\":{\"foreground_cwd\":\"$wt\"}}}" "$wt" \
+    "a pane sitting at the worktree root must count as correctly rooted"
+  assert_worktree_tab_rooted subdir 0 \
+    "{\"result\":{\"pane\":{\"foreground_cwd\":\"$wt/src/deep\"}}}" "$wt" \
+    "a captain who navigated into a subdirectory must not make the tab stale"
+  pass "fm_backend_herdr_projection_worktree_tab_rooted_at: the worktree root and any subdirectory beneath it count as rooted"
+}
+
+test_projection_worktree_tab_rooted_at_refuses_a_different_copy() {
+  local wt other sibling
+  wt="$TMP_ROOT/worktree-rooted-other/wt"; mkdir -p "$wt"
+  other="$TMP_ROOT/worktree-rooted-other/wt-2"; mkdir -p "$other/src"
+  sibling="$TMP_ROOT/worktree-rooted-other/wt-sibling"; mkdir -p "$sibling"
+  assert_worktree_tab_rooted other 1 \
+    "{\"result\":{\"pane\":{\"foreground_cwd\":\"$other/src\"}}}" "$wt" \
+    "a pane rooted in a different pooled copy must be reported stale"
+  assert_worktree_tab_rooted prefix 1 \
+    "{\"result\":{\"pane\":{\"foreground_cwd\":\"$sibling\"}}}" "$wt" \
+    "a sibling path that merely shares the worktree's name prefix must not count as nested"
+  pass "fm_backend_herdr_projection_worktree_tab_rooted_at: a pane in another copy - or a mere name-prefix sibling - is stale"
+}
+
+test_projection_worktree_tab_rooted_at_never_trusts_an_unread_cwd() {
+  local wt
+  wt="$TMP_ROOT/worktree-rooted-unread/wt"; mkdir -p "$wt"
+  assert_worktree_tab_rooted empty 1 \
+    '{"result":{"pane":{}}}' "$wt" \
+    "a pane whose cwd cannot be read must be treated as stale, never trusted as a match"
+  assert_worktree_tab_rooted gone 1 \
+    "{\"result\":{\"pane\":{\"foreground_cwd\":\"$TMP_ROOT/worktree-rooted-unread/vanished\"}}}" "$wt" \
+    "a cwd that no longer resolves must be treated as stale"
+  assert_worktree_tab_rooted no-worktree 1 \
+    "{\"result\":{\"pane\":{\"foreground_cwd\":\"$wt\"}}}" "" \
+    "a missing worktree argument must refuse rather than match"
+  pass "fm_backend_herdr_projection_worktree_tab_rooted_at: an unreadable, unresolvable, or missing path is stale, never a match"
+}
+
+# --- projection_cleanup_exact: task, seeded, and worktree pane teardown -----
+
+test_projection_cleanup_exact_closes_task_seeded_and_worktree_panes() {
+  local out
+  out=$(bash -c '
+    . "$0/bin/backends/herdr.sh"
+    fm_backend_herdr_projection_close_pane_focus_preserving() { printf "close:%s\n" "$2"; }
+    fm_backend_herdr_projection_cleanup_exact sess task-pane seeded-pane worktree-pane
+  ' "$ROOT")
+  [ "$out" = $'close:task-pane\nclose:seeded-pane\nclose:worktree-pane' ] \
+    || fail "cleanup_exact did not close the task, seeded, and worktree panes in order: $out"
+  pass "fm_backend_herdr_projection_cleanup_exact: closes the task, seeded, and worktree panes"
+}
+
+test_projection_cleanup_exact_skips_duplicate_worktree_pane() {
+  local out
+  out=$(bash -c '
+    . "$0/bin/backends/herdr.sh"
+    fm_backend_herdr_projection_close_pane_focus_preserving() { printf "close:%s\n" "$2"; }
+    fm_backend_herdr_projection_cleanup_exact sess task-pane "" task-pane
+  ' "$ROOT")
+  [ "$out" = "close:task-pane" ] \
+    || fail "cleanup_exact must not close the task pane twice when the worktree pane id matches it: $out"
+  pass "fm_backend_herdr_projection_cleanup_exact: never closes the same pane twice"
+}
+
+# --- projection_live_binding_matches: optional worktree-tab two-tab shape ---
+
+test_live_binding_matches_accepts_exact_two_tab_worktree_shape() {
+  local dir log resp fb status
+  dir="$TMP_ROOT/live-binding-worktree-ok"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"workspaces":[{"workspace_id":"parent-w","label":"firstmate"},{"workspace_id":"w9","label":"└ shape · p:tok1234567890123456789a"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"fm-shape","workspace_id":"w9"},{"tab_id":"w9:t9","label":"fm-shape (worktree)","workspace_id":"w9"}]}}\n' > "$resp/2.out"
+  printf '{"result":{"panes":[{"pane_id":"w9:p1","tab_id":"w9:t1"},{"pane_id":"w9:p9","tab_id":"w9:t9"}]}}\n' > "$resp/3.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_live_binding_matches \
+        fmtest tok1234567890123456789a w9 w9:t1 w9:p1 parent-w firstmate \
+        "└ shape · p:tok1234567890123456789a" fm-shape w9:t9
+    ' "$ROOT"
+  status=$?
+  [ "$status" -eq 0 ] || fail "an exact task tab plus its recorded worktree tab must be accepted"
+  pass "fm_backend_herdr_projection_live_binding_matches: accepts the exact two-tab worktree shape"
+}
+
+test_live_binding_matches_refuses_worktree_tab_count_mismatch() {
+  local dir log resp fb status
+  dir="$TMP_ROOT/live-binding-worktree-bad"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '{"result":{"workspaces":[{"workspace_id":"parent-w","label":"firstmate"},{"workspace_id":"w9","label":"└ shape · p:tok1234567890123456789a"}]}}\n' > "$resp/1.out"
+  printf '{"result":{"tabs":[{"tab_id":"w9:t1","label":"fm-shape","workspace_id":"w9"}]}}\n' > "$resp/2.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" HERDR_SESSION=fmtest \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_live_binding_matches \
+        fmtest tok1234567890123456789a w9 w9:t1 w9:p1 parent-w firstmate \
+        "└ shape · p:tok1234567890123456789a" fm-shape w9:t9
+    ' "$ROOT"
+  status=$?
+  [ "$status" -ne 0 ] || fail "a missing recorded worktree tab must refuse, not silently accept the one-tab shape"
+  pass "fm_backend_herdr_projection_live_binding_matches: refuses when the recorded worktree tab is missing"
+}
+
 test_projection_focus_snapshot_requires_exact_workspace_and_tab() {
   local dir log resp fb out
   dir="$TMP_ROOT/projection-focus-snapshot"; mkdir -p "$dir/responses"
@@ -4015,3 +4298,16 @@ test_wait_transition_stream_absorb_clears_then_timeout
 test_wait_transition_reader_failure_returns_2
 test_wait_transition_bad_ack_returns_2_and_cleans_up
 test_wait_transition_clean_timeout_returns_1
+test_projection_worktree_tab_create_uses_exact_response_ids
+test_projection_worktree_tab_create_rolls_back_on_shape_mismatch
+test_projection_worktree_tab_create_reports_a_rollback_it_cannot_confirm
+test_projection_worktree_tab_create_rolls_back_when_focus_restore_fails
+test_projection_worktree_tab_create_never_fatal_on_incomplete_ids
+test_projection_worktree_tab_create_restores_focus_when_only_the_tab_id_is_missing
+test_projection_worktree_tab_rooted_at_accepts_the_worktree_and_its_subdirectories
+test_projection_worktree_tab_rooted_at_refuses_a_different_copy
+test_projection_worktree_tab_rooted_at_never_trusts_an_unread_cwd
+test_projection_cleanup_exact_closes_task_seeded_and_worktree_panes
+test_projection_cleanup_exact_skips_duplicate_worktree_pane
+test_live_binding_matches_accepts_exact_two_tab_worktree_shape
+test_live_binding_matches_refuses_worktree_tab_count_mismatch
