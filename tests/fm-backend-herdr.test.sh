@@ -1125,6 +1125,69 @@ test_projection_worktree_tab_create_restores_focus_when_only_the_tab_id_is_missi
   pass "herdr presentation worktree tab: a create missing only its tab id still verifies pre-create focus"
 }
 
+# --- projection_worktree_tab_rooted_at: carried-forward tab re-root check ---
+
+# assert_worktree_tab_rooted <case> <expected-rc> <pane-get-response-json>
+# <worktree-arg> <message>: drive the real check against a fake `pane get`.
+# Each case builds its own real directories so the symlink resolution both
+# sides go through is exercised, not stubbed.
+assert_worktree_tab_rooted() {  # <case> <expected-rc> <response> <worktree> <message>
+  local case_name=$1 expected=$2 response=$3 worktree=$4 message=$5
+  local dir log resp fb status
+  dir="$TMP_ROOT/worktree-rooted-$case_name"; mkdir -p "$dir/responses"
+  log="$dir/log"; resp="$dir/responses"; : > "$log"
+  printf '%s\n' "$response" > "$resp/1.out"
+  fb=$(make_herdr_fakebin "$dir")
+  PATH="$fb:$PATH" FM_HERDR_LOG="$log" FM_HERDR_RESPONSES="$resp" \
+    bash -c '
+      . "$0/bin/backends/herdr.sh"
+      fm_backend_herdr_projection_worktree_tab_rooted_at fmtest w9:p9 "$1"
+    ' "$ROOT" "$worktree"
+  status=$?
+  [ "$status" -eq "$expected" ] || fail "$message (expected rc $expected, got $status)"
+}
+
+test_projection_worktree_tab_rooted_at_accepts_the_worktree_and_its_subdirectories() {
+  local wt
+  wt="$TMP_ROOT/worktree-rooted-fixture/wt"; mkdir -p "$wt/src/deep"
+  assert_worktree_tab_rooted root 0 \
+    "{\"result\":{\"pane\":{\"foreground_cwd\":\"$wt\"}}}" "$wt" \
+    "a pane sitting at the worktree root must count as correctly rooted"
+  assert_worktree_tab_rooted subdir 0 \
+    "{\"result\":{\"pane\":{\"foreground_cwd\":\"$wt/src/deep\"}}}" "$wt" \
+    "a captain who navigated into a subdirectory must not make the tab stale"
+  pass "fm_backend_herdr_projection_worktree_tab_rooted_at: the worktree root and any subdirectory beneath it count as rooted"
+}
+
+test_projection_worktree_tab_rooted_at_refuses_a_different_copy() {
+  local wt other sibling
+  wt="$TMP_ROOT/worktree-rooted-other/wt"; mkdir -p "$wt"
+  other="$TMP_ROOT/worktree-rooted-other/wt-2"; mkdir -p "$other/src"
+  sibling="$TMP_ROOT/worktree-rooted-other/wt-sibling"; mkdir -p "$sibling"
+  assert_worktree_tab_rooted other 1 \
+    "{\"result\":{\"pane\":{\"foreground_cwd\":\"$other/src\"}}}" "$wt" \
+    "a pane rooted in a different pooled copy must be reported stale"
+  assert_worktree_tab_rooted prefix 1 \
+    "{\"result\":{\"pane\":{\"foreground_cwd\":\"$sibling\"}}}" "$wt" \
+    "a sibling path that merely shares the worktree's name prefix must not count as nested"
+  pass "fm_backend_herdr_projection_worktree_tab_rooted_at: a pane in another copy - or a mere name-prefix sibling - is stale"
+}
+
+test_projection_worktree_tab_rooted_at_never_trusts_an_unread_cwd() {
+  local wt
+  wt="$TMP_ROOT/worktree-rooted-unread/wt"; mkdir -p "$wt"
+  assert_worktree_tab_rooted empty 1 \
+    '{"result":{"pane":{}}}' "$wt" \
+    "a pane whose cwd cannot be read must be treated as stale, never trusted as a match"
+  assert_worktree_tab_rooted gone 1 \
+    "{\"result\":{\"pane\":{\"foreground_cwd\":\"$TMP_ROOT/worktree-rooted-unread/vanished\"}}}" "$wt" \
+    "a cwd that no longer resolves must be treated as stale"
+  assert_worktree_tab_rooted no-worktree 1 \
+    "{\"result\":{\"pane\":{\"foreground_cwd\":\"$wt\"}}}" "" \
+    "a missing worktree argument must refuse rather than match"
+  pass "fm_backend_herdr_projection_worktree_tab_rooted_at: an unreadable, unresolvable, or missing path is stale, never a match"
+}
+
 # --- projection_cleanup_exact: task, seeded, and worktree pane teardown -----
 
 test_projection_cleanup_exact_closes_task_seeded_and_worktree_panes() {
@@ -4241,6 +4304,9 @@ test_projection_worktree_tab_create_reports_a_rollback_it_cannot_confirm
 test_projection_worktree_tab_create_rolls_back_when_focus_restore_fails
 test_projection_worktree_tab_create_never_fatal_on_incomplete_ids
 test_projection_worktree_tab_create_restores_focus_when_only_the_tab_id_is_missing
+test_projection_worktree_tab_rooted_at_accepts_the_worktree_and_its_subdirectories
+test_projection_worktree_tab_rooted_at_refuses_a_different_copy
+test_projection_worktree_tab_rooted_at_never_trusts_an_unread_cwd
 test_projection_cleanup_exact_closes_task_seeded_and_worktree_panes
 test_projection_cleanup_exact_skips_duplicate_worktree_pane
 test_live_binding_matches_accepts_exact_two_tab_worktree_shape

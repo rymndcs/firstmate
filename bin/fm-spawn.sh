@@ -2054,25 +2054,24 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
 
   validate_spawn_worktree "treehouse get" "$T"
 
-  # A carried-forward worktree tab is an idle shell fixed at the --cwd of the
-  # copy the PREVIOUS run held. `treehouse get` draws an interchangeable
-  # worktree from a shared pool and takes no task binding, so this run's $WT
-  # can be a different copy - and a recycled one can later belong to another
-  # task. Verify the recorded pane's live cwd against the exact validated $WT
-  # and re-root on any mismatch (an unreadable cwd counts as one) rather than
-  # leaving the captain a tab pointed at an abandoned copy.
-  if [ "${HERDR_PROJECTED:-0}" -eq 1 ] && [ -n "${HERDR_WORKTREE_PANE_ID:-}" ]; then
-    HERDR_WORKTREE_PANE_CWD=$(spawn_current_path "$HERDR_SES:$HERDR_WORKTREE_PANE_ID" 2>/dev/null || true)
-    if [ -z "$HERDR_WORKTREE_PANE_CWD" ] \
-       || [ "$(real_path_or_raw "$HERDR_WORKTREE_PANE_CWD")" != "$(real_path_or_raw "$WT")" ]; then
-      fm_backend_herdr_projection_close_pane_focus_preserving \
-        "$HERDR_SES" "$HERDR_WORKTREE_PANE_ID" 2>/dev/null || true
-      if [ "$(fm_backend_herdr_pane_presence_state "$HERDR_SES" "$HERDR_WORKTREE_PANE_ID")" != dead ]; then
-        echo "warning: herdr presentation could not confirm the stale worktree pane is gone; session '$HERDR_SES' pane '$HERDR_WORKTREE_PANE_ID' is left open and is dropped from this task's metadata - close that exact pane by hand in Herdr" >&2
-      fi
-      HERDR_WORKTREE_TAB_ID=""
-      HERDR_WORKTREE_PANE_ID=""
+  # A carried-forward worktree tab is a browse shell created against whatever
+  # copy the PREVIOUS run held, which this run's pooled $WT need not be. Drop
+  # it whenever it is not rooted inside this run's exact validated worktree so
+  # the fresh-create block below rebuilds it at the right path.
+  if [ "${HERDR_PROJECTED:-0}" -eq 1 ] && [ -n "${HERDR_WORKTREE_PANE_ID:-}" ] \
+     && ! fm_backend_herdr_projection_worktree_tab_rooted_at \
+          "$HERDR_SES" "$HERDR_WORKTREE_PANE_ID" "$WT"; then
+    fm_backend_herdr_projection_close_pane_focus_preserving \
+      "$HERDR_SES" "$HERDR_WORKTREE_PANE_ID" 2>/dev/null || true
+    if [ "$(fm_backend_herdr_pane_presence_state "$HERDR_SES" "$HERDR_WORKTREE_PANE_ID")" != dead ]; then
+      echo "warning: herdr presentation could not confirm the stale worktree pane is gone; session '$HERDR_SES' pane '$HERDR_WORKTREE_PANE_ID' is left open and is dropped from this task's metadata - close that exact pane by hand in Herdr" >&2
     fi
+    # Dropped even when that close went unconfirmed: this tab is
+    # presentation-only, never the authoritative endpoint, so it degrades to a
+    # correctly-rooted replacement rather than keeping a handle to a tab known
+    # to show the wrong worktree.
+    HERDR_WORKTREE_TAB_ID=""
+    HERDR_WORKTREE_PANE_ID=""
   fi
 
   # A second, presentation-only tab rooted at this task's own worktree, added

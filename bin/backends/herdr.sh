@@ -2036,6 +2036,32 @@ fm_backend_herdr_projection_worktree_tab_create_best_effort() {  # <session> <wo
   return 0
 }
 
+# fm_backend_herdr_projection_worktree_tab_rooted_at: report whether the
+# recorded worktree pane still sits inside <worktree>.
+# `treehouse get` draws an interchangeable copy from a shared pool and takes
+# no task binding, so a restart can hand the task a different worktree while
+# this pane keeps the cwd its previous run created it with - and a recycled
+# copy can by then belong to another task entirely.
+# The pane is an interactive browse shell, so any subdirectory of the
+# worktree counts as rooted: a captain who ran `cd src` has not made the tab
+# stale. Both sides are symlink-resolved before comparison.
+# Refuses (returns 1, meaning stale) on anything it cannot read: an empty
+# cwd, an unresolvable path, or a missing argument is never trusted as a
+# match.
+fm_backend_herdr_projection_worktree_tab_rooted_at() {  # <session> <pane_id> <worktree>
+  local session=$1 pane_id=$2 worktree=$3 cwd cwd_real worktree_real
+  [ -n "$session" ] && [ -n "$pane_id" ] && [ -n "$worktree" ] || return 1
+  cwd=$(fm_backend_herdr_current_path "$session:$pane_id" 2>/dev/null) || cwd=
+  [ -n "$cwd" ] || return 1
+  cwd_real=$(cd "$cwd" 2>/dev/null && pwd -P) || return 1
+  worktree_real=$(cd "$worktree" 2>/dev/null && pwd -P) || return 1
+  [ -n "$cwd_real" ] && [ -n "$worktree_real" ] || return 1
+  case "$cwd_real" in
+    "$worktree_real"|"$worktree_real"/*) return 0 ;;
+  esac
+  return 1
+}
+
 # fm_backend_herdr_projection_cleanup_exact: same-process abort cleanup for a
 # projection whose create calls returned complete exact IDs.
 # It performs no lookup and never calls workspace close.
