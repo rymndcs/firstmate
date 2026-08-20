@@ -1969,14 +1969,23 @@ fm_backend_herdr_projection_worktree_tab_create_best_effort() {  # <session> <wo
     echo "warning: herdr presentation worktree tab create failed; leaving the worker in its working one-tab shape" >&2
     return 1
   fi
-  if ! fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "worktree tab create"; then
-    echo "warning: herdr presentation worktree tab create did not preserve exact active focus; leaving the worker in its working one-tab shape" >&2
-    return 1
-  fi
+  # Parsed before the focus-restore check so a restore failure still has the
+  # new pane's exact id to roll back with; otherwise a create that succeeded
+  # would strand a tab no record anywhere could ever close.
   tab_id=$(printf '%s' "$out" | jq -r '.result.tab.tab_id // empty' 2>/dev/null)
   pane_id=$(printf '%s' "$out" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null)
   if [ -z "$tab_id" ] || [ -z "$pane_id" ]; then
-    echo "warning: herdr presentation worktree tab create returned incomplete IDs; leaving the worker in its working one-tab shape" >&2
+    if [ -n "$pane_id" ]; then
+      fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" || true
+    else
+      fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "worktree tab create" || true
+    fi
+    echo "warning: herdr presentation worktree tab create returned incomplete IDs; a tab may have been created and left in place with no pane id to close it by; leaving the worker in its working one-tab shape" >&2
+    return 1
+  fi
+  if ! fm_backend_herdr_projection_focus_restore "$session" "$focus_before" "worktree tab create"; then
+    fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" || true
+    echo "warning: herdr presentation worktree tab create did not preserve exact active focus; leaving the worker in its working one-tab shape" >&2
     return 1
   fi
   tabs=$(fm_backend_herdr_cli "$session" tab list --workspace "$wsid" 2>/dev/null) || tabs=
