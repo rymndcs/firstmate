@@ -1933,6 +1933,18 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
   return 0
 }
 
+# fm_backend_herdr_projection_worktree_tab_rollback: close one unverified
+# worktree pane and prove it gone from its structured presence, never from
+# the close's exit status. An unproven removal names every id an operator
+# needs to finish the close by hand.
+fm_backend_herdr_projection_worktree_tab_rollback() {  # <session> <workspace_id> <tab_id> <pane_id>
+  local session=$1 wsid=$2 tab_id=$3 pane_id=$4
+  fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" || true
+  [ "$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")" = dead ] && return 0
+  echo "warning: herdr presentation worktree tab rollback could not confirm its own new pane is gone; session '$session' workspace '$wsid' tab '$tab_id' pane '$pane_id' is left open and is recorded in no metadata or journal - close that exact pane by hand in Herdr" >&2
+  return 1
+}
+
 # fm_backend_herdr_projection_worktree_tab_create_best_effort: add one extra
 # idle-shell tab, rooted at the task's own worktree, alongside the existing
 # task tab in an already-created projected workspace.
@@ -1958,17 +1970,6 @@ fm_backend_herdr_projection_create_task() {  # <cwd> <workspace-label> <task-lab
 #   FM_BACKEND_HERDR_PROJECTION_WORKTREE_TAB_ID
 #   FM_BACKEND_HERDR_PROJECTION_WORKTREE_PANE_ID
 
-# fm_backend_herdr_projection_worktree_tab_rollback: close one unverified
-# worktree pane and prove it gone from its structured presence, never from
-# the close's exit status. An unproven removal names every id an operator
-# needs to finish the close by hand.
-fm_backend_herdr_projection_worktree_tab_rollback() {  # <session> <workspace_id> <tab_id> <pane_id>
-  local session=$1 wsid=$2 tab_id=$3 pane_id=$4
-  fm_backend_herdr_projection_close_pane_focus_preserving "$session" "$pane_id" || true
-  [ "$(fm_backend_herdr_pane_presence_state "$session" "$pane_id")" = dead ] && return 0
-  echo "warning: herdr presentation worktree tab rollback could not confirm its own new pane is gone; session '$session' workspace '$wsid' tab '$tab_id' pane '$pane_id' is left open and is recorded in no metadata or journal - close that exact pane by hand in Herdr" >&2
-  return 1
-}
 fm_backend_herdr_projection_worktree_tab_create_best_effort() {  # <session> <workspace_id> <task_tab_id> <task_label> <cwd> <label>
   local session=$1 wsid=$2 task_tab=$3 task_label=$4 cwd=$5 label=$6
   local focus_before out tab_id pane_id tabs panes tab_count pane_count
