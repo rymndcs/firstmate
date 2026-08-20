@@ -87,7 +87,7 @@ Only the exact seeded default tab returned by the same workspace-create response
 Before and after create, prune, order, abort cleanup, and normal cleanup, Firstmate verifies exact workspace, tab, pane, and active-focus ids.
 An ambiguous response grants no mutation or cleanup authority.
 
-Once the launching agent's own `treehouse get` has claimed and validated the task's isolated copy, Firstmate best-effort adds one more tab in the same projected workspace: an idle shell rooted at that exact validated worktree path, so the captain can switch straight into a worker's own copy without navigating there by hand.
+Once the launching agent's own `treehouse get` has claimed and validated the task's isolated copy, Firstmate best-effort adds one more tab in the same projected workspace, labelled `fm-<id> (worktree)`: an idle shell rooted at that exact validated worktree path, so the captain can switch straight into a worker's own copy without navigating there by hand.
 This tab is created after the normal task tab, never inside the same create call, because the worktree does not exist yet at projection-create time.
 It carries the same non-authoritative status as the task tab and workspace themselves - its existence, label, and cwd grant no ownership, send, capture, teardown, or recovery authority, and normal task metadata remains the sole endpoint authority.
 A create or shape-verification failure here only warns and leaves the worker on its already-working one-tab shape; it never fails or retries the spawn, and a verified-but-unconverged attempt rolls back its own new pane.

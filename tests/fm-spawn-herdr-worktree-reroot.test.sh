@@ -125,6 +125,13 @@ case "\${1:-} \${2:-}" in
     ;;
   "tab create")
     n=\$(created_count)
+    # FM_FAKE_FAIL_WT_CREATE=1 makes only the worktree tab's own create fail,
+    # the way a real Herdr refusal would: no tab is added, so nothing is
+    # recorded as created.
+    if [ "\$n" -ge 1 ] && [ "\${FM_FAKE_FAIL_WT_CREATE:-}" = 1 ]; then
+      printf '%s\n' '{"error":{"code":"tab_create_failed"}}' >&2
+      exit 1
+    fi
     printf 'x\n' >> "\$CREATED"
     if [ "\$n" -lt 1 ]; then
       printf '%s\n' '{"result":{"tab":{"tab_id":"w1:t2"},"root_pane":{"pane_id":"w1:p2"}}}'
@@ -219,10 +226,12 @@ EOF
 }
 
 # run_reroot_spawn <worktree-tab-cwd> [refuse-close-pane]: restart the projected
-# task with the recorded worktree tab reporting <worktree-tab-cwd>.
+# task with the recorded worktree tab reporting <worktree-tab-cwd>. The spawn's
+# own exit status is published as REROOT_RC.
 run_reroot_spawn() {
   local wt_cwd=$1 refuse=${2:-}
   : > "$CASE_DIR/herdr.log"; : > "$CASE_DIR/closed"; : > "$CASE_DIR/created"
+  REROOT_RC=0
   FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
@@ -233,7 +242,7 @@ run_reroot_spawn() {
     FM_FAKE_REFUSE_CLOSE="$refuse" \
     PATH="$FAKEBIN_DIR:$PATH" \
     "$SPAWN" reroot-z1 "$PROJ_DIR" --mode local-only --yolo off --captain-pick codex \
-    > "$CASE_DIR/stdout" 2> "$CASE_DIR/stderr"
+    > "$CASE_DIR/stdout" 2> "$CASE_DIR/stderr" || REROOT_RC=$?
 }
 
 # herdr_call_index <pattern>: 1-based line number of the first fake-herdr call
@@ -357,10 +366,39 @@ test_unconfirmed_stale_close_still_clears_and_recreates() {
   pass "an unconfirmed stale-pane close clears the recorded ids and leaves the documented no-ids residue"
 }
 
+# The second tab is presentation-only, so a Herdr refusal to create it must
+# never fail the spawn: the worker still launches in the one-tab shape it had
+# before this feature, with no worktree ids recorded and its own task endpoint
+# left pointing at the live replacement task pane.
+test_failed_worktree_tab_create_is_never_fatal() {
+  local rec
+  rec=$(make_reroot_case reroot-create-fails)
+  read_reroot_record "$rec"
+
+  FM_FAKE_FAIL_WT_CREATE=1 run_reroot_spawn "$PREV_DIR"
+  assert_reclaim_reached "reroot-create-fails"
+  [ -n "$(herdr_call_index "--cwd $WT_DIR --label fm-reroot-z1 (worktree)")" ] \
+    || fail "the fixture never attempted the worktree tab create it means to fail"
+  [ "$REROOT_RC" = 0 ] \
+    || fail "a refused worktree tab create failed the whole spawn (exit $REROOT_RC): $(cat "$CASE_DIR/stderr")"
+  assert_grep 'warning:' "$CASE_DIR/stderr" \
+    "a refused worktree tab create did not warn"
+  assert_no_grep 'herdr_worktree_tab_id=' "$HOME_DIR/state/reroot-z1.meta" \
+    "a refused worktree tab create still recorded a worktree tab id"
+  assert_no_grep 'herdr_worktree_pane_id=' "$HOME_DIR/state/reroot-z1.meta" \
+    "a refused worktree tab create still recorded a worktree pane id"
+  assert_grep 'herdr_pane_id=w1:p2' "$HOME_DIR/state/reroot-z1.meta" \
+    "the worker did not keep its own working task endpoint after the degrade"
+  assert_grep "window=$SESSION:w1:p2" "$HOME_DIR/state/reroot-z1.meta" \
+    "the worker's addressable window did not point at its live task pane after the degrade"
+  pass "a refused worktree tab create warns and leaves the worker in its working one-tab shape"
+}
+
 test_worktree_tab_at_the_current_worktree_is_kept
 test_worktree_tab_in_a_subdirectory_is_kept
 test_worktree_tab_in_another_copy_is_rerooted
 test_unreadable_worktree_tab_cwd_is_rerooted
 test_unconfirmed_stale_close_still_clears_and_recreates
+test_failed_worktree_tab_create_is_never_fatal
 
 echo "# all fm-spawn-herdr-worktree-reroot tests passed"

@@ -17,9 +17,12 @@
 # FIRSTMATE HOME (the primary, and each secondmate, gets its own), ONE herdr TAB
 # per task inside its home's workspace. An optional, default-off presentation
 # flag creates a disposable workspace for a clean fresh task instead. That
-# workspace is a non-authoritative visual projection containing only the normal
-# task pane. Its random token and mutable label never authorize lookup,
-# adoption, reuse, closure, deletion, task ownership, or endpoint selection.
+# workspace is a non-authoritative visual projection containing the normal task
+# pane plus, best effort, one extra tab holding an idle shell at that task's
+# own validated worktree (see docs/herdr-backend.md "Optional presentation
+# spaces"). Its random token, mutable label, and that extra tab never authorize
+# lookup, adoption, reuse, closure, deletion, task ownership, or endpoint
+# selection.
 # A version 2 journal can participate in replacing only its exact same-identity
 # endpoint after metadata, home, session, workspace, tab, pane, parent, shape,
 # focus, and agent-absence checks all agree under the session lock.
