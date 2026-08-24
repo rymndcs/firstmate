@@ -68,17 +68,38 @@ GUARD_RC=0
 GUARD_OUT=""
 GUARD_ERR=""
 
-run_guard() {  # <home> <transcript> <tool-name> [command]
-  local home=$1 transcript=$2 tool=$3 cmd=${4:-} payload out err
+run_guard() {  # <home> <transcript> <tool-name> [command] [path-override]
+  local home=$1 transcript=$2 tool=$3 cmd=${4:-} path=${5:-} payload out err
   payload=$(jq -cn --arg tool "$tool" --arg cmd "$cmd" --arg tp "$transcript" \
     '{hook_event_name:"PreToolUse",tool_name:$tool,tool_input:(if $cmd == "" then {} else {command:$cmd} end),transcript_path:$tp}')
   out=$(mktemp "$TMP_ROOT/out.XXXXXX")
   err=$(mktemp "$TMP_ROOT/err.XXXXXX")
-  printf '%s' "$payload" | FM_HOME="$home" "$home/bin/fm-ask-user-pretool-check.sh" --claude >"$out" 2>"$err"
+  if [ -n "$path" ]; then
+    printf '%s' "$payload" | env PATH="$path" FM_HOME="$home" \
+      "$home/bin/fm-ask-user-pretool-check.sh" --claude >"$out" 2>"$err"
+  else
+    printf '%s' "$payload" | FM_HOME="$home" \
+      "$home/bin/fm-ask-user-pretool-check.sh" --claude >"$out" 2>"$err"
+  fi
   GUARD_RC=$?
   GUARD_OUT=$(cat "$out")
   GUARD_ERR=$(cat "$err")
   rm -f "$out" "$err"
+}
+
+# A PATH carrying everything the guard and its libraries invoke EXCEPT one tool,
+# so a "missing <tool>" fail-safe is exercisable without touching the system.
+path_without() {  # <tool> -> prints a PATH holding symlinks to the rest
+  local drop=$1 dir tool src
+  dir=$(mktemp -d "$TMP_ROOT/path-without.XXXXXX")
+  # bash and env are needed for the shebang to resolve at all.
+  for tool in bash sh env cat sed awk grep tail head wc cksum tr cut mv rm ls \
+              git jq node basename dirname mktemp chmod; do
+    [ "$tool" != "$drop" ] || continue
+    src=$(command -v "$tool" 2>/dev/null) || continue
+    ln -sf "$src" "$dir/$tool"
+  done
+  printf '%s' "$dir"
 }
 
 assert_allowed_silently() {  # <label>
@@ -254,7 +275,12 @@ test_fail_safe_states_allow_silently() {
   chmod 000 "$unreadable"
   if [ ! -r "$unreadable" ]; then
     run_guard "$home" "$unreadable" AskUserQuestion
-  assert_allowed_silently 'an unreadable transcript'
+    assert_allowed_silently 'an unreadable transcript'
+  else
+    # chmod 000 does not stop root, so this case cannot be exercised here. Say so
+    # out loud: a case that silently asserts nothing is worse than no case,
+    # because the green is what the next reader trusts.
+    printf 'skip - unreadable transcript: running as a user chmod 000 cannot block (uid %s)\n' "$(id -u)"
   fi
   chmod 644 "$unreadable"
 
@@ -271,14 +297,20 @@ test_fail_safe_states_allow_silently() {
   run_guard "$home" "$shapeless" AskUserQuestion
   assert_allowed_silently 'a transcript carrying no recognizable entries'
 
-  # A status file that is not readable at all must not gate anything.
+  # A status file that is not readable at all must not gate anything. Every
+  # fresh-home case below runs its own baseline first, so an allow after the
+  # mutation proves the fail-safe rather than proving the fixture never denied.
   local blind="$TMP_ROOT/blindstate"
   make_primary_home "$blind" >/dev/null
   printf 'needs-decision [key=k]: open question\n' > "$blind/state/rac196.status"
+  run_guard "$blind" "$transcript" AskUserQuestion
+  assert_denied 'the unreadable-status-file baseline' 'rac196 [key=k]'
   chmod 000 "$blind/state/rac196.status"
   if [ ! -r "$blind/state/rac196.status" ]; then
     run_guard "$blind" "$transcript" AskUserQuestion
-  assert_allowed_silently 'an unreadable status file'
+    assert_allowed_silently 'an unreadable status file'
+  else
+    printf 'skip - unreadable status file: running as a user chmod 000 cannot block (uid %s)\n' "$(id -u)"
   fi
   chmod 644 "$blind/state/rac196.status"
 
@@ -287,10 +319,15 @@ test_fail_safe_states_allow_silently() {
   local rostate="$TMP_ROOT/rostate"
   make_primary_home "$rostate" >/dev/null
   printf 'needs-decision [key=k]: open question\n' > "$rostate/state/rac196.status"
+  run_guard "$rostate" "$transcript" AskUserQuestion
+  assert_denied 'the unwritable-state-directory baseline' 'rac196 [key=k]'
+  rm -f "$rostate/state/.ask-user-authority-guard"
   chmod 555 "$rostate/state"
   if [ ! -w "$rostate/state" ]; then
     run_guard "$rostate" "$transcript" AskUserQuestion
-  assert_allowed_silently 'an unwritable state directory'
+    assert_allowed_silently 'an unwritable state directory'
+  else
+    printf 'skip - unwritable state directory: running as a user chmod 555 cannot block (uid %s)\n' "$(id -u)"
   fi
   chmod 755 "$rostate/state"
 
@@ -307,9 +344,46 @@ test_fail_safe_states_allow_silently() {
   local nolib="$TMP_ROOT/nolib"
   make_primary_home "$nolib" >/dev/null
   printf 'needs-decision [key=k]: open question\n' > "$nolib/state/rac196.status"
+  run_guard "$nolib" "$transcript" AskUserQuestion
+  assert_denied 'the missing-classify-library baseline' 'rac196 [key=k]'
   rm -f "$nolib/bin/fm-classify-lib.sh"
   run_guard "$nolib" "$transcript" AskUserQuestion
   assert_allowed_silently 'a missing classify library'
+
+  # Missing primary-scope library: the shared scope predicate is gone, so the
+  # guard cannot even tell whether this home is in scope.
+  local noscope="$TMP_ROOT/noscope"
+  make_primary_home "$noscope" >/dev/null
+  printf 'needs-decision [key=k]: open question\n' > "$noscope/state/rac196.status"
+  run_guard "$noscope" "$transcript" AskUserQuestion
+  assert_denied 'the missing-scope-library baseline' 'rac196 [key=k]'
+  rm -f "$noscope/bin/fm-primary-scope-lib.sh"
+  run_guard "$noscope" "$transcript" AskUserQuestion
+  assert_allowed_silently 'a missing primary-scope library'
+
+  # Missing jq: the stdin transport cannot extract the tool name at all.
+  local nojq nojq_path
+  nojq=$(make_primary_home "$TMP_ROOT/nojq")
+  printf 'needs-decision [key=k]: open question\n' > "$nojq/state/rac196.status"
+  run_guard "$nojq" "$transcript" AskUserQuestion
+  assert_denied 'the missing-jq baseline' 'rac196 [key=k]'
+  nojq_path=$(path_without jq)
+  run_guard "$nojq" "$transcript" AskUserQuestion '' "$nojq_path"
+  assert_allowed_silently 'a missing jq'
+
+  # Missing Node: the steer classifier cannot run, so the steer route stands
+  # down. The ask route needs no classifier and stays gated, which is what makes
+  # this a scoped disarm rather than a whole-guard one.
+  local nonode nonode_path
+  nonode=$(make_primary_home "$TMP_ROOT/nonode")
+  printf 'needs-decision [key=k]: open question\n' > "$nonode/state/rac196.status"
+  run_guard "$nonode" "$transcript" Bash "$nonode/bin/fm-send.sh rac196 ok"
+  assert_denied 'the missing-node baseline' 'rac196 [key=k]'
+  nonode_path=$(path_without node)
+  run_guard "$nonode" "$transcript" Bash "$nonode/bin/fm-send.sh rac196 ok" "$nonode_path"
+  assert_allowed_silently 'a steer with no Node runtime'
+  run_guard "$nonode" "$transcript" AskUserQuestion '' "$nonode_path"
+  assert_denied 'asking the captain with no Node runtime' 'rac196 [key=k]'
 
   pass "every undeterminable state allows and stays silent"
 }

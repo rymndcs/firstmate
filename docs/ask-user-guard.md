@@ -239,15 +239,32 @@ This is the part that had to be established empirically rather than assumed.
 No hook in this repo read the session transcript before this one, so whether a PreToolUse payload even carries a transcript path was unverified.
 The validation record below is the evidence; the design depends on all three facts it establishes.
 
-A load is proven only by a **structural** `tool_use` entry in the transcript, never by the skill's name appearing as text.
-That distinction is load-bearing: this guard's own deny message names the skill, so a substring match would let the deny text satisfy the very finding it just denied.
+A load is proven only by a **structural** `tool_use` entry in the transcript, never by prose anywhere else in it.
+That distinction is load-bearing: this guard's own deny message names the skill, so a plain substring scan of the transcript would let the deny text satisfy the very finding it just denied.
 `test_deny_text_cannot_satisfy_itself` replays a real deny message back into a transcript and asserts the gate stays shut.
 
-Three accepted forms, each a real load of the skill's content:
+Three accepted forms:
 
 - the `Skill` tool invoked with `input.skill == "ask-user-authority"`;
 - any tool whose `input.file_path` ends with `ask-user-authority/SKILL.md`;
 - a shell command whose `input.command` contains `ask-user-authority/SKILL.md`, which is how a bypass-permissions session reads a file.
+
+The first two require a real load.
+The third does not, and that is a stated limit rather than an oversight.
+
+**Stated limit: naming the skill's path in a shell command counts as reading it.**
+The third form matches any `tool_use` whose `input.command` merely *contains* the path, so a command that names it without reading it satisfies the gate.
+Verified against the shipped guard: with one finding open, `AskUserQuestion` denies, and a single `Bash` entry running `grep -n ask-user-authority/SKILL.md docs/ask-user-guard.md` makes the very next `AskUserQuestion` allow, with the skill never read.
+An `ls -l` of that path, or any command quoting it, does the same.
+
+This is not exotic in exactly the situation the guard creates: **this document contains the literal path string**, so a firstmate that grep-diagnoses its own deny by reading this contract can satisfy the very finding it was denied on.
+
+What stays tight is the rest.
+The `Skill` form compares `input.skill` for equality and the `file_path` form uses an `endswith` match, and neither can be satisfied without a real load.
+The deny message deliberately never contains the path, so this is **not** the self-satisfaction loop `test_deny_text_cannot_satisfy_itself` pins; that one remains closed.
+
+The known remedy, recorded but not applied: require the path to be an argument of a *placed reading command*, which `bin/fm-ask-user-command-policy.mjs` already has the classifier to decide.
+Apply it if this limit ever stops being acceptable - that is, if a finding is ever satisfied by a command that named the skill without reading it.
 
 ### Per-finding, not per-session
 
@@ -312,8 +329,22 @@ The guard would then deny work that was done right, on the very first attempt, e
 
 Observing on every call moves first sight to the first tool call after the finding appeared, which precedes any load made in response to it.
 
-Because that pass runs on every tool call, its cost is part of the contract.
-Two greps carry it.
+Because that pass runs on every tool call, its cost is part of the contract, so the measured numbers belong here rather than the mechanism alone.
+Timed against the shipped guard through its real stdin transport, in a home of twelve tasks with nine-line status files:
+
+| Home state | Cost per tool call |
+| --- | --- |
+| no finding anywhere, ever | 16 ms |
+| one long-resolved finding | 50 ms |
+| one finding open | 52 ms |
+| two findings open | 74 ms |
+| four findings open | 113 ms |
+
+The operational consequence, stated plainly: an ordinary armed morning with three or four findings open adds roughly 100 ms to every tool call of the primary session, for as long as the captain has not answered.
+Some cost is paid even when nothing is currently open, because status files are append-only and a resolved finding leaves its opening line in place, so the per-file grep keeps matching for that task's whole life.
+What keeps this a cost rather than a leak is that `bin/fm-teardown.sh` removes a task's status file at teardown, so the set is bounded by live tasks rather than growing forever.
+
+Two greps carry the mechanism.
 A whole-fleet `grep -l needs-decision state/*.status` runs first, ahead of the git scope check and both library sources, and exits the guard outright while no task in the home has ever had an ask-user finding.
 It stops short-circuiting permanently after the first one, because status files are append-only and a resolved finding leaves its opening line in place forever.
 From then on a per-file `grep -q` at the top of the scan is what keeps the steady state cheap: only files that still mention `needs-decision` are parsed, instead of every status file in the home being folded twice on every tool call.
@@ -340,7 +371,8 @@ Any parse failure disarms the guard instead.
 
 The cost of that choice is stated plainly: an unwritable state directory or an unparseable transcript silently disarms the gate.
 A `blocked` line landing on an open finding's key disarms it the same way, for a different reason - see the fold note under "Detecting a finding".
-`test_fail_safe_states_allow_silently` and `test_missing_steer_classifier_allows_silently` assert each of these against a fixture that is proven to deny in its baseline, so none of them can pass vacuously.
+`test_fail_safe_states_allow_silently` and `test_missing_steer_classifier_allows_silently` assert every entry in that list, and each one carries its own baseline `AskUserQuestion` deny against the unmutated fixture, so no case can pass by proving the fixture never denied.
+Two entries depend on file permissions the superuser ignores: under a root CI container `chmod 000` and `chmod 555` do not bite, and those two cases print an explicit `skip` line naming the uid rather than passing green having asserted nothing.
 
 The gate also has a cost in the other direction, paid while it is armed rather than while it is disarmed, and it is real enough to state next to these.
 Three denials fall out of the design rather than out of a policy breach, and all three hold on every task while any one finding is open anywhere in this home:
