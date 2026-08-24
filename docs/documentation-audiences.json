@@ -217,16 +217,16 @@
       "audience": "maintainer-architecture"
     },
     {
+      "path": "docs/ask-user-guard.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/calm-mode-feasibility.md",
       "audience": "maintainer-verification"
     },
     {
       "path": "docs/calm.md",
       "audience": "operator-current"
-    },
-    {
-      "path": "docs/ask-user-guard.md",
-      "audience": "maintainer-architecture"
     },
     {
       "path": "docs/cd-guard.md",
