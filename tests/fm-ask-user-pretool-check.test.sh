@@ -347,6 +347,25 @@ test_fail_safe_states_allow_silently() {
   fi
   chmod 755 "$nostate/state"
 
+  # An unreadable ledger. The guard allows either way, but the fail-safe rule is
+  # allow AND stay silent, and stderr is the channel Claude reads hook output on.
+  local noledger noledger_ledger
+  noledger=$(make_primary_home "$TMP_ROOT/noledger")
+  noledger_ledger="$noledger/state/.ask-user-authority-guard"
+  printf 'needs-decision [key=k]: open question\n' > "$noledger/state/rac196.status"
+  run_guard "$noledger" "$transcript" AskUserQuestion
+  assert_denied 'the unreadable-ledger baseline' 'rac196 [key=k]'
+  run_guard "$noledger" "$transcript" Read
+  [ -f "$noledger_ledger" ] || fail 'the unreadable-ledger case needs an observation pass to write a ledger first'
+  chmod 000 "$noledger_ledger"
+  if [ ! -r "$noledger_ledger" ]; then
+    run_guard "$noledger" "$transcript" Read
+    assert_allowed_silently 'an unreadable ledger'
+  else
+    printf 'skip - unreadable ledger: running as a user chmod 000 cannot block (uid %s)\n' "$(id -u)"
+  fi
+  chmod 644 "$noledger_ledger"
+
   # Malformed and empty transport.
   for payload in '' 'not json' '{}' '{"tool_name":"AskUserQuestion"}'; do
     result=$(printf '%s' "$payload" | FM_HOME="$home" "$home/bin/fm-ask-user-pretool-check.sh" --claude 2>&1)

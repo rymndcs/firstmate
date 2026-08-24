@@ -249,22 +249,29 @@ Three accepted forms:
 - any tool whose `input.file_path` ends with `ask-user-authority/SKILL.md`;
 - a shell command whose `input.command` contains `ask-user-authority/SKILL.md`, which is how a bypass-permissions session reads a file.
 
-The first two require a real load.
-The third does not, and that is a stated limit rather than an oversight.
+Only the first requires a genuine invocation of the skill.
+The other two are looser than a read, and that is a stated limit rather than an oversight.
 
-**Stated limit: naming the skill's path in a shell command counts as reading it.**
-The third form matches any `tool_use` whose `input.command` merely *contains* the path, so a command that names it without reading it satisfies the gate.
-Verified against the shipped guard: with one finding open, `AskUserQuestion` denies, and a single `Bash` entry running `grep -n ask-user-authority/SKILL.md docs/ask-user-guard.md` makes the very next `AskUserQuestion` allow, with the skill never read.
+**Stated limit: the accepted proof forms are broader than a read.**
+Only the `Skill` form compares `input.skill` for equality, and nothing satisfies it but actually invoking the skill.
+The other two match a path, and neither asks what the tool did with it.
+
+The `file_path` form matches any `tool_use` whose `input.file_path` ends with the path, with no restriction on the tool, so a write satisfies it as readily as a read.
+Verified against the shipped guard: with one finding open, `AskUserQuestion` denies, and a single `Write` entry carrying `{"file_path": "/x/.agents/skills/ask-user-authority/SKILL.md", "content": "hi"}` makes the very next `AskUserQuestion` allow, with nothing read.
+`Edit`, or any other tool carrying `file_path`, does the same.
+Its practical exposure is the smaller of the two: an agent skipping the skill has no reason to write to `SKILL.md`, and this ticket leaves that file deliberately unchanged.
+
+The `command` form matches any `tool_use` whose `input.command` merely *contains* the path, so a command that names it without reading it satisfies the gate.
+Verified: with one finding open, a single `Bash` entry running `grep -n ask-user-authority/SKILL.md docs/ask-user-guard.md` makes the very next `AskUserQuestion` allow, with the skill never read.
 An `ls -l` of that path, or any command quoting it, does the same.
 
-This is not exotic in exactly the situation the guard creates: **this document contains the literal path string**, so a firstmate that grep-diagnoses its own deny by reading this contract can satisfy the very finding it was denied on.
+That one is not exotic in exactly the situation the guard creates: **this document contains the literal path string**, so a firstmate that grep-diagnoses its own deny by reading this contract can satisfy the very finding it was denied on.
 
-What stays tight is the rest.
-The `Skill` form compares `input.skill` for equality and the `file_path` form uses an `endswith` match, and neither can be satisfied without a real load.
+What stays tight is the boundary that matters most.
 The deny message deliberately never contains the path, so this is **not** the self-satisfaction loop `test_deny_text_cannot_satisfy_itself` pins; that one remains closed.
 
 The known remedy, recorded but not applied: require the path to be an argument of a *placed reading command*, which `bin/fm-ask-user-command-policy.mjs` already has the classifier to decide.
-Apply it if this limit ever stops being acceptable - that is, if a finding is ever satisfied by a command that named the skill without reading it.
+Apply it if this limit ever stops being acceptable - that is, if a finding is ever satisfied by a call that named the skill without reading it.
 
 ### Per-finding, not per-session
 
@@ -360,6 +367,7 @@ Every undeterminable state therefore **allows and stays silent**:
 - an unavailable `bin/fm-classify-lib.sh` or `bin/fm-primary-scope-lib.sh`;
 - no readable state directory, or an unreadable status file;
 - an absent or unreadable session transcript;
+- an unreadable observation ledger;
 - a transcript whose entry format this guard no longer recognizes;
 - a state directory too read-only to hold the ledger;
 - a missing Node runtime or a missing `bin/fm-ask-user-command-policy.mjs`, which disarms the steer route only and leaves the `AskUserQuestion` route gated.
@@ -376,7 +384,7 @@ The baselines come in two shapes, and the difference is worth stating so a reade
 The five cases that mutate only the payload or the transcript path - absent, unreadable, garbled, and shapeless transcripts, and malformed stdin - reuse one shared fixture, whose single `AskUserQuestion` deny is asserted once at the top before any of them run.
 Every case that builds a fresh home and mutates it carries its own baseline deny immediately before the mutation, and the missing-Node case's baseline is a `Bash` steer deny rather than an `AskUserQuestion` one, because a missing Node disarms the steer route alone.
 
-Three entries depend on file permissions the superuser ignores: under a root CI container `chmod 000` and `chmod 555` do not bite, and those cases print an explicit `skip` line naming the uid rather than passing green having asserted nothing.
+Five entries depend on file permissions the superuser ignores: under a root CI container `chmod 000` and `chmod 555` do not bite, and those cases print an explicit `skip` line naming the uid rather than passing green having asserted nothing.
 
 The gate also has a cost in the other direction, paid while it is armed rather than while it is disarmed, and it is real enough to state next to these.
 Three denials fall out of the design rather than out of a policy breach, and all three hold on every task while any one finding is open anywhere in this home:

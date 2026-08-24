@@ -264,7 +264,7 @@ LEDGER="$STATE/.ask-user-authority-guard"
 # guard must never become.
 ledger_lookup() {  # <identity> -> prints this transcript's recorded offset, or fails
   local want=$1 lid ltp loff
-  [ -f "$LEDGER" ] || return 1
+  [ -r "$LEDGER" ] || return 1
   while IFS="$(printf '\t')" read -r lid ltp loff; do
     [ "$lid" = "$want" ] || continue
     # A different transcript is a different session: its recorded position means
@@ -276,7 +276,7 @@ ledger_lookup() {  # <identity> -> prints this transcript's recorded offset, or 
     [ "$loff" -le "$TRANSCRIPT_SIZE" ] || return 1
     printf '%s' "$loff"
     return 0
-  done < "$LEDGER"
+  done 2>/dev/null < "$LEDGER"
   return 1
 }
 
@@ -324,7 +324,7 @@ ledger_sync() {
   # read-only state directory prints bash's own "Permission denied" to the real
   # stderr - which Claude reads as hook output on an allow.
   : 2>/dev/null > "$tmp" || return 1
-  if [ -f "$LEDGER" ]; then
+  if [ -r "$LEDGER" ]; then
     while IFS="$(printf '\t')" read -r lid ltp loff; do
       [ -n "$lid" ] || continue
       [ "$ltp" != "$TRANSCRIPT" ] || continue
@@ -335,7 +335,7 @@ ledger_sync() {
         rm -f "$tmp" 2>/dev/null
         return 1
       }
-    done < "$LEDGER"
+    done 2>/dev/null < "$LEDGER"
   fi
   while IFS= read -r identity; do
     [ -n "$identity" ] || continue
@@ -435,11 +435,13 @@ TRANSCRIPT_READABLE=$(tail -n 50 "$TRANSCRIPT" 2>/dev/null | jq -R -r '
 #   - any tool whose file_path ends with that skill's SKILL.md
 #   - any shell command whose text contains that skill's SKILL.md path
 #
-# The first two require a real load. The third matches the path as a substring of
-# input.command, so a command that only NAMES the path satisfies it without the
-# skill being read - a stated limit, recorded with its known remedy in
-# docs/ask-user-guard.md under "Stated limit: naming the skill's path in a shell
-# command counts as reading it". The deny message deliberately never carries the
+# Only the first requires a genuine invocation of the skill. The second matches
+# any tool_use naming that path, a write as readily as a read, so it evidences
+# that the file was touched. The third matches the path as a substring of
+# input.command, so a command that only NAMES it satisfies without the skill
+# being read. Both looser forms are one stated limit, recorded with its known
+# remedy in docs/ask-user-guard.md under "Stated limit: the accepted proof forms
+# are broader than a read". The deny message deliberately never carries the
 # path, so the self-satisfaction loop test_deny_text_cannot_satisfy_itself pins
 # stays closed either way.
 #
