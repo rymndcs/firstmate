@@ -331,6 +331,22 @@ test_fail_safe_states_allow_silently() {
   fi
   chmod 755 "$rostate/state"
 
+  # A state directory that cannot even be read is the other half of the same
+  # bullet: the guard cannot enumerate the status files it gates on.
+  local nostate="$TMP_ROOT/nostate"
+  make_primary_home "$nostate" >/dev/null
+  printf 'needs-decision [key=k]: open question\n' > "$nostate/state/rac196.status"
+  run_guard "$nostate" "$transcript" AskUserQuestion
+  assert_denied 'the unreadable-state-directory baseline' 'rac196 [key=k]'
+  chmod 000 "$nostate/state"
+  if [ ! -r "$nostate/state" ]; then
+    run_guard "$nostate" "$transcript" AskUserQuestion
+    assert_allowed_silently 'an unreadable state directory'
+  else
+    printf 'skip - unreadable state directory: running as a user chmod 000 cannot block (uid %s)\n' "$(id -u)"
+  fi
+  chmod 755 "$nostate/state"
+
   # Malformed and empty transport.
   for payload in '' 'not json' '{}' '{"tool_name":"AskUserQuestion"}'; do
     result=$(printf '%s' "$payload" | FM_HOME="$home" "$home/bin/fm-ask-user-pretool-check.sh" --claude 2>&1)

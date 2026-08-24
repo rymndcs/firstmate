@@ -371,8 +371,12 @@ Any parse failure disarms the guard instead.
 
 The cost of that choice is stated plainly: an unwritable state directory or an unparseable transcript silently disarms the gate.
 A `blocked` line landing on an open finding's key disarms it the same way, for a different reason - see the fold note under "Detecting a finding".
-`test_fail_safe_states_allow_silently` and `test_missing_steer_classifier_allows_silently` assert every entry in that list, and each one carries its own baseline `AskUserQuestion` deny against the unmutated fixture, so no case can pass by proving the fixture never denied.
-Two entries depend on file permissions the superuser ignores: under a root CI container `chmod 000` and `chmod 555` do not bite, and those two cases print an explicit `skip` line naming the uid rather than passing green having asserted nothing.
+`test_fail_safe_states_allow_silently` and `test_missing_steer_classifier_allows_silently` assert every entry in that list, and none of them can pass by proving the fixture never denied.
+The baselines come in two shapes, and the difference is worth stating so a reader checking the tests is not surprised.
+The five cases that mutate only the payload or the transcript path - absent, unreadable, garbled, and shapeless transcripts, and malformed stdin - reuse one shared fixture, whose single `AskUserQuestion` deny is asserted once at the top before any of them run.
+Every case that builds a fresh home and mutates it carries its own baseline deny immediately before the mutation, and the missing-Node case's baseline is a `Bash` steer deny rather than an `AskUserQuestion` one, because a missing Node disarms the steer route alone.
+
+Three entries depend on file permissions the superuser ignores: under a root CI container `chmod 000` and `chmod 555` do not bite, and those cases print an explicit `skip` line naming the uid rather than passing green having asserted nothing.
 
 The gate also has a cost in the other direction, paid while it is armed rather than while it is disarmed, and it is real enough to state next to these.
 Three denials fall out of the design rather than out of a policy breach, and all three hold on every task while any one finding is open anywhere in this home:
@@ -552,7 +556,16 @@ Each also carries its own structural attempt assertion, because an absent steer 
 A second PreToolUse hook in the lab home records every tool call to `state/attempts.log` and exits 0 without touching any decision, and a case whose log holds no `Bash` attempt at the gated steer fails saying it proved nothing rather than passing.
 That is what keeps the file honest against the release it exists to catch: a future Claude that simply declines to try would otherwise leave the deny cases green.
 
-Recorded result on 2026-08-25, claude 2.1.241: all three cases pass.
+**The dated result below is scoped, and does not cover the file as it stands.**
+
+Recorded result on 2026-08-25, claude 2.1.241: all three cases passed **as the file was written that day**.
+That run predates the attempt assertions described in the paragraph above: the second PreToolUse hook, the `assert_steer_attempted` call in all three cases, and the later tightening of its predicate were all added afterwards, and the lab home now also copies two policy modules the recorded run never had.
+So the attempt assertions themselves have never been exercised against a real harness, and per the rule directly above, the date must not be trusted until `FM_CLAUDE_LIVE_E2E=1` is run again.
+
+The open question that re-run has to settle is specific, so whoever runs it knows what to look for.
+Cases A and C assert an attempt on a call the gate **denies**, which requires Claude Code to run the second PreToolUse hook even after the first returns exit 2.
+Whether the harness runs the whole hook list or short-circuits on a deny is unverified.
+If it short-circuits, those two cases fail at `never attempted <bin/fm-send.sh rac196>` rather than passing, and the fix is in the lab wiring, not in the guard.
 
 The AskUserQuestion route is not exercised by that guard, because headless `claude -p` does not expose the tool.
 Its live evidence is the interactive capture above; the portable regression pins the tool-name classification.
