@@ -426,18 +426,27 @@ TRANSCRIPT_READABLE=$(tail -n 50 "$TRANSCRIPT" 2>/dev/null | jq -R -r '
 # --- proof of load ----------------------------------------------------------
 #
 # A load is proven only by a STRUCTURAL tool_use entry in the transcript, never by
-# the skill's name appearing as text. That distinction is load-bearing: this
-# guard's own deny message names the skill, and a substring match would let the
-# deny text satisfy the very finding it just denied.
+# prose elsewhere in it. That distinction is load-bearing: this guard's own deny
+# message names the skill, so a plain substring scan of the transcript would let
+# the deny text satisfy the very finding it just denied.
 #
-# Three accepted forms, all of them a real load of the skill's content:
+# Three accepted forms:
 #   - the Skill tool invoked with skill == ask-user-authority
-#   - any tool reading that skill's SKILL.md by file_path
-#   - a shell command reading that skill's SKILL.md by path
+#   - any tool whose file_path ends with that skill's SKILL.md
+#   - any shell command whose text contains that skill's SKILL.md path
+#
+# The first two require a real load. The third matches the path as a substring of
+# input.command, so a command that only NAMES the path satisfies it without the
+# skill being read - a stated limit, recorded with its known remedy in
+# docs/ask-user-guard.md under "Stated limit: naming the skill's path in a shell
+# command counts as reading it". The deny message deliberately never carries the
+# path, so the self-satisfaction loop test_deny_text_cannot_satisfy_itself pins
+# stays closed either way.
 #
 # The answer is the byte position just PAST the proving entry, not a yes or no,
-# because a permitted call consumes the proof it used: each finding's position
-# moves past that load so the same load cannot also satisfy the next finding.
+# because an allowed AskUserQuestion consumes the proof it used: each finding's
+# position moves past that load so the same load cannot also satisfy the next
+# finding.
 # awk runs under LC_ALL=C so its lengths are bytes, matching the byte offsets the
 # ledger and tail -c speak in.
 skill_load_end() {  # <offset> -> prints the offset just past the proving load, or fails
