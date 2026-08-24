@@ -291,6 +291,25 @@ EOF
   return 1
 }
 
+# Offsets a permitted gated call is consuming, one "<identity><TAB><offset>" row.
+# Empty on every other call: only a gated call the guard actually ALLOWS may
+# advance a position, and an observation call never does.
+CONSUMED_OFFSETS=""
+
+consumed_offset() {  # <identity> -> prints the consuming offset, or fails
+  local want=$1 cid coff
+  [ -n "$CONSUMED_OFFSETS" ] || return 1
+  while IFS="$(printf '\t')" read -r cid coff; do
+    [ "$cid" = "$want" ] || continue
+    case "$coff" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s' "$coff"
+    return 0
+  done <<EOF
+$CONSUMED_OFFSETS
+EOF
+  return 1
+}
+
 # Rewrite the ledger to every currently-open finding in this transcript, plus
 # every other session's still-live rows, preserving each known first-sight
 # position and stamping the current one for new findings.
@@ -320,7 +339,9 @@ ledger_sync() {
   fi
   while IFS= read -r identity; do
     [ -n "$identity" ] || continue
-    offset=$(ledger_lookup "$identity") || offset=$TRANSCRIPT_SIZE
+    offset=$(consumed_offset "$identity") \
+      || offset=$(ledger_lookup "$identity") \
+      || offset=$TRANSCRIPT_SIZE
     printf '%s\t%s\t%s\n' "$identity" "$TRANSCRIPT" "$offset" 2>/dev/null >> "$tmp" || {
       rm -f "$tmp" 2>/dev/null
       return 1
@@ -335,6 +356,26 @@ EOF
   return 0
 }
 
+# ledger_sync is a read-modify-write finished by one mv, so two sessions syncing
+# in the same instant - which is exactly when both are missing a row, right after
+# a finding appears - can still lose the later writer's rows to the winner's mv.
+# Re-reading afterwards and syncing once more collapses that window to a retry.
+# It can never deny on its own: a failed re-sync just leaves the ledger as the
+# other session wrote it, and the caller treats any failure as an allow.
+ledger_sync_checked() {
+  local identity
+  ledger_sync || return 1
+  while IFS= read -r identity; do
+    [ -n "$identity" ] || continue
+    ledger_lookup "$identity" >/dev/null && continue
+    ledger_sync
+    return $?
+  done <<EOF
+$OPEN_IDENTITIES
+EOF
+  return 0
+}
+
 # Sync whenever the ledger does not already describe exactly this open set with a
 # usable position, so the steady state costs no writes at all.
 NEEDS_SYNC=0
@@ -345,7 +386,7 @@ done <<EOF
 $OPEN_IDENTITIES
 EOF
 if [ "$NEEDS_SYNC" -eq 1 ]; then
-  ledger_sync || exit 0
+  ledger_sync_checked || exit 0
 fi
 
 # Observation is complete. A call this guard could never deny stops here, having
@@ -393,22 +434,37 @@ TRANSCRIPT_READABLE=$(tail -n 50 "$TRANSCRIPT" 2>/dev/null | jq -R -r '
 #   - the Skill tool invoked with skill == ask-user-authority
 #   - any tool reading that skill's SKILL.md by file_path
 #   - a shell command reading that skill's SKILL.md by path
-skill_loaded_since() {  # <offset> -> 0 when a load appears at or after <offset>
+#
+# The answer is the byte position just PAST the proving entry, not a yes or no,
+# because a permitted call consumes the proof it used: each finding's position
+# moves past that load so the same load cannot also satisfy the next finding.
+# awk runs under LC_ALL=C so its lengths are bytes, matching the byte offsets the
+# ledger and tail -c speak in.
+skill_load_end() {  # <offset> -> prints the offset just past the proving load, or fails
   local offset=$1 hit
-  hit=$(tail -c "+$((offset + 1))" "$TRANSCRIPT" 2>/dev/null | jq -R -r --arg skill "$SKILL_NAME" '
-    fromjson? // empty
-    | (.message.content? // empty)
-    | select(type == "array")
-    | .[]
-    | select((.type? // "") == "tool_use")
-    | select(
-        ((((.name? // "") | ascii_downcase) == "skill") and ((.input.skill? // "") == $skill))
-        or (((.input.file_path? // "") | endswith($skill + "/SKILL.md")))
-        or (((.input.command? // "") | contains($skill + "/SKILL.md")))
-      )
-    | "loaded"
-  ' 2>/dev/null | head -1) || return 1
-  [ "$hit" = loaded ]
+  hit=$(tail -c "+$((offset + 1))" "$TRANSCRIPT" 2>/dev/null \
+    | LC_ALL=C awk -v base="$offset" '{ seen += length($0) + 1; printf "%d\t%s\n", base + seen, $0 }' \
+    | jq -R -r --arg skill "$SKILL_NAME" '
+        (index("\t")) as $tab
+        | select($tab != null)
+        | .[:$tab] as $end
+        | (.[$tab + 1:] | fromjson? // empty)
+        | (.message.content? // empty)
+        | select(type == "array")
+        | .[]
+        | select((.type? // "") == "tool_use")
+        | select(
+            ((((.name? // "") | ascii_downcase) == "skill") and ((.input.skill? // "") == $skill))
+            or (((.input.file_path? // "") | endswith($skill + "/SKILL.md")))
+            or (((.input.command? // "") | contains($skill + "/SKILL.md")))
+          )
+        | $end
+      ' 2>/dev/null | head -1) || return 1
+  case "$hit" in ''|*[!0-9]*) return 1 ;; esac
+  # A final line with no trailing newline makes awk's count one byte long, and a
+  # position past the file would look like a rotated transcript on the next call.
+  [ "$hit" -le "$TRANSCRIPT_SIZE" ] || hit=$TRANSCRIPT_SIZE
+  printf '%s' "$hit"
 }
 
 UNPROVEN_LABELS=""
@@ -417,14 +473,25 @@ while IFS= read -r identity; do
   [ -n "$identity" ] || continue
   line_no=$((line_no + 1))
   offset=$(ledger_lookup "$identity") || offset=$TRANSCRIPT_SIZE
-  skill_loaded_since "$offset" && continue
+  if proof=$(skill_load_end "$offset"); then
+    CONSUMED_OFFSETS="${CONSUMED_OFFSETS}${identity}$(printf '\t')${proof}"$'\n'
+    continue
+  fi
   label=$(printf '%s\n' "$OPEN_LABELS" | sed -n "${line_no}p")
   UNPROVEN_LABELS="${UNPROVEN_LABELS}${label}; "
 done <<EOF
 $OPEN_IDENTITIES
 EOF
 
-[ -n "$UNPROVEN_LABELS" ] || exit 0
+# Permitted, so every open finding had its own proof. Consume each one by moving
+# its recorded position past the load that satisfied it, which is what makes the
+# gate per finding rather than per wake: the next finding decided in this same
+# batch needs its own load. A ledger that cannot be written still allows, because
+# a guard must never turn its own bookkeeping failure into a deny.
+if [ -z "$UNPROVEN_LABELS" ]; then
+  ledger_sync_checked
+  exit 0
+fi
 UNPROVEN_LABELS=${UNPROVEN_LABELS%; }
 
 case "$ROUTE" in
@@ -432,7 +499,7 @@ case "$ROUTE" in
   *)    ACTION='sending a decision to the worker' ;;
 esac
 
-REASON="[$SKILL_NAME] $ACTION is one of the two ways out of an ask-user finding, and these open findings have no $SKILL_NAME load recorded since they appeared: $UNPROVEN_LABELS. Invoke the $SKILL_NAME skill now (Skill tool, skill: $SKILL_NAME), decide the finding under its procedure, then retry this call. Loading it earlier in this session does not satisfy a finding that appeared later - the gate is per finding, because a stale early load is exactly the failure this guard exists to stop. Launch the session with FM_ALLOW_ASK_USER=1 for a deliberate exception."
+REASON="[$SKILL_NAME] $ACTION is one of the two ways out of an ask-user finding, and these open findings have no $SKILL_NAME load recorded since they appeared: $UNPROVEN_LABELS. Invoke the $SKILL_NAME skill now (Skill tool, skill: $SKILL_NAME), decide the finding under its procedure, then retry this call. Loading it earlier in this session does not satisfy a finding that appeared later, and a load already spent on another finding does not carry over to this one - the gate is per finding, because a stale or shared load is exactly the failure this guard exists to stop. Launch the session with FM_ALLOW_ASK_USER=1 for a deliberate exception."
 
 json_escape() {
   printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n' ' '

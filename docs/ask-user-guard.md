@@ -22,6 +22,7 @@ The skill's own step 2 is "Reconstruct the accepted contract from the captain's 
 The failure was not "the skill was never loaded".
 It was "the skill was loaded, an hour and five tickets ago".
 That is why this gate is **per finding** and not per session, and why `test_stale_load_before_finding_is_denied` in `tests/fm-ask-user-pretool-check.test.sh` is the load-bearing regression: a guard that only caught a never-loaded session would look correct and still permit exactly what happened.
+Per finding means per decision, not merely "after the finding appeared": a load is spent by the call it permits, so it cannot be reused on the next finding in the same batch either - see "One load buys one decision".
 
 ## Purpose and boundary
 
@@ -241,6 +242,24 @@ The guard keeps an observation ledger at `state/.ask-user-authority-guard`, one 
 
 A load counts only if it appears in the transcript at or after that finding's recorded offset.
 
+### One load buys one decision
+
+Proof is **consumed** by the call it permits.
+When the guard allows a gated call, it moves each open finding's recorded offset to just past the load that satisfied it, so that load can never satisfy anything else.
+
+Without that, the gate would be per finding only in the temporal sense.
+Several crewmates raise findings while firstmate is away, so it wakes to three or four open at once, loads the skill once, and decides all of them; positional proof that is never spent lets one load cover the whole batch.
+The skill's step 2 is "reconstruct the accepted contract from the captain's original request", and that reconstruction is specific to **one** finding.
+One load covering four means three got no reconstruction at all, which is the 2026-08-24/25 failure compressed into a single wake instead of spread across a session.
+The batch shape is the normal morning, not an edge case, and N loads per wake is trivial against what it buys: firstmate reads the procedure again with *this* finding in mind.
+`test_one_load_does_not_cover_a_whole_batch` pins it.
+
+Three properties of the consume rule are deliberate and are stated here rather than left to be discovered:
+
+- **Only a permitted gated call consumes.** An observation call still stamps first sight and never advances anything, which is what keeps first sight where "Why every tool call observes" below needs it.
+- **Consumption is per decision, not per finding-lifetime.** Re-deciding a finding that is still open needs its own load, so an ask-the-captain followed by a steer to the worker on the same finding costs two loads. That is the intended reading: each decision is a separate application of the procedure. `test_a_spent_load_does_not_cover_a_second_decision` pins it.
+- **A ledger that cannot be written still allows.** Consumption is bookkeeping, and a guard must never turn its own bookkeeping failure into a deny.
+
 The row is keyed on the pair, identity and transcript together, not on the identity alone.
 Two sessions can be open on the same home - a captain-launched second `claude` in the firstmate checkout is the realistic case - and each has its own first sight of the same finding.
 Keying on the identity alone let whichever session wrote last silently revoke the other's established position, so a load that session had genuinely made in response to the finding stopped counting and the finding denied indefinitely.
@@ -250,6 +269,12 @@ A different transcript path still means a different session, so its recorded pos
 A transcript shorter than the recorded offset was rotated or truncated and is treated the same way.
 
 Pruning on write is what keeps the file bounded now that it holds a row per session: a row survives only while its finding is still open and its transcript still exists, so a resolved finding and a session whose transcript is gone both drop out the next time anything writes.
+
+**Residual: the concurrent write is narrowed, not eliminated.**
+The sync is a read-modify-write finished by a single `mv`, so two sessions syncing in the same instant - which is exactly when both are missing a row, right after a finding appears - can still lose the later writer's rows to the winner's rename.
+The guard re-reads after the rename and syncs once more when its own row is missing, which collapses the window to a retry rather than closing it.
+What survives is one spurious deny in that instant, recoverable with one more load, against the indefinite denial the identity-only key produced.
+`test_two_sessions_keep_their_own_first_sight` is strictly sequential and cannot see this case; the retry is asserted only by construction.
 
 ### Why every tool call observes
 
@@ -472,5 +497,5 @@ Its live evidence is the interactive capture above; the portable regression pins
 ### Regression coverage
 
 `tests/fm-ask-user-pretool-check.test.sh` is the portable regression, run by CI with no harness.
-It pins both routes, the per-finding gate including the stale-load case and the reopened-key case, the fail-safe family against a baseline that is proven to deny, the primary-home scoping, the structural-proof rule against this guard's own deny text, all three transport entry forms, the escape hatch, and the Claude wiring itself.
+It pins both routes, the per-finding gate including the stale-load case, the reopened-key case, the batch case, and the spent-load case, the fail-safe family against a baseline that is proven to deny, the primary-home scoping, the structural-proof rule against this guard's own deny text, all three transport entry forms, the escape hatch, and the Claude wiring itself.
 It also pins the steer classifier from the outside, through the guard rather than against the policy module: inspecting `bin/fm-send.sh` allows, invoking it denies from every shell position listed above, a steer the walk cannot place denies without re-denying inspection, and removing the policy module disarms the steer route alone.

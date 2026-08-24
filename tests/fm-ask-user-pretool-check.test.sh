@@ -139,10 +139,13 @@ test_load_for_the_finding_allows_both_routes() {
   run_guard "$home" "$transcript" AskUserQuestion
   assert_allowed_silently 'asking the captain after loading the skill for this finding'
 
+  # Each decision spends its own load, so the steer route gets its own rather
+  # than riding the one the ask route already consumed.
+  transcript_tool_use "$transcript" Skill '{"skill":"ask-user-authority"}'
   run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh rac196 'go with option 2'"
   assert_allowed_silently 'steering the worker after loading the skill for this finding'
 
-  pass "a skill load made after the finding appeared satisfies both routes"
+  pass "a skill load made after the finding appeared satisfies either route"
 }
 
 # --- 4: THE REGRESSION - a load made before the finding does not count -------
@@ -651,12 +654,16 @@ test_two_sessions_keep_their_own_first_sight() {
   run_guard "$home" "$s1" AskUserQuestion
   assert_allowed_silently 'session one asking after loading for the finding'
 
-  # Repeating denied indefinitely before the fix, both on a bare retry and with
-  # the other session observing in between.
+  # Repeating denied indefinitely before the fix. A fresh load per decision is
+  # the ordinary cost now, so what this asserts is that a load session one makes
+  # still works - both on a bare retry and with the other session observing in
+  # between, which is the interleaving that used to revoke session one's row.
+  transcript_tool_use "$s1" Skill '{"skill":"ask-user-authority"}'
   run_guard "$home" "$s1" AskUserQuestion
-  assert_allowed_silently 'session one asking again'
+  assert_allowed_silently 'session one asking again after its own fresh load'
   run_guard "$home" "$s2" Read
   assert_allowed_silently 'session two observing between session one retries'
+  transcript_tool_use "$s1" Skill '{"skill":"ask-user-authority"}'
   run_guard "$home" "$s1" AskUserQuestion
   assert_allowed_silently 'session one asking after session two observed'
 
@@ -733,7 +740,11 @@ test_escape_hatch_allows() {
   pass "FM_ALLOW_ASK_USER=1 is the only value that allows deliberately"
 }
 
-test_multiple_findings_need_each_one_loaded() {
+# This case is about a finding that lands AFTER a load, on a different task: it
+# pins the cross-task reach of the gate, not the batch shape. The batch shape -
+# several findings already open when the load happens - is
+# test_one_load_does_not_cover_a_whole_batch below.
+test_a_later_finding_on_another_task_regates_both_routes() {
   local home transcript
   home=$(make_primary_home "$TMP_ROOT/multi")
   transcript="$TMP_ROOT/multi.jsonl"
@@ -751,7 +762,73 @@ test_multiple_findings_need_each_one_loaded() {
   run_guard "$home" "$transcript" AskUserQuestion
   assert_denied 'asking with a second, unproven finding open' 'rac197 [key=b]'
 
-  pass "an unproven finding anywhere in the home gates both routes, per finding"
+  pass "a finding landing later on any task in the home re-gates both routes"
+}
+
+# The batch shape is the normal morning: several crewmates raise findings while
+# firstmate is away, so it wakes to three or four open at once. Proof of load is
+# consumed by the call it permits, so one load buys exactly one decision and the
+# next finding in the same batch needs its own - otherwise findings 2..N get no
+# reconstruction at all, which is the reported failure compressed into one wake.
+test_one_load_does_not_cover_a_whole_batch() {
+  local home transcript
+  home=$(make_primary_home "$TMP_ROOT/batch")
+  transcript="$TMP_ROOT/batch.jsonl"
+  transcript_noise "$transcript" 'session opens'
+
+  # Both findings are already open at the same moment.
+  printf 'needs-decision [key=a]: first question\n' > "$home/state/rac196.status"
+  printf 'needs-decision [key=b]: second question\n' > "$home/state/rac197.status"
+  run_guard "$home" "$transcript" Read
+  assert_allowed_silently 'ungated call stamping both findings'
+  run_guard "$home" "$transcript" AskUserQuestion
+  assert_denied 'asking before any load' 'rac196 [key=a]'
+
+  transcript_tool_use "$transcript" Skill '{"skill":"ask-user-authority"}'
+  run_guard "$home" "$transcript" AskUserQuestion
+  assert_allowed_silently 'deciding the first finding of the batch'
+
+  # The load is spent. Reusing it for the rest of the batch is the whole bug.
+  run_guard "$home" "$transcript" AskUserQuestion
+  assert_denied 'reusing one load for the rest of the batch' 'rac196 [key=a]'
+  run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh rac197 ok"
+  assert_denied 'steering on a spent load' 'rac197 [key=b]'
+
+  transcript_tool_use "$transcript" Skill '{"skill":"ask-user-authority"}'
+  run_guard "$home" "$transcript" AskUserQuestion
+  assert_allowed_silently 'deciding the second finding after its own load'
+
+  pass "one load buys one decision; the rest of the batch needs its own loads"
+}
+
+# The consume rule has a deliberate consequence worth pinning rather than
+# discovering: re-deciding a finding that is still open needs a fresh load too,
+# so an ask-then-steer on one finding costs two loads. Observation calls never
+# consume, which is what keeps first sight where it belongs.
+test_a_spent_load_does_not_cover_a_second_decision() {
+  local home transcript
+  home=$(make_primary_home "$TMP_ROOT/consume")
+  transcript="$TMP_ROOT/consume.jsonl"
+  transcript_noise "$transcript" 'session opens'
+  printf 'needs-decision [key=k]: open question\n' > "$home/state/rac196.status"
+
+  run_guard "$home" "$transcript" Read
+  assert_allowed_silently 'ungated call stamping the finding'
+  transcript_tool_use "$transcript" Skill '{"skill":"ask-user-authority"}'
+  run_guard "$home" "$transcript" AskUserQuestion
+  assert_allowed_silently 'asking the captain after loading for the finding'
+
+  # Ungated calls in between must not restore or further advance anything.
+  run_guard "$home" "$transcript" Read
+  assert_allowed_silently 'ungated call after the decision'
+  run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh rac196 ok"
+  assert_denied 'steering the same still-open finding on a spent load' 'rac196 [key=k]'
+
+  transcript_tool_use "$transcript" Skill '{"skill":"ask-user-authority"}'
+  run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh rac196 ok"
+  assert_allowed_silently 'steering after a fresh load for the same finding'
+
+  pass "proof is consumed per decision, so re-deciding a still-open finding needs its own load"
 }
 
 # --- Claude wiring ----------------------------------------------------------
@@ -796,5 +873,7 @@ test_deep_nesting_past_the_bound_denies
 test_two_sessions_keep_their_own_first_sight
 test_missing_steer_classifier_allows_silently
 test_escape_hatch_allows
-test_multiple_findings_need_each_one_loaded
+test_a_later_finding_on_another_task_regates_both_routes
+test_one_load_does_not_cover_a_whole_batch
+test_a_spent_load_does_not_cover_a_second_decision
 test_claude_hook_is_wired
