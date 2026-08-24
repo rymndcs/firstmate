@@ -47,12 +47,37 @@ A command that does not survive it can never be denied, which is why the fast pa
 It also runs before any state work, so an ordinary command pays one substring test and nothing else.
 
 Stage two is `bin/fm-ask-user-command-policy.mjs`, invoked only once a finding is already known to be open, so the Node process never enters the common path.
-It answers one question: is a command word whose basename is `fm-send.sh` executed anywhere in this program?
+It starts from command position: deny when a command word whose basename is `fm-send.sh` is executed anywhere in this program.
 It imports `Lexer`, `splitProgram`, and `commandPosition` from `bin/fm-arm-command-policy.mjs`, the sole owner of firstmate's shell classification, so this guard never duplicates shell lexing.
 
 The prefilter alone is not that decision: it matches any *mention* of the script, so it also catches `cat bin/fm-send.sh`, `grep -rn fm-send bin/`, `ls -la bin/fm-send.sh`, and `git log --oneline bin/fm-send.sh`.
 Denying those makes the guard a wedge exactly when firstmate is trying to diagnose the thing it gated, and a wrong deny is worse than the problem this guard solves.
-It would also deny the non-decision uses of the real script - the `--key Escape` nudge in [`stuck-crewmate-recovery`](../.agents/skills/stuck-crewmate-recovery/SKILL.md), the `updatefirstmate` re-read nudge - on tasks unrelated to any open finding.
+
+What stage two does **not** narrow is the non-decision uses of the real script.
+The `--key Escape` nudge in [`stuck-crewmate-recovery`](../.agents/skills/stuck-crewmate-recovery/SKILL.md) and the `updatefirstmate` re-read nudge are genuine invocations of `bin/fm-send.sh`, and they are denied like any other while a finding is open anywhere in this home.
+That is an authorized consequence of the deliberate cross-task gating, not something the classifier removed; the operational cost is recorded with the other costs below.
+
+### The escalation rule
+
+Command position alone is not the whole decision, because a program can carry the steer somewhere the node walk cannot place it.
+`splitProgram` cuts on operators only, so `for w in rac196 rac197; do bin/fm-send.sh $w ok; done` arrives as three nodes and the middle one is headed by `do`; the steer is never in a command position, and a command-position-only policy allows it.
+Answering two workers in one `Bash` call is the realistic agent-mistake shape, so that is not an acceptable gap: a guard a `for` loop walks straight through is not a guard, and a written-down bypass is worse than no guard because the next reader trusts it.
+
+So the policy escalates: **cannot prove it is not a steer, deny.**
+
+This is deliberately **not** the guard's fail-safe rule, and the two must not be collapsed into one.
+Fail-safe covers state the guard cannot read - an unreadable status file, a missing tool, an unrecognized payload - and there the answer is allow and stay silent, because the guard has no business blocking work over its own blindness.
+This is the opposite case: the guard can read the command, and the command carries a token it cannot rule out as a steer.
+Denying is recoverable in one step, because the deny message names the skill to load.
+Allowing is not recoverable at all, because the steer goes out unchecked.
+
+Both rules stay intact.
+Inside `bin/fm-ask-user-pretool-check.sh`, a missing Node, a missing policy file, or a policy answer the transport does not recognize still allow silently.
+
+Concretely, a word whose basename is `fm-send.sh` is treated as plain data only when the node holding it is a fully placed simple command whose command word is neither a shell reserved word nor a utility that executes what it is handed.
+`cat bin/fm-send.sh` is placed, so the path is an argument and stays allowed.
+`do bin/fm-send.sh $w ok` is a compound-command body the walk cannot place, and `eval` and `xargs` execute what they are given, so all three deny.
+The wrappers `commandPosition` already resolves through - `command`, `env`, `exec`, `nohup`, `sudo`, `timeout` - need no escalation, because it hands back the real command word for them.
 
 Unlike the cd transport, a quoting-decoder marker (`$'…'`, `$"…"`) deliberately does **not** escalate past the fast path.
 There, escalation hands an undecidable command to a classifier that can still decide it precisely.
@@ -61,23 +86,45 @@ Deliberate obfuscation is out of scope under the same agent-mistake threat model
 
 ### What the classifier covers, empirically
 
-Determined by running the classifier over each form rather than reasoned about, and pinned by `test_mentioning_the_steer_script_is_not_steering` and `test_steer_in_a_compound_command_is_denied`.
+Every row below was produced by running the shipped module directly, `node bin/fm-ask-user-command-policy.mjs --command '<form>'`, not reasoned about.
+The behavior is pinned end to end through the guard by `test_mentioning_the_steer_script_is_not_steering`, `test_steer_in_a_compound_command_is_denied`, and `test_steer_the_walk_cannot_place_is_denied`.
 
-Denied, because the steer is genuinely executed:
+Denied because the steer is in a command position:
 
 - a plain invocation, and any path spelling whose basename is `fm-send.sh`;
 - ordinary quoting and escaping inside the word, `"bin/fm-send.sh"`, `bin/fm-'send'.sh`, `bin/fm-\send.sh`;
-- leading assignments and wrappers, `FM_HOME=/h bin/fm-send.sh …`, `command …`, `env … `, `sudo …`, `timeout …`;
-- a subshell `(…)` or brace group `{ …; }`, a pipeline stage, a backgrounded job, and any position in an `&&`/`||`/`;` list, because unlike the cd guard there is no persistence question here - a steer delivers from every one of those positions, so no node is skipped;
-- a command substitution, `x=$(bin/fm-send.sh …)`.
+- leading assignments and wrappers, `FM_HOME=/h bin/fm-send.sh …`, `command …`, `env … `, `sudo …`, `timeout …`, `nohup …`;
+- a subshell `(…)` or brace group `{ …; }`, a pipeline stage, a backgrounded job, a newline-separated line, and any position in an `&&`/`||`/`;` list, because unlike the cd guard there is no persistence question here - a steer delivers from every one of those positions, so no node is skipped;
+- a command substitution, `x=$(bin/fm-send.sh …)`;
+- the non-decision invocations, `bin/fm-send.sh rac196 --key Escape` and `FM_HOME=/h bin/fm-send.sh <window> --key Escape`.
 
-Allowed, because no `fm-send.sh` command word is executed: `cat bin/fm-send.sh`, `grep -rn fm-send bin/`, `ls -la bin/fm-send.sh`, `git log --oneline bin/fm-send.sh`, `echo fm-send`.
+Denied by the escalation rule, because the walk could not place the steer token:
 
-**Stated gap: a steer nested inside an explicit shell invocation.**
-`bash -c 'bin/fm-send.sh rac196 ok'` is allowed.
-The lexer sees `bash` as the command word and the program as a quoted data word, and the arm policy's own `bash -c` unwrapping is private to that file rather than part of the exported classifier surface.
-This sits inside the guard's agent-mistake threat model: an agent skipping the skill reaches for the steer, not for a shell wrapper around it.
-Closing it would mean either exporting that unwrapping from `bin/fm-arm-command-policy.mjs` or duplicating it here, and duplicating shell classification is the thing this design exists to avoid.
+- a loop body, `for w in rac196 rac197; do bin/fm-send.sh $w ok; done` and `while read -r w; do bin/fm-send.sh $w ok; done`;
+- a conditional body, `if true; then bin/fm-send.sh rac196 ok; fi`;
+- a `case` list, `case x in a) bin/fm-send.sh rac196 ok;; esac`, which the lexer rejects outright as unsupported syntax;
+- `eval bin/fm-send.sh rac196 ok` and `eval "bin/fm-send.sh rac196 ok"`;
+- `xargs -I{} bin/fm-send.sh {} ok`;
+- an explicit shell invocation, `bash -c 'bin/fm-send.sh rac196 ok'` and `sh -c 'bin/fm-send.sh rac196 ok'`;
+- `find . -name x -exec bin/fm-send.sh {} \;`, and the same for `-execdir`, `-ok`, `-okdir`;
+- `nice`, `setsid`, `flock`, `watch`, `parallel`, `ssh`, `su`, and the other utilities that execute what they are handed;
+- `time bin/fm-send.sh rac196 ok`, because `time` is a reserved word rather than a command;
+- `STEER=bin/fm-send.sh; $STEER rac196 ok`, because the assignment node cannot be placed.
+
+Allowed, because the path is an argument of a placed simple command that only reads it: `cat bin/fm-send.sh`, `grep -rn fm-send bin/`, `grep -rn fm-send.sh bin/`, `ls -la bin/fm-send.sh`, `git log --oneline bin/fm-send.sh`, `wc -l bin/fm-send.sh`, `git diff bin/fm-send.sh`, `shellcheck bin/fm-send.sh`, `find . -name fm-send.sh`, `echo fm-send`.
+
+The escalation is broader than a command-position match, and two consequences are worth stating plainly.
+
+**A read-only loop over the path denies.**
+`for f in bin/fm-send.sh; do cat $f; done` is denied even though it only reads the file.
+That is the rule working as designed rather than a defect: the walk cannot place that word, and the tie is broken toward the recoverable outcome.
+Inspecting the file without a loop, which is what diagnosis actually looks like, is unaffected.
+
+**Stated gap: a heredoc body is never lexed.**
+`bash <<EOF` … `bin/fm-send.sh a b` … `EOF` is allowed.
+The tokenizer treats a heredoc as a redirection and its body as data it never turns into words, which is correct for the overwhelmingly common case of feeding text to a data sink, and wrong only when the sink is itself a shell.
+That shape is outside the agent-mistake threat model this guard shares with the arm and cd guards: an agent skipping the skill reaches for the steer, not for a heredoc-fed interpreter.
+Closing it would mean lexing heredoc bodies inside `bin/fm-arm-command-policy.mjs`, which is a change to the shared classifier and a captain-owned call.
 
 ### Routes this guard does not cover
 
@@ -85,7 +132,12 @@ Two escalation surfaces are outside a PreToolUse hook's reach, and are recorded 
 
 - **Plain chat.** Firstmate escalating a finding as ordinary prose in its reply is not a tool call, so no PreToolUse hook can see it. `AGENTS.md` section 9 explicitly prefers plain chat for a yes-or-no decision, so this is a real residual gap. Closing it would need a turn-end mechanism, not a PreToolUse one.
 - **`lavish-axi`.** A structured review surface is a third way to put options in front of the captain. It is a `Bash` call and could be added to the steer prefilter in one line, but it was not in the authorized scope of the change that introduced this guard, and widening the deny surface is a captain-owned call.
-- **A steer nested inside `bash -c`.** Covered under the classifier's stated gap above.
+- **A steer inside a heredoc body fed to a shell.** Covered under the classifier's stated gap above.
+
+One cost runs the other way, and belongs here rather than being left implicit.
+Every non-decision use of `bin/fm-send.sh` is denied too, on any task, while a single finding is open anywhere in this home: the `--key Escape` nudge in [`stuck-crewmate-recovery`](../.agents/skills/stuck-crewmate-recovery/SKILL.md) and the `updatefirstmate` re-read nudge are genuine invocations and the guard cannot tell them from a decision.
+That is an authorized consequence of gating the steer entry point across the whole home rather than per task, and it is recoverable in one step: load `ask-user-authority` for the open finding, or launch the session with `FM_ALLOW_ASK_USER=1`.
+It is a cost, not a wedge, and the deny message names both routes out.
 
 ## Detecting a finding
 
@@ -182,6 +234,11 @@ Any parse failure disarms the guard instead.
 The cost of that choice is stated plainly: an unwritable state directory or an unparseable transcript silently disarms the gate.
 A `blocked` line landing on an open finding's key disarms it the same way, for a different reason - see the fold note under "Detecting a finding".
 `test_fail_safe_states_allow_silently` and `test_missing_steer_classifier_allows_silently` assert each of these against a fixture that is proven to deny in its baseline, so none of them can pass vacuously.
+
+The gate also has a cost in the other direction, paid while it is armed rather than while it is disarmed, and it is real enough to state next to these.
+Every use of `bin/fm-send.sh` is denied on every task while any one finding is open in this home, including the non-decision nudges recorded under "Routes this guard does not cover".
+Fail-safe governs what the guard does when it cannot read something; the escalation rule under "The escalation rule" governs what it does when it can read a command but cannot place a steer token in it, and there the tie breaks toward denying.
+Both denials are recoverable in one step, which is what makes them costs rather than wedges.
 
 ## Scope
 
@@ -356,4 +413,4 @@ Its live evidence is the interactive capture above; the portable regression pins
 
 `tests/fm-ask-user-pretool-check.test.sh` is the portable regression, run by CI with no harness.
 It pins both routes, the per-finding gate including the stale-load case and the reopened-key case, the fail-safe family against a baseline that is proven to deny, the primary-home scoping, the structural-proof rule against this guard's own deny text, all three transport entry forms, the escape hatch, and the Claude wiring itself.
-It also pins the steer classifier from the outside, through the guard rather than against the policy module: inspecting `bin/fm-send.sh` allows, invoking it denies from every shell position listed above, and removing the policy module disarms the steer route alone.
+It also pins the steer classifier from the outside, through the guard rather than against the policy module: inspecting `bin/fm-send.sh` allows, invoking it denies from every shell position listed above, a steer the walk cannot place denies without re-denying inspection, and removing the policy module disarms the steer route alone.

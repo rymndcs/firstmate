@@ -504,8 +504,7 @@ test_mentioning_the_steer_script_is_not_steering() {
 }
 
 # The steer still lands from a subshell, a brace group, a pipeline stage, and a
-# backgrounded job, so none of those positions is skipped. `sh -c '<steer>'` is a
-# recorded gap, not an oversight; see docs/ask-user-guard.md.
+# backgrounded job, so none of those positions is skipped.
 test_steer_in_a_compound_command_is_denied() {
   local home transcript cmd
   home=$(make_primary_home "$TMP_ROOT/compound")
@@ -513,18 +512,68 @@ test_steer_in_a_compound_command_is_denied() {
   transcript_noise "$transcript" 'session opens'
   printf 'needs-decision [key=k]: open question\n' > "$home/state/rac196.status"
 
+  # shellcheck disable=SC2016 # the classifier, not this test shell, reads these commands
   for cmd in \
     '(bin/fm-send.sh rac196 ok)' \
     '{ bin/fm-send.sh rac196 ok; }' \
     'echo ok | bin/fm-send.sh rac196 ok' \
     'bin/fm-send.sh rac196 ok &' \
-    'true && bin/fm-send.sh rac196 ok'
+    'true && bin/fm-send.sh rac196 ok' \
+    'x=$(bin/fm-send.sh rac196 ok)' \
+    'env FM_HOME=/h bin/fm-send.sh rac196 ok' \
+    'timeout 5 bin/fm-send.sh rac196 ok'
   do
     run_guard "$home" "$transcript" Bash "$cmd"
     assert_denied "steer position <$cmd>" 'rac196 [key=k]'
   done
 
   pass "a steer in a subshell, brace group, pipeline, background job, or list still gates"
+}
+
+# A guard a `for` loop walks straight through is not a guard. Answering two
+# workers in one Bash call is the realistic agent-mistake shape, and command
+# position alone never sees it: splitProgram cuts on operators, so the loop body
+# arrives headed by `do` and the steer is never in a command position. The rule
+# that closes it is "cannot prove it is NOT a steer -> deny", which is why the
+# read-only cases above have to keep allowing in the same fixture.
+test_steer_the_walk_cannot_place_is_denied() {
+  local home transcript cmd
+  home=$(make_primary_home "$TMP_ROOT/unplaceable")
+  transcript="$TMP_ROOT/unplaceable.jsonl"
+  transcript_noise "$transcript" 'session opens'
+  printf 'needs-decision [key=k]: open question\n' > "$home/state/rac196.status"
+
+  # shellcheck disable=SC2016 # the classifier, not this test shell, reads these commands
+  for cmd in \
+    'for w in rac196 rac197; do bin/fm-send.sh $w ok; done' \
+    'while read -r w; do bin/fm-send.sh $w ok; done' \
+    'if true; then bin/fm-send.sh rac196 ok; fi' \
+    'case x in a) bin/fm-send.sh rac196 ok;; esac' \
+    'eval bin/fm-send.sh rac196 ok' \
+    'eval "bin/fm-send.sh rac196 ok"' \
+    'xargs -I{} bin/fm-send.sh {} ok' \
+    "bash -c 'bin/fm-send.sh rac196 ok'" \
+    "sh -c 'bin/fm-send.sh rac196 ok'" \
+    'find . -name x -exec bin/fm-send.sh {} ;'
+  do
+    run_guard "$home" "$transcript" Bash "$cmd"
+    assert_denied "unplaceable steer <$cmd>" 'rac196 [key=k]'
+  done
+
+  # The escalation must not swallow the read-only cases back up, which is the
+  # whole reason it keys on command position rather than on a mention.
+  for cmd in \
+    'cat bin/fm-send.sh' \
+    'ls -la bin/fm-send.sh' \
+    'git log --oneline bin/fm-send.sh' \
+    'grep -rn fm-send.sh bin/' \
+    'find . -name fm-send.sh'
+  do
+    run_guard "$home" "$transcript" Bash "$cmd"
+    assert_allowed_silently "read-only command <$cmd>"
+  done
+
+  pass "a steer in a loop, conditional, case list, eval, xargs, or shell -c is denied without re-denying inspection"
 }
 
 # The classifier is a downstream owner, so its absence is an undeterminable state
@@ -636,6 +685,7 @@ test_harness_entry_forms
 test_quoted_steer_still_matches
 test_mentioning_the_steer_script_is_not_steering
 test_steer_in_a_compound_command_is_denied
+test_steer_the_walk_cannot_place_is_denied
 test_missing_steer_classifier_allows_silently
 test_escape_hatch_allows
 test_multiple_findings_need_each_one_loaded
