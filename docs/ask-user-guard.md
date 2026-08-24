@@ -564,16 +564,14 @@ Each also carries its own structural attempt assertion, because an absent steer 
 A second PreToolUse hook in the lab home records every tool call to `state/attempts.log` and exits 0 without touching any decision, and a case whose log holds no `Bash` attempt at the gated steer fails saying it proved nothing rather than passing.
 That is what keeps the file honest against the release it exists to catch: a future Claude that simply declines to try would otherwise leave the deny cases green.
 
-**The dated result below is scoped, and does not cover the file as it stands.**
+Recorded result on 2026-08-25, claude 2.1.241: all three cases pass, against the file as it now stands.
+This run covers the attempt assertions themselves - the second PreToolUse hook, the `assert_steer_attempted` call in all three cases, and the tightened predicate - and the lab home that copies both policy modules.
 
-Recorded result on 2026-08-25, claude 2.1.241: all three cases passed **as the file was written that day**.
-That run predates the attempt assertions described in the paragraph above: the second PreToolUse hook, the `assert_steer_attempted` call in all three cases, and the later tightening of its predicate were all added afterwards, and the lab home now also copies two policy modules the recorded run never had.
-So the attempt assertions themselves have never been exercised against a real harness, and per the rule directly above, the date must not be trusted until `FM_CLAUDE_LIVE_E2E=1` is run again.
-
-The open question that re-run has to settle is specific, so whoever runs it knows what to look for.
+It also settles the ordering question those assertions depend on.
 Cases A and C assert an attempt on a call the gate **denies**, which requires Claude Code to run the second PreToolUse hook even after the first returns exit 2.
-Whether the harness runs the whole hook list or short-circuits on a deny is unverified.
-If it short-circuits, those two cases fail at `never attempted <bin/fm-send.sh rac196>` rather than passing, and the fix is in the lab wiring, not in the guard.
+It does: both cases passed their attempt assertion on a denied call, so the harness runs the whole hook list rather than short-circuiting on a deny.
+Had it short-circuited, those two cases would have failed at `never attempted <bin/fm-send.sh rac196>` rather than passing.
+That behavior is a vendor property, not a guard property, so re-check it after a Claude upgrade the same way the rest of this record is refreshed.
 
 The AskUserQuestion route is not exercised by that guard, because headless `claude -p` does not expose the tool.
 Its live evidence is the interactive capture above; the portable regression pins the tool-name classification.
