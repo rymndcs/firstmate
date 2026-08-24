@@ -576,6 +576,39 @@ test_steer_the_walk_cannot_place_is_denied() {
   pass "a steer in a loop, conditional, case list, eval, xargs, or shell -c is denied without re-denying inspection"
 }
 
+# Running out of re-lexing recursion is the same situation as syntax the lexer
+# cannot tokenize: the bytes are readable and the walk has simply stopped. The
+# bound must escalate like every other unplaceable case rather than becoming the
+# one hole in the rule, and it must not drag ordinary inspection in with it -
+# which it cannot, because a simple command is decided before any recursion.
+test_deep_nesting_past_the_bound_denies() {
+  local home transcript cmd depth
+  home=$(make_primary_home "$TMP_ROOT/deep-nesting")
+  transcript="$TMP_ROOT/deep-nesting.jsonl"
+  transcript_noise "$transcript" 'session opens'
+  printf 'needs-decision [key=k]: open question\n' > "$home/state/rac196.status"
+
+  for depth in 1 8 9 16; do
+    cmd='bin/fm-send.sh rac196 ok'
+    local i=0
+    while [ "$i" -lt "$depth" ]; do
+      cmd="( $cmd )"
+      i=$((i + 1))
+    done
+    run_guard "$home" "$transcript" Bash "$cmd"
+    assert_denied "steer nested $depth deep" 'rac196 [key=k]'
+  done
+
+  cmd='cat bin/fm-send.sh'
+  for depth in 1 2 3; do
+    cmd="( $cmd )"
+  done
+  run_guard "$home" "$transcript" Bash "$cmd"
+  assert_allowed_silently 'nested read-only inspection'
+
+  pass "nesting past the recursion bound denies instead of allowing, and inspection is unaffected"
+}
+
 # The classifier is a downstream owner, so its absence is an undeterminable state
 # like every other one in this guard: allow, silently.
 test_missing_steer_classifier_allows_silently() {
@@ -686,6 +719,7 @@ test_quoted_steer_still_matches
 test_mentioning_the_steer_script_is_not_steering
 test_steer_in_a_compound_command_is_denied
 test_steer_the_walk_cannot_place_is_denied
+test_deep_nesting_past_the_bound_denies
 test_missing_steer_classifier_allows_silently
 test_escape_hatch_allows
 test_multiple_findings_need_each_one_loaded

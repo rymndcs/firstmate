@@ -107,11 +107,15 @@ Denied by the escalation rule, because the walk could not place the steer token:
 - `xargs -I{} bin/fm-send.sh {} ok`;
 - an explicit shell invocation, `bash -c 'bin/fm-send.sh rac196 ok'` and `sh -c 'bin/fm-send.sh rac196 ok'`;
 - `find . -name x -exec bin/fm-send.sh {} \;`, and the same for `-execdir`, `-ok`, `-okdir`;
-- `nice`, `setsid`, `flock`, `watch`, `parallel`, `ssh`, `su`, and the other utilities that execute what they are handed;
+- the shells and shell-adjacent runners named in `COMMAND_EXECUTORS`, which is exactly `.`, `bash`, `chroot`, `dash`, `doas`, `eval`, `flock`, `ionice`, `ksh`, `nice`, `parallel`, `runuser`, `setsid`, `sh`, `source`, `ssh`, `stdbuf`, `su`, `watch`, `xargs`, `zsh`, plus `find` under its `-exec` family, and nothing else;
 - `time bin/fm-send.sh rac196 ok`, because `time` is a reserved word rather than a command;
 - `STEER=bin/fm-send.sh; $STEER rac196 ok`, because the assignment node cannot be placed.
 
 Allowed, because the path is an argument of a placed simple command that only reads it: `cat bin/fm-send.sh`, `grep -rn fm-send bin/`, `grep -rn fm-send.sh bin/`, `ls -la bin/fm-send.sh`, `git log --oneline bin/fm-send.sh`, `wc -l bin/fm-send.sh`, `git diff bin/fm-send.sh`, `shellcheck bin/fm-send.sh`, `find . -name fm-send.sh`, `echo fm-send`.
+
+Deep nesting escalates rather than allows.
+The re-lexing recursion has a runaway backstop at eight levels, and a program that runs past it is treated exactly like one the lexer could not tokenize: if the remaining bytes still carry a steer token, it denies.
+`test_deep_nesting_past_the_bound_denies` pins that, and it cannot re-deny inspection, because `cat bin/fm-send.sh` is decided at depth zero and never reaches the bound.
 
 The escalation is broader than a command-position match, and two consequences are worth stating plainly.
 
@@ -125,6 +129,32 @@ Inspecting the file without a loop, which is what diagnosis actually looks like,
 The tokenizer treats a heredoc as a redirection and its body as data it never turns into words, which is correct for the overwhelmingly common case of feeding text to a data sink, and wrong only when the sink is itself a shell.
 That shape is outside the agent-mistake threat model this guard shares with the arm and cd guards: an agent skipping the skill reaches for the steer, not for a heredoc-fed interpreter.
 Closing it would mean lexing heredoc bodies inside `bin/fm-arm-command-policy.mjs`, which is a change to the shared classifier and a captain-owned call.
+
+**Stated gap: an interpreter one-liner that carries the steer.**
+This one was reviewed and deliberately left open; it is a decision, not an oversight.
+
+*What is not covered.*
+`COMMAND_EXECUTORS` holds shells and shell-adjacent runners only, so a general-purpose interpreter handed the steer as program text is allowed.
+Verified against the shipped module, all of these allow:
+
+- `python3 -c "import subprocess;subprocess.run(['bin/fm-send.sh','rac196','ok'])"`;
+- `node -e "require('child_process').execSync('bin/fm-send.sh rac196 ok')"`;
+- `perl -e "system(q(bin/fm-send.sh rac196 ok))"`;
+- `awk 'BEGIN{system("bin/fm-send.sh rac196 ok")}'`;
+- `git rebase --exec "bin/fm-send.sh rac196 ok" main`;
+- interpreter one-liners generally, by the same mechanism.
+
+*Why it stays open.*
+This guard exists to stop firstmate **forgetting** a skill, not to stop a determined bypass, and that is the same accidental-omission threat model the arm and cd guards use.
+A firstmate that skips `ask-user-authority` reaches for `bin/fm-send.sh`, not for a Python one-liner wrapping it.
+Adding interpreters to the executor list would deny an ordinary `python3 -c` whenever any finding is open anywhere in the home, and firstmate uses `python3 -c` routinely to edit knowledge files and parse output, entirely unrelated to steering.
+That is precisely the wrongly-denies failure two review rounds were spent removing.
+A guard that blocks a dozen legitimate commands to close a hole nobody will walk through is a worse guard.
+
+*What would change the answer.*
+If a steer ever actually reaches a worker through one of these forms, the gap stops being theoretical and `COMMAND_EXECUTORS` is revisited on that evidence.
+Record the incident here when it happens.
+A documented gap with no condition for revisiting it decays into a forgotten one, so this trigger is part of the decision rather than a footnote to it.
 
 ### Routes this guard does not cover
 

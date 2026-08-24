@@ -38,7 +38,8 @@ const STEER_BASENAME = "fm-send.sh";
 
 // Compound commands and command substitutions carry their own program text, and
 // this policy re-lexes that text rather than guessing at it. The bound is a
-// runaway-nesting backstop, far above anything a real command reaches.
+// runaway-nesting backstop, far above anything a real command reaches, and
+// hitting it escalates rather than allows.
 const MAX_NESTING = 8;
 
 // THE ESCALATION RULE, and why it is not the guard's fail-safe rule.
@@ -142,7 +143,10 @@ function nodeInvokesSteer(node, depth) {
 // subshell or brace group, inside a command substitution, or inside a compound
 // body or executor argument the walk cannot place.
 function invokesSteer(source, depth) {
-  if (depth > MAX_NESTING) return false;
+  // Running out of recursion is the escalation rule's case, not the fail-safe
+  // rule's: the bytes are readable and the walk has simply stopped, exactly like
+  // the lexer-error branch below and like the shared owner's own bound.
+  if (depth > MAX_NESTING) return mentionsSteer(source);
   const lexed = new Lexer(source).tokenize();
   // Syntax this classifier cannot tokenize at all, such as a `case` list, is the
   // escalation rule's clearest case: the bytes are right here and they carry a

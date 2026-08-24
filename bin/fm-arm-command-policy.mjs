@@ -7,9 +7,12 @@
 //
 // This file is the sole owner of firstmate's shell command classification.
 // The tokenizer and command-position analysis (Lexer, splitProgram,
-// commandPosition) are exported so the sibling cd-guard policy
-// (bin/fm-cd-command-policy.mjs) reuses the same proven parser instead of
-// duplicating shell lexing; see docs/cd-guard.md. The watcher-arm decision
+// commandPosition) are exported so the sibling guard policies reuse the same
+// proven parser instead of duplicating shell lexing. Two consumers import them
+// today, and changing an exported primitive changes both:
+//   - bin/fm-cd-command-policy.mjs      (docs/cd-guard.md)
+//   - bin/fm-ask-user-command-policy.mjs (docs/ask-user-guard.md)
+// The watcher-arm decision
 // procedure below stays private to this file. The CLI entry point at the bottom
 // runs only when this module is invoked directly, never on import.
 

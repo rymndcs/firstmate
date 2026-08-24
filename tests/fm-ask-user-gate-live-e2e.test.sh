@@ -121,14 +121,21 @@ EOF
 
 # A case that never reached the gated Bash call proves nothing about the gate,
 # whichever way its marker assertion happens to land.
-assert_steer_attempted() {  # <dir> <task> <case-label>
-  local dir=$1 task=$2 label=$3
+#
+# What counts as reaching it is the prescribed steer INVOCATION, not any command
+# that happens to name the
+# script and the task: `grep -n rac196 bin/fm-send.sh` mentions both, is allowed
+# by the gate, and lands in this log, so a mention-shaped predicate would let a
+# session that only investigated stand in for one that tried. The message is left
+# out of the match because the model's quoting of it is not the test's business.
+assert_steer_attempted() {  # <dir> <steer-prefix> <case-label>
+  local dir=$1 prefix=$2 label=$3
   [ -s "$dir/state/attempts.log" ] \
     || fail "$HARNESS: case $label recorded no tool call at all, so it proved nothing about the gate"
-  awk -F'\t' -v task="$task" \
-    '$1 == "Bash" && index($2, "fm-send.sh") > 0 && index($2, task) > 0 { found = 1 }
+  awk -F'\t' -v prefix="$prefix" \
+    '$1 == "Bash" && index($2, prefix) > 0 { found = 1 }
      END { exit found ? 0 : 1 }' "$dir/state/attempts.log" \
-    || fail "$HARNESS: case $label never attempted the gated steer for $task, so it proved nothing about the gate"
+    || fail "$HARNESS: case $label never attempted <$prefix>, so it proved nothing about the gate"
 }
 
 run_claude() {  # <dir> <prompt>
@@ -145,7 +152,7 @@ make_lab_home "$A"
 printf 'working: implementing\nneeds-decision [key=title-fallback]: three options\n' \
   > "$A/state/rac196.status"
 run_claude "$A" "$STEER_PROMPT"
-assert_steer_attempted "$A" rac196 A
+assert_steer_attempted "$A" 'bin/fm-send.sh rac196' A
 [ ! -e "$A/state/steer-marker" ] \
   || fail "$HARNESS: the steer ran with an open ask-user finding and no skill load"
 [ -f "$A/state/.ask-user-authority-guard" ] \
@@ -158,7 +165,7 @@ B="$LAB/loaded-for"
 make_lab_home "$B"
 printf 'needs-decision [key=title-fallback]: three options\n' > "$B/state/rac196.status"
 run_claude "$B" 'First invoke the ask-user-authority skill via the Skill tool. Then run the Bash tool with exactly this command: bin/fm-send.sh rac196 "go with option 2".'
-assert_steer_attempted "$B" rac196 B
+assert_steer_attempted "$B" 'bin/fm-send.sh rac196' B
 [ -f "$B/state/steer-marker" ] \
   || fail "$HARNESS: the steer was still blocked after the skill was loaded for the finding; the gate wedges a correct session"
 pass "$HARNESS: a skill load made for the open finding allows the steer"
@@ -172,7 +179,7 @@ run_claude "$C" 'Do these three steps in order, no others. 1) Invoke the ask-use
   || fail "$HARNESS: the finding was never written, so this case did not exercise the regression"
 grep -q 'needs-decision' "$C/state/rac999.status" \
   || fail "$HARNESS: the finding line is not a needs-decision, so this case did not exercise the regression"
-assert_steer_attempted "$C" rac999 C
+assert_steer_attempted "$C" 'bin/fm-send.sh rac999' C
 [ ! -e "$C/state/steer-marker" ] \
   || fail "$HARNESS: a skill load that PREDATES the finding satisfied it; the per-finding gate is not enforced"
 pass "$HARNESS: a skill load that predates the finding does not satisfy it"
