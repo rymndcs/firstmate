@@ -256,14 +256,21 @@ esac
 # never swallows the very load being recorded against.
 LEDGER="$STATE/.ask-user-authority-guard"
 
-ledger_lookup() {  # <identity> -> prints recorded offset, or fails
+# A row is keyed on the PAIR <identity, transcript>, not on the identity alone.
+# Two sessions can be open on the same home, and each has its own first sight of
+# the same finding. Keying on the identity alone would let whichever session
+# wrote last silently revoke the other's established position, which re-denies a
+# load that session genuinely made in response to the finding - the wedge this
+# guard must never become.
+ledger_lookup() {  # <identity> -> prints this transcript's recorded offset, or fails
   local want=$1 lid ltp loff
   [ -f "$LEDGER" ] || return 1
   while IFS="$(printf '\t')" read -r lid ltp loff; do
     [ "$lid" = "$want" ] || continue
-    # A different transcript is a different session: the recorded position means
-    # nothing in this file, so the finding needs a fresh load here.
-    [ "$ltp" = "$TRANSCRIPT" ] || return 1
+    # A different transcript is a different session: its recorded position means
+    # nothing here, so keep looking for this session's own row. The finding still
+    # needs a fresh load in THIS transcript, which is what a missing row gives.
+    [ "$ltp" = "$TRANSCRIPT" ] || continue
     case "$loff" in ''|*[!0-9]*) return 1 ;; esac
     # A transcript shorter than the recorded position was rotated or truncated.
     [ "$loff" -le "$TRANSCRIPT_SIZE" ] || return 1
@@ -273,17 +280,44 @@ ledger_lookup() {  # <identity> -> prints recorded offset, or fails
   return 1
 }
 
-# Rewrite the ledger to exactly the currently-open findings, preserving each
-# known first-sight position and stamping the current one for new findings.
-# Pruning on write is what keeps this file bounded: a resolved finding's row is
-# dropped the next time the set changes.
+ledger_identity_is_open() {  # <identity>
+  local want=$1 line
+  while IFS= read -r line; do
+    [ "$line" = "$want" ] || continue
+    return 0
+  done <<EOF
+$OPEN_IDENTITIES
+EOF
+  return 1
+}
+
+# Rewrite the ledger to every currently-open finding in this transcript, plus
+# every other session's still-live rows, preserving each known first-sight
+# position and stamping the current one for new findings.
+# Pruning on write is what keeps this file bounded now that it holds one row per
+# <finding, session>: a row survives only while its finding is still open AND its
+# transcript still exists, so a resolved finding and a vanished session both drop
+# out the next time anything writes.
 ledger_sync() {
-  local tmp identity offset
+  local tmp identity offset lid ltp loff
   tmp="$LEDGER.$$"
   # Redirections are opened left to right, so 2>/dev/null must come FIRST or a
   # read-only state directory prints bash's own "Permission denied" to the real
   # stderr - which Claude reads as hook output on an allow.
   : 2>/dev/null > "$tmp" || return 1
+  if [ -f "$LEDGER" ]; then
+    while IFS="$(printf '\t')" read -r lid ltp loff; do
+      [ -n "$lid" ] || continue
+      [ "$ltp" != "$TRANSCRIPT" ] || continue
+      [ -n "$ltp" ] && [ -f "$ltp" ] || continue
+      case "$loff" in ''|*[!0-9]*) continue ;; esac
+      ledger_identity_is_open "$lid" || continue
+      printf '%s\t%s\t%s\n' "$lid" "$ltp" "$loff" 2>/dev/null >> "$tmp" || {
+        rm -f "$tmp" 2>/dev/null
+        return 1
+      }
+    done < "$LEDGER"
+  fi
   while IFS= read -r identity; do
     [ -n "$identity" ] || continue
     offset=$(ledger_lookup "$identity") || offset=$TRANSCRIPT_SIZE

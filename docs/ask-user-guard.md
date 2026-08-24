@@ -115,14 +115,34 @@ Allowed, because the path is an argument of a placed simple command that only re
 
 Deep nesting escalates rather than allows.
 The re-lexing recursion has a runaway backstop at eight levels, and a program that runs past it is treated exactly like one the lexer could not tokenize: if the remaining bytes still carry a steer token, it denies.
-`test_deep_nesting_past_the_bound_denies` pins that, and it cannot re-deny inspection, because `cat bin/fm-send.sh` is decided at depth zero and never reaches the bound.
+That escalation is not selective, so inspection is unaffected only *below* the bound: `cat bin/fm-send.sh` wrapped in one to eight subshells allows, and the same command wrapped in nine or more denies, because the bound is reached before any placement is attempted.
+`test_deep_nesting_past_the_bound_denies` covers the steer at depths 1, 8, 9, and 16, and the inspection allow at depths 1, 3, and 8, which is the range the sentence above claims.
+Nine nested subshells around a `cat` is not a shape anyone writes, so the practical cost is nil, but the claim is bounded here rather than stated absolutely.
 
-The escalation is broader than a command-position match, and two consequences are worth stating plainly.
+### What the escalation costs
 
-**A read-only loop over the path denies.**
-`for f in bin/fm-send.sh; do cat $f; done` is denied even though it only reads the file.
-That is the rule working as designed rather than a defect: the walk cannot place that word, and the tie is broken toward the recoverable outcome.
-Inspecting the file without a loop, which is what diagnosis actually looks like, is unaffected.
+The escalation is broader than a command-position match, and it denies a real class of read-only command.
+Every row below was verified by running the shipped module.
+None of this argues for narrowing the rule - deny-on-unplaceable is the decision - only for the class being written down, since an unwritten cost is the one that surprises the next reader.
+
+**A guarded existence check denies, and so does a loop over the path.**
+An `if`/`then` node is headed by a reserved word, so the walk cannot place anything in it and the escalation fires on any steer token it holds:
+
+- `if [ -f bin/fm-send.sh ]; then echo yes; fi` denies;
+- `if grep -q fm-send.sh docs/ask-user-guard.md; then echo yes; fi` denies;
+- `for f in bin/fm-send.sh; do cat $f; done` denies.
+
+Checking that a thing exists before acting on it is at least as common a diagnosis shape as a bare `cat`, so this is not an exotic corner.
+The unguarded spellings of the same intent do allow: `test -f bin/fm-send.sh && echo yes` and `[ -f bin/fm-send.sh ] && echo yes` are ordinary list nodes with placed command words.
+
+**Some wrappers around inspection deny, and some do not.**
+`commandPosition` resolves through `command`, `env`, `exec`, `nohup`, `sudo`, and `timeout`, handing back the real command word, so inspection behind those is placed and allowed.
+It does not resolve through the executors, so inspection behind one of those escalates instead:
+
+- denied: `nice cat bin/fm-send.sh`, `stdbuf -o0 cat bin/fm-send.sh`, `ssh host cat bin/fm-send.sh`, `watch -n1 ls -la bin/fm-send.sh`;
+- allowed: `timeout 5 cat bin/fm-send.sh`, `sudo cat bin/fm-send.sh`, `command cat bin/fm-send.sh`, `env cat bin/fm-send.sh`.
+
+The split is a property of which wrappers the shared classifier unwraps, not a judgment about which ones are safer.
 
 **Stated gap: a heredoc body is never lexed.**
 `bash <<EOF` … `bin/fm-send.sh a b` … `EOF` is allowed.
@@ -213,17 +233,23 @@ Three accepted forms, each a real load of the skill's content:
 
 Proof is positional, not chronological: status lines carry no timestamps, so a clock comparison was never available.
 
-The guard keeps an observation ledger at `state/.ask-user-authority-guard`, one row per currently-open finding:
+The guard keeps an observation ledger at `state/.ask-user-authority-guard`, one row per open finding **per session**:
 
 ```text
 <identity>	<transcript-path>	<byte-offset-at-first-sight>
 ```
 
 A load counts only if it appears in the transcript at or after that finding's recorded offset.
-The ledger is rewritten to exactly the currently-open set whenever that set changes, so a resolved finding's row is pruned and the file stays bounded.
 
-A different transcript path means a different session, so the recorded position means nothing in the new file and the finding needs a fresh load there.
+The row is keyed on the pair, identity and transcript together, not on the identity alone.
+Two sessions can be open on the same home - a captain-launched second `claude` in the firstmate checkout is the realistic case - and each has its own first sight of the same finding.
+Keying on the identity alone let whichever session wrote last silently revoke the other's established position, so a load that session had genuinely made in response to the finding stopped counting and the finding denied indefinitely.
+`test_two_sessions_keep_their_own_first_sight` reproduces that sequence and pins the fix.
+
+A different transcript path still means a different session, so its recorded position means nothing here and the finding needs a fresh load in **this** transcript; what changed is that the other session's row is no longer destroyed to say so.
 A transcript shorter than the recorded offset was rotated or truncated and is treated the same way.
+
+Pruning on write is what keeps the file bounded now that it holds a row per session: a row survives only while its finding is still open and its transcript still exists, so a resolved finding and a session whose transcript is gone both drop out the next time anything writes.
 
 ### Why every tool call observes
 
@@ -266,7 +292,11 @@ A `blocked` line landing on an open finding's key disarms it the same way, for a
 `test_fail_safe_states_allow_silently` and `test_missing_steer_classifier_allows_silently` assert each of these against a fixture that is proven to deny in its baseline, so none of them can pass vacuously.
 
 The gate also has a cost in the other direction, paid while it is armed rather than while it is disarmed, and it is real enough to state next to these.
-Every use of `bin/fm-send.sh` is denied on every task while any one finding is open in this home, including the non-decision nudges recorded under "Routes this guard does not cover".
+Two denials fall out of the design rather than out of a policy breach, and both hold on every task while any one finding is open anywhere in this home:
+
+- every use of `bin/fm-send.sh`, including the non-decision nudges recorded under "Routes this guard does not cover";
+- every command carrying the steer path that the walk cannot place, which is the read-only class enumerated under "What the escalation costs" - a guarded existence check, a loop over the path, and inspection behind `nice`, `stdbuf`, `ssh`, or `watch`.
+
 Fail-safe governs what the guard does when it cannot read something; the escalation rule under "The escalation rule" governs what it does when it can read a command but cannot place a steer token in it, and there the tie breaks toward denying.
 Both denials are recoverable in one step, which is what makes them costs rather than wedges.
 

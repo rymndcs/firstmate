@@ -599,14 +599,87 @@ test_deep_nesting_past_the_bound_denies() {
     assert_denied "steer nested $depth deep" 'rac196 [key=k]'
   done
 
-  cmd='cat bin/fm-send.sh'
-  for depth in 1 2 3; do
-    cmd="( $cmd )"
+  # The bound is not selective, so inspection survives only BELOW it. These are
+  # the depths docs/ask-user-guard.md claims are unaffected; past the bound the
+  # same command denies, which the doc states rather than hiding.
+  local wrapped
+  for depth in 1 3 8; do
+    cmd='cat bin/fm-send.sh'
+    local j=0
+    while [ "$j" -lt "$depth" ]; do
+      cmd="( $cmd )"
+      j=$((j + 1))
+    done
+    run_guard "$home" "$transcript" Bash "$cmd"
+    assert_allowed_silently "read-only inspection nested $depth deep"
   done
-  run_guard "$home" "$transcript" Bash "$cmd"
-  assert_allowed_silently 'nested read-only inspection'
 
-  pass "nesting past the recursion bound denies instead of allowing, and inspection is unaffected"
+  wrapped='cat bin/fm-send.sh'
+  local k=0
+  while [ "$k" -lt 9 ]; do
+    wrapped="( $wrapped )"
+    k=$((k + 1))
+  done
+  run_guard "$home" "$transcript" Bash "$wrapped"
+  assert_denied 'read-only inspection nested past the bound' 'rac196 [key=k]'
+
+  pass "nesting past the recursion bound denies instead of allowing, and inspection below the bound is unaffected"
+}
+
+# Two sessions can be open on the same home, and each has its own first sight of
+# the same finding. Keying a ledger row on the finding alone let the last writer
+# revoke the other session's established position, so a load made genuinely in
+# response to the finding stopped counting and the finding denied indefinitely.
+# This walks the reported interleaving.
+test_two_sessions_keep_their_own_first_sight() {
+  local home s1 s2
+  home=$(make_primary_home "$TMP_ROOT/two-sessions")
+  s1="$TMP_ROOT/two-sessions-s1.jsonl"
+  s2="$TMP_ROOT/two-sessions-s2.jsonl"
+  transcript_noise "$s1" 'session one opens'
+  transcript_noise "$s2" 'session two opens'
+  printf 'needs-decision [key=k]: open question\n' > "$home/state/rac196.status"
+
+  # Both sessions observe the finding, s2 last.
+  run_guard "$home" "$s1" Read
+  assert_allowed_silently 'session one observing the finding'
+  run_guard "$home" "$s2" Read
+  assert_allowed_silently 'session two observing the finding'
+
+  # Session one loads the skill in response to the finding it saw.
+  transcript_tool_use "$s1" Skill '{"skill":"ask-user-authority"}'
+  run_guard "$home" "$s1" AskUserQuestion
+  assert_allowed_silently 'session one asking after loading for the finding'
+
+  # Repeating denied indefinitely before the fix, both on a bare retry and with
+  # the other session observing in between.
+  run_guard "$home" "$s1" AskUserQuestion
+  assert_allowed_silently 'session one asking again'
+  run_guard "$home" "$s2" Read
+  assert_allowed_silently 'session two observing between session one retries'
+  run_guard "$home" "$s1" AskUserQuestion
+  assert_allowed_silently 'session one asking after session two observed'
+
+  # The per-finding gate still holds per session: session two never loaded it.
+  run_guard "$home" "$s2" AskUserQuestion
+  assert_denied 'session two asking without its own load' 'rac196 [key=k]'
+  transcript_tool_use "$s2" Skill '{"skill":"ask-user-authority"}'
+  run_guard "$home" "$s2" AskUserQuestion
+  assert_allowed_silently 'session two asking after loading in its own transcript'
+
+  # A row whose transcript is gone is pruned, so a per-session ledger stays
+  # bounded. The ledger is this guard's own documented on-disk format
+  # (docs/ask-user-guard.md), which is why reading it here is the contract rather
+  # than a proxy.
+  rm -f "$s2"
+  printf 'needs-decision [key=k2]: second question\n' >> "$home/state/rac196.status"
+  run_guard "$home" "$s1" Read
+  assert_allowed_silently 'session one observing after session two vanished'
+  if grep -q "$s2" "$home/state/.ask-user-authority-guard"; then
+    fail 'a row whose transcript no longer exists must be pruned'
+  fi
+
+  pass "two sessions in one home each keep their own first sight, and dead rows are pruned"
 }
 
 # The classifier is a downstream owner, so its absence is an undeterminable state
@@ -720,6 +793,7 @@ test_mentioning_the_steer_script_is_not_steering
 test_steer_in_a_compound_command_is_denied
 test_steer_the_walk_cannot_place_is_denied
 test_deep_nesting_past_the_bound_denies
+test_two_sessions_keep_their_own_first_sight
 test_missing_steer_classifier_allows_silently
 test_escape_hatch_allows
 test_multiple_findings_need_each_one_loaded
