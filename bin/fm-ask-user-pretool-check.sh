@@ -401,49 +401,12 @@ fi
 # shell classifier owned by bin/fm-arm-command-policy.mjs. Every undeterminable
 # state here allows silently like all the others: no Node, a missing policy file,
 # a lexer error inside the policy, or an answer this transport does not recognize.
-
-# Findings this call may consume, one task id per word. Empty means every open
-# finding, which is what the ask-the-captain route and any unattributable steer
-# get. See "Consumption is scoped to who the steer reaches" in the doc.
-CONSUME_TASKS=""
-
-# Resolve a steer's first argument to a task in this home. A bare task id is
-# direct; a window or terminal target goes through window_to_task, which is the
-# classify library's job and is not re-implemented here. A target that names
-# nothing in this home resolves to nothing, and the caller then treats the steer
-# as possibly reaching anybody.
-steer_target_task() {  # <target> -> task id, or empty
-  local target=$1 task
-  [ -n "$target" ] || return 0
-  if [ -f "$STATE/$target.status" ] || [ -f "$STATE/$target.meta" ]; then
-    printf '%s' "$target"
-    return 0
-  fi
-  command -v window_to_task >/dev/null 2>&1 || return 0
-  task=$(window_to_task "$target" "$STATE" 2>/dev/null) || return 0
-  [ -n "$task" ] || return 0
-  [ -f "$STATE/$task.status" ] || [ -f "$STATE/$task.meta" ] || return 0
-  printf '%s' "$task"
-}
-
 if [ "$ROUTE" = send ]; then
   ASK_USER_POLICY="$SCRIPT_DIR/fm-ask-user-command-policy.mjs"
   command -v node >/dev/null 2>&1 || exit 0
   [ -f "$ASK_USER_POLICY" ] || exit 0
   POLICY_OUTPUT=$(node "$ASK_USER_POLICY" --command "$CMD" 2>/dev/null) || exit 0
-  POLICY_TAB=$(printf '\t')
-  POLICY_DECISION=${POLICY_OUTPUT%%"$POLICY_TAB"*}
-  [ "$POLICY_DECISION" = deny ] || exit 0
-  POLICY_TARGETS=""
-  [ "$POLICY_OUTPUT" = "$POLICY_DECISION" ] || POLICY_TARGETS=${POLICY_OUTPUT#*"$POLICY_TAB"}
-  for policy_target in $POLICY_TARGETS; do
-    target_task=$(steer_target_task "$policy_target")
-    if [ -z "$target_task" ]; then
-      CONSUME_TASKS=""
-      break
-    fi
-    CONSUME_TASKS="${CONSUME_TASKS}${target_task} "
-  done
+  [ "$POLICY_OUTPUT" = deny ] || exit 0
 fi
 
 # Before treating "no load found" as evidence, confirm this guard can still read
@@ -511,11 +474,8 @@ while IFS= read -r identity; do
   line_no=$((line_no + 1))
   offset=$(ledger_lookup "$identity") || offset=$TRANSCRIPT_SIZE
   if proof=$(skill_load_end "$offset"); then
-    identity_task=${identity%%|*}
-    case " $CONSUME_TASKS " in
-      "  "|*" $identity_task "*)
-        CONSUMED_OFFSETS="${CONSUMED_OFFSETS}${identity}$(printf '\t')${proof}"$'\n' ;;
-    esac
+    [ "$ROUTE" != ask ] \
+      || CONSUMED_OFFSETS="${CONSUMED_OFFSETS}${identity}$(printf '\t')${proof}"$'\n'
     continue
   fi
   label=$(printf '%s\n' "$OPEN_LABELS" | sed -n "${line_no}p")
@@ -524,14 +484,21 @@ done <<EOF
 $OPEN_IDENTITIES
 EOF
 
-# Permitted, so every open finding had its own proof. Consume the ones this call
-# could actually have decided by moving their recorded position past the load that
-# satisfied them, which is what makes the gate per finding rather than per wake:
-# the next finding decided in this same batch needs its own load. Findings on
-# tasks this steer never reached keep their positions, so an ordinary nudge or
-# recovery sequence aimed at workers with nothing open costs nothing. A ledger
-# that cannot be written still allows, because a guard must never turn its own
-# bookkeeping failure into a deny.
+# Permitted, so every open finding had its own proof. An allowed AskUserQuestion
+# consumes that proof, moving each finding's recorded position past the load, so
+# the next finding escalated in the same batch needs its own load rather than
+# riding one load through a whole wake.
+#
+# An allowed steer consumes nothing, on purpose. bin/fm-send.sh is also
+# firstmate's ordinary fleet transport, and the guard cannot tell a decision
+# delivery from a nudge or a recovery interrupt without attributing the call -
+# an attribution that cost more in wrong denies than the batch property was worth
+# on this route. The steer route is still GATED, so the first delivery while a
+# finding is open still requires a load; what is given up is that later steers
+# ride it. docs/ask-user-guard.md records that as a known limit.
+#
+# A ledger that cannot be written still allows, because a guard must never turn
+# its own bookkeeping failure into a deny.
 if [ -z "$UNPROVEN_LABELS" ]; then
   ledger_sync_checked
   exit 0

@@ -114,95 +114,55 @@ function isPlacedSimpleCommand(position) {
   return true;
 }
 
-// bin/fm-send.sh takes its target as the first argument, so the first non-option
-// word after the command word names who the steer reaches. The transport resolves
-// that to a task and consumes only that task's findings, which is why the target
-// is reported rather than just the verdict. An empty target means the walk could
-// not name one, and the transport treats that as "could be anybody".
-function steerTarget(position) {
-  for (const word of position.words.slice(position.index + 1)) {
-    if (word.value.startsWith("-")) continue;
-    return word.value;
-  }
-  return "";
-}
-
-// Collects every steer target in this node, pushing "" when the node carries a
-// steer the walk could not place and therefore cannot name a target for.
-function collectNodeSteers(node, depth, targets) {
+function nodeInvokesSteer(node, depth) {
   // commandPosition skips leading assignments and wrappers (command, env,
   // sudo, nohup, timeout, exec) to reach the executed command word.
   const position = commandPosition(node);
-  let found = false;
 
   for (const payload of position.wrapperPayloads ?? []) {
-    if (collectSteers(payload, depth + 1, targets)) found = true;
+    if (invokesSteer(payload, depth + 1)) return true;
   }
   for (const token of node) {
     if (token.type === "group" && typeof token.content === "string") {
-      if (collectSteers(token.content, depth + 1, targets)) found = true;
+      if (invokesSteer(token.content, depth + 1)) return true;
       continue;
     }
     if (token.type !== "word") continue;
     for (const sub of token.subs ?? []) {
       if (sub.kind !== "command" || typeof sub.content !== "string") continue;
-      if (collectSteers(sub.content, depth + 1, targets)) found = true;
+      if (invokesSteer(sub.content, depth + 1)) return true;
     }
   }
 
-  if (position.command && basename(position.command.value) === STEER_BASENAME) {
-    targets.push(steerTarget(position));
-    return true;
-  }
-  if (isPlacedSimpleCommand(position)) return found;
-  if (position.words.some((word) => mentionsSteer(word.value))) {
-    targets.push("");
-    return true;
-  }
-  return found;
+  if (position.command && basename(position.command.value) === STEER_BASENAME) return true;
+  if (isPlacedSimpleCommand(position)) return false;
+  return position.words.some((word) => mentionsSteer(word.value));
 }
 
 // True when this program executes the steer anywhere: at top level, inside a
 // subshell or brace group, inside a command substitution, or inside a compound
 // body or executor argument the walk cannot place.
-function collectSteers(source, depth, targets) {
+function invokesSteer(source, depth) {
   // Running out of recursion is the escalation rule's case, not the fail-safe
   // rule's: the bytes are readable and the walk has simply stopped, exactly like
   // the lexer-error branch below and like the shared owner's own bound.
-  if (depth > MAX_NESTING) {
-    if (!mentionsSteer(source)) return false;
-    targets.push("");
-    return true;
-  }
+  if (depth > MAX_NESTING) return mentionsSteer(source);
   const lexed = new Lexer(source).tokenize();
   // Syntax this classifier cannot tokenize at all, such as a `case` list, is the
   // escalation rule's clearest case: the bytes are right here and they carry a
   // steer token the walk can no longer place. A program that does not mention the
   // steer is simply irrelevant to this guard and allows.
-  if (lexed.error) {
-    if (!mentionsSteer(source)) return false;
-    targets.push("");
-    return true;
-  }
+  if (lexed.error) return mentionsSteer(source);
 
   const { nodes } = splitProgram(lexed.tokens);
-  let found = false;
   for (const node of nodes) {
-    if (collectNodeSteers(node, depth, targets)) found = true;
+    if (nodeInvokesSteer(node, depth)) return true;
   }
-  return found;
+  return false;
 }
 
 function decision(command) {
-  const targets = [];
-  if (!collectSteers(command, 0, targets)) return { decision: "allow", targets: "" };
-  // One unnameable target makes the whole program unattributable: a steer this
-  // walk could not name may be reaching anybody, so the transport must treat it
-  // as reaching every open finding.
-  if (targets.some((target) => target === "" || /\s/.test(target))) {
-    return { decision: "deny", targets: "" };
-  }
-  return { decision: "deny", targets: [...new Set(targets)].join(" ") };
+  return invokesSteer(command, 0) ? { decision: "deny" } : { decision: "allow" };
 }
 
 function parseArguments(argv) {
@@ -243,12 +203,7 @@ if (invokedDirectly()) {
     if (!args.commandSet || !args.command) {
       process.stdout.write("allow\n");
     } else {
-      const result = decision(args.command);
-      if (result.decision === "allow") {
-        process.stdout.write("allow\n");
-      } else {
-        process.stdout.write(`deny\t${result.targets}\n`);
-      }
+      process.stdout.write(`${decision(args.command).decision}\n`);
     }
   } catch (error) {
     process.stderr.write(`${error.message}\n`);

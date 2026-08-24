@@ -185,12 +185,27 @@ Two escalation surfaces are outside a PreToolUse hook's reach, and are recorded 
 - **`lavish-axi`.** A structured review surface is a third way to put options in front of the captain. It is a `Bash` call and could be added to the steer prefilter in one line, but it was not in the authorized scope of the change that introduced this guard, and widening the deny surface is a captain-owned call.
 - **A steer inside a heredoc body fed to a shell.** Covered under the classifier's stated gap above.
 
-One cost runs the other way, and belongs here rather than being left implicit.
-Every non-decision use of `bin/fm-send.sh` is denied too, on any task, while a single finding is open anywhere in this home: the `--key Escape` nudge in [`stuck-crewmate-recovery`](../.agents/skills/stuck-crewmate-recovery/SKILL.md) and the `updatefirstmate` re-read nudge are genuine invocations and the guard cannot tell them from a decision.
+### The steer route does not consume
+
+The batch property above survives on `AskUserQuestion` and is **given up** on the steer route.
+While a finding is open, the first `bin/fm-send.sh` still needs a load, and later ones ride it.
+That is a deliberate limit, recorded here rather than left for the next reader to discover.
+
+The reasoning: every real failure this guard was built for went through the captain - findings forwarded that one `grep` would have settled - so `AskUserQuestion` is where the batch property earns its cost.
+The steer route is the backstop against deciding *silently*, and a load before the first delivery does most of that work.
+Against that, `bin/fm-send.sh` is also firstmate's ordinary fleet transport, so consuming there taxed things the guard must not obstruct: [`stuck-crewmate-recovery`](../.agents/skills/stuck-crewmate-recovery/SKILL.md) sends an interrupt and then a corrective line, [`updatefirstmate`](../.agents/skills/updatefirstmate/SKILL.md) nudges each updated target in turn, and read-only diagnosis in the escalation class below spent the proof too because it names no target.
+Attributing a steer to a task was tried and removed: it narrowed the tax without ending it, and a guard that obstructs the tools used to fix problems is worse than the omission it prevents.
+`test_an_allowed_steer_does_not_spend_the_load` pins what ships.
+
+### What the non-decision denial costs
+
+One cost runs the other way from the gaps above, and belongs here rather than being left implicit.
+Every non-decision use of `bin/fm-send.sh` is denied too, on any task, while a single finding is open anywhere in this home: the `--key Escape` nudge in `stuck-crewmate-recovery` and the `updatefirstmate` re-read nudge are genuine invocations and the guard cannot tell them from a decision.
 That is an authorized consequence of gating the steer entry point across the whole home rather than per task.
-The remedy is one load per open finding, not one load overall: the deny names every finding still unproven, and each needs its own.
-What it is not is one load per message, because a steer that reaches a task with nothing open does not spend the load that cleared the finding - see "Consumption is scoped to who the steer reaches".
-So a nudge or recovery sequence across workers with nothing open costs one load for the open finding and nothing further, and `FM_ALLOW_ASK_USER=1` at session launch remains the deliberate exception.
+
+The remedy is **one load**, not one per finding named.
+A single `ask-user-authority` load clears a deny naming any number of unproven findings, and because the steer route does not consume, the whole nudge or recovery sequence that follows rides that one load.
+`FM_ALLOW_ASK_USER=1` at session launch remains the deliberate exception.
 It is a cost, not a wedge, and the deny message names both routes out.
 
 ## Detecting a finding
@@ -245,13 +260,15 @@ The guard keeps an observation ledger at `state/.ask-user-authority-guard`, one 
 
 A load counts only if it appears in the transcript at or after that finding's recorded offset.
 
-### One load buys one decision
+### One load buys one escalation to the captain
 
-Proof is **consumed** by the call it permits.
-When the guard allows a gated call, it moves the recorded offset of each finding that call could have decided to just past the load that satisfied it, so that load can never satisfy anything else.
+Proof is **consumed**, but by one route only.
 
-Without that, the gate would be per finding only in the temporal sense.
-Several crewmates raise findings while firstmate is away, so it wakes to three or four open at once, loads the skill once, and decides all of them; positional proof that is never spent lets one load cover the whole batch.
+When the guard allows an `AskUserQuestion`, it moves every open finding's recorded offset to just past the load that satisfied it, so that load can never satisfy anything else.
+An allowed steer consumes nothing; see "The steer route does not consume" under the known limits.
+
+Without consumption on the ask route, the gate would be per finding only in the temporal sense.
+Several crewmates raise findings while firstmate is away, so it wakes to three or four open at once, loads the skill once, and escalates all of them; positional proof that is never spent lets one load cover the whole batch.
 The skill's step 2 is "reconstruct the accepted contract from the captain's original request", and that reconstruction is specific to **one** finding.
 One load covering four means three got no reconstruction at all, which is the 2026-08-24/25 failure compressed into a single wake instead of spread across a session.
 The batch shape is the normal morning, not an edge case, and N loads per wake is trivial against what it buys: firstmate reads the procedure again with *this* finding in mind.
@@ -259,28 +276,9 @@ The batch shape is the normal morning, not an edge case, and N loads per wake is
 
 Three properties of the consume rule are deliberate and are stated here rather than left to be discovered:
 
-- **Only a permitted gated call consumes.** An observation call still stamps first sight and never advances anything, which is what keeps first sight where "Why every tool call observes" below needs it.
-- **Consumption is per decision, not per finding-lifetime.** Re-deciding a finding that is still open needs its own load, so an ask-the-captain followed by a steer to the worker on the same finding costs two loads. That is the intended reading: each decision is a separate application of the procedure. `test_a_spent_load_does_not_cover_a_second_decision` pins it.
+- **Only a permitted `AskUserQuestion` consumes.** An observation call still stamps first sight and never advances anything, which is what keeps first sight where "Why every tool call observes" below needs it, and a permitted steer leaves every position untouched.
+- **Consumption is per escalation, not per finding-lifetime.** Escalating a finding that is still open a second time needs its own load, and because the ask route consumes everything, a steer that follows an escalation needs one too. `test_load_for_the_finding_allows_both_routes` walks that pair.
 - **A ledger that cannot be written still allows.** Consumption is bookkeeping, and a guard must never turn its own bookkeeping failure into a deny.
-
-### Consumption is scoped to who the steer reaches
-
-`bin/fm-send.sh` is not only a decision channel; it is firstmate's ordinary fleet transport.
-Consuming every open finding on every permitted steer would mean that, while one finding sits unanswered anywhere in the home, each individual message to each worker costs its own skill load.
-That breaks the sequences that exist to unwedge workers: [`stuck-crewmate-recovery`](../.agents/skills/stuck-crewmate-recovery/SKILL.md) sends an interrupt and then a corrective line, and [`updatefirstmate`](../.agents/skills/updatefirstmate/SKILL.md) nudges each updated target in turn.
-A guard that obstructs the tools used to fix problems is worse than the omission it prevents.
-
-So an allowed steer consumes only the findings on the task it reaches.
-`bin/fm-send.sh` takes its target as the first argument, so the classifier reports the first non-option word after the command word alongside its verdict, and the transport resolves it: a bare task id is direct, and anything else - the `fm-<id>` label the updater prints, a `<session>:fm-<id>` window, a `remote:<id>` terminal - goes through `window_to_task` in `bin/fm-classify-lib.sh`, which stays the single owner of that mapping.
-Findings on every other task keep their positions, so a nudge sequence or a recovery sequence aimed at workers with nothing open costs nothing after the first load.
-`test_steering_an_unrelated_task_does_not_spend_the_load` pins both shapes.
-
-Two cases deliberately consume **everything**:
-
-- **`AskUserQuestion`.** It carries no target and is the ask-the-captain route, so it could be escalating any open finding.
-- **A steer whose target cannot be attributed.** No target word at all, a target the walk could not name because it could not place the steer, or a target that names nothing in this home. Unknown target means treat it as a possible decision delivery, which is the same fail-toward-the-gate rule "The escalation rule" uses and deliberately not the fail-safe rule that governs unreadable state.
-
-`test_an_unattributable_steer_consumes_everything` pins that direction.
 
 The row is keyed on the pair, identity and transcript together, not on the identity alone.
 Two sessions can be open on the same home - a captain-launched second `claude` in the firstmate checkout is the realistic case - and each has its own first sight of the same finding.
@@ -350,8 +348,9 @@ Two denials fall out of the design rather than out of a policy breach, and both 
 - every command carrying the steer path that the walk cannot place, which is the read-only class enumerated under "What the escalation costs" - a guarded existence check, a loop over the path, and inspection behind `nice`, `stdbuf`, `ssh`, or `watch`.
 
 Fail-safe governs what the guard does when it cannot read something; the escalation rule under "The escalation rule" governs what it does when it can read a command but cannot place a steer token in it, and there the tie breaks toward denying.
-Both denials are recoverable by loading the skill, one load per open finding rather than one load overall, which is what makes them costs rather than wedges.
-Consumption does not multiply that into one load per call: a permitted steer spends the load only for the task it reaches.
+Both denials are recoverable by loading the skill once, however many findings the deny names, which is what makes them costs rather than wedges.
+Consumption does not multiply that into one load per call, because neither class consumes: a permitted steer spends nothing, and a permitted read-only command in the escalation class spends nothing either.
+Only `AskUserQuestion` consumes, so only escalating a second finding in the same batch needs a second load.
 
 ## Scope
 
@@ -525,5 +524,5 @@ Its live evidence is the interactive capture above; the portable regression pins
 ### Regression coverage
 
 `tests/fm-ask-user-pretool-check.test.sh` is the portable regression, run by CI with no harness.
-It pins both routes, the per-finding gate including the stale-load case, the reopened-key case, the batch case, and the spent-load case, the fail-safe family against a baseline that is proven to deny, the primary-home scoping, the structural-proof rule against this guard's own deny text, all three transport entry forms, the escape hatch, and the Claude wiring itself.
+It pins both routes, the per-finding gate including the stale-load case, the reopened-key case, and the batch case, the steer route's non-consumption, the fail-safe family against a baseline that is proven to deny, the primary-home scoping, the structural-proof rule against this guard's own deny text, all three transport entry forms, the escape hatch, and the Claude wiring itself.
 It also pins the steer classifier from the outside, through the guard rather than against the policy module: inspecting `bin/fm-send.sh` allows, invoking it denies from every shell position listed above, a steer the walk cannot place denies without re-denying inspection, and removing the policy module disarms the steer route alone.
