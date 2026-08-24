@@ -151,6 +151,7 @@ now_ms() {
 family_for_basename() {
   case "$1" in
     fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|\
+    fm-ask-user-pretool-check.test.sh|\
     fm-brief.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
@@ -197,7 +198,7 @@ family_for_basename() {
     fm-update.test.sh)
       printf '%s\n' session-bootstrap
       ;;
-    fm-afk-pi-herdr-return-e2e.test.sh|\
+    fm-afk-pi-herdr-return-e2e.test.sh|fm-ask-user-gate-live-e2e.test.sh|\
     fm-codex-continuity-live-e2e.test.sh|fm-grok-continuity-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-harness-liveness-drift-live-e2e.test.sh|\
     fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
@@ -390,6 +391,8 @@ tests/fm-afk-inject-e2e.test.sh 34019
 tests/fm-afk-pi-herdr-return-e2e.test.sh 42
 tests/fm-afk-return.test.sh 1105
 tests/fm-ask-user-authority.test.sh 68
+tests/fm-ask-user-gate-live-e2e.test.sh 20
+tests/fm-ask-user-pretool-check.test.sh 3100
 tests/fm-backend-cmux-smoke.test.sh 29
 tests/fm-backend-cmux.test.sh 2349
 tests/fm-backend-herdr-focus-flash-e2e.test.sh 21

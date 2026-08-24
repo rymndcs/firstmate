@@ -387,7 +387,7 @@ These skills are not captain-invocable; load them only at their precise triggers
 
 - `bootstrap-diagnostics` - load whenever the session-start digest's bootstrap section prints an actionable diagnostic line; that skill owns which prefixes are actionable and how to handle each one.
 - `diagnostic-reasoning` - load before scoping a reported bug and before acting on a diagnostic report.
-- `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture.
+- `ask-user-authority` - load before deciding any ask-user finding, regardless of the project's `yolo` posture; a guard enforces this per finding, so an earlier load in the same session does not count ([`docs/ask-user-guard.md`](docs/ask-user-guard.md)).
 - `quota-array-dispatch` - load before choosing among a matched crew-dispatch profile array.
 - `validation-runs` - load before triggering a no-mistakes validation run on a worker, before steering a worker whose run is live, and before answering or deciding a gate that run returns.
 - `harness-adapters` - load before spawning or recovering a crewmate or secondmate, and before any harness-specific trust, invocation, interrupt, exit, resume, or adapter-verification step.

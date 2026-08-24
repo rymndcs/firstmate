@@ -31,6 +31,10 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/bin/fm-subagent-pretool-check.sh --claude"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/fm-ask-user-pretool-check.sh --claude"
           }
         ]
       }

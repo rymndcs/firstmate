@@ -81,6 +81,16 @@ Two verified facts worth pinning here.
 The subagent tool presents to the model as `Agent`, and on Claude Code 2.1.217 both `Agent` and `Task` work as `permissions.deny` keys, verified by an A/B with a nonsense-name control.
 `permissions.allow` is a pre-approval list rather than an availability list, so there is no fail-closed positive allowlist.
 
+## Primary ask-user authority gate
+
+Claude also carries a PreToolUse gate that denies both tool-mediated ways out of an open ask-user finding until `ask-user-authority` has been loaded for that finding: the `AskUserQuestion` tool and a shell call invoking `bin/fm-send.sh`.
+It is wired for Claude only, because its verdict reads the session transcript and no other harness's transcript path or entry format has been verified.
+`docs/ask-user-guard.md` owns the full contract, the recorded payload and transcript evidence, the `FM_ALLOW_ASK_USER=1` escape hatch, and the per-harness wiring table.
+
+One verified fact worth pinning here.
+On Claude Code 2.1.241 every PreToolUse payload carries `transcript_path`, and PreToolUse fires before the calling tool's own `tool_use` entry is appended, so a prior skill load is already visible to the next call while the current one is not.
+`tests/fm-ask-user-gate-live-e2e.test.sh` (opt-in, `FM_CLAUDE_LIVE_E2E=1`) is what re-proves that after a Claude upgrade.
+
 ## Primary session-start nudge
 
 AGENTS.md section 3 remains the behavioral owner for session start, while tracked native adapters invoke `bin/fm-sessionstart-nudge.sh` as an idempotent enforcement layer.

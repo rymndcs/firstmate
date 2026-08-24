@@ -233,6 +233,31 @@ status_open_decisions() {  # <status-file>
   printf '%s' "$open"
 }
 
+# Print "<key>\t<verb>\t<note>" for EVERY decision-opening line in a status file,
+# in file order, with no folding at all. status_open_decisions above folds this
+# same stream into the still-open set, which is what a supervisor needs; this raw
+# stream is what a consumer needs to identify a SPECIFIC opening EVENT rather than
+# a key's latest state - for example "this is the third time key api-shape has been
+# opened", which distinguishes a freshly reopened decision from the one that was
+# open an hour ago. Pure read of the file, same key grammar and same parsers, so
+# the two views can never disagree about what counts as an opening.
+status_decision_openings() {  # <status-file>
+  local f=$1 line verb key note stripped
+  [ -f "$f" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    stripped=${line//[[:space:]]/}
+    [ -n "$stripped" ] || continue
+    verb=$(status_line_verb "$line")
+    case "$verb" in
+      needs-decision|blocked) ;;
+      *) continue ;;
+    esac
+    key=$(_fm_decision_key "$line") || continue
+    note=$(status_line_note "$line")
+    printf '%s\t%s\t%s\n' "$key" "$verb" "$note"
+  done < "$f"
+}
+
 # Fold material routed-work phases in the same keyed event stream.
 # A working or declared-pause event opens or replaces one phase for its key.
 # A later done, failed, needs-decision, blocked, or resolved event carrying that

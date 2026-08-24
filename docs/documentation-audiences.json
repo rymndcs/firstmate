@@ -225,6 +225,10 @@
       "audience": "operator-current"
     },
     {
+      "path": "docs/ask-user-guard.md",
+      "audience": "maintainer-architecture"
+    },
+    {
       "path": "docs/cd-guard.md",
       "audience": "maintainer-architecture"
     },
