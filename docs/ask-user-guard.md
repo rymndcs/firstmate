@@ -40,11 +40,44 @@ There are exactly two tool-mediated ways firstmate resolves an ask-user finding,
 | Ask the captain | the `AskUserQuestion` tool | "asking the captain is one of the two ways out of an ask-user finding" |
 | Answer the worker | a shell call invoking `bin/fm-send.sh` | "sending a decision to the worker is one of the two ways out of an ask-user finding" |
 
-The steer route uses the same byte-strip prefilter shape as the arm and cd guards: line-continuation and escape backslashes, quotes, and newlines are dropped before looking for `fm-send`, so ordinary quoting cannot hide the entry point.
+The steer route is a two-stage decision, prefilter then classifier, in the same shape the arm and cd guards use.
 
-Unlike those two guards, a quoting-decoder marker (`$'…'`, `$"…"`) deliberately does **not** escalate here.
-They escalate to a classifier that can decide precisely; this guard has no such classifier, so escalating would mean denying, and denying every command containing `$'` for the whole life of an open finding is a worse failure than the obfuscation it would catch.
+Stage one is a strict-superset byte-strip fast path in the transport: line-continuation and escape backslashes, quotes, and newlines are dropped before looking for `fm-send`, so ordinary quoting cannot hide the entry point.
+A command that does not survive it can never be denied, which is why the fast path deliberately stays broader than the real decision.
+It also runs before any state work, so an ordinary command pays one substring test and nothing else.
+
+Stage two is `bin/fm-ask-user-command-policy.mjs`, invoked only once a finding is already known to be open, so the Node process never enters the common path.
+It answers one question: is a command word whose basename is `fm-send.sh` executed anywhere in this program?
+It imports `Lexer`, `splitProgram`, and `commandPosition` from `bin/fm-arm-command-policy.mjs`, the sole owner of firstmate's shell classification, so this guard never duplicates shell lexing.
+
+The prefilter alone is not that decision: it matches any *mention* of the script, so it also catches `cat bin/fm-send.sh`, `grep -rn fm-send bin/`, `ls -la bin/fm-send.sh`, and `git log --oneline bin/fm-send.sh`.
+Denying those makes the guard a wedge exactly when firstmate is trying to diagnose the thing it gated, and a wrong deny is worse than the problem this guard solves.
+It would also deny the non-decision uses of the real script - the `--key Escape` nudge in [`stuck-crewmate-recovery`](../.agents/skills/stuck-crewmate-recovery/SKILL.md), the `updatefirstmate` re-read nudge - on tasks unrelated to any open finding.
+
+Unlike the cd transport, a quoting-decoder marker (`$'…'`, `$"…"`) deliberately does **not** escalate past the fast path.
+There, escalation hands an undecidable command to a classifier that can still decide it precisely.
+Here the fast path's own answer is *allow*, so escalating past it would mean denying every command containing `$'` for the whole life of an open finding - a far worse failure than the obfuscation it would catch.
 Deliberate obfuscation is out of scope under the same agent-mistake threat model those guards use.
+
+### What the classifier covers, empirically
+
+Determined by running the classifier over each form rather than reasoned about, and pinned by `test_mentioning_the_steer_script_is_not_steering` and `test_steer_in_a_compound_command_is_denied`.
+
+Denied, because the steer is genuinely executed:
+
+- a plain invocation, and any path spelling whose basename is `fm-send.sh`;
+- ordinary quoting and escaping inside the word, `"bin/fm-send.sh"`, `bin/fm-'send'.sh`, `bin/fm-\send.sh`;
+- leading assignments and wrappers, `FM_HOME=/h bin/fm-send.sh …`, `command …`, `env … `, `sudo …`, `timeout …`;
+- a subshell `(…)` or brace group `{ …; }`, a pipeline stage, a backgrounded job, and any position in an `&&`/`||`/`;` list, because unlike the cd guard there is no persistence question here - a steer delivers from every one of those positions, so no node is skipped;
+- a command substitution, `x=$(bin/fm-send.sh …)`.
+
+Allowed, because no `fm-send.sh` command word is executed: `cat bin/fm-send.sh`, `grep -rn fm-send bin/`, `ls -la bin/fm-send.sh`, `git log --oneline bin/fm-send.sh`, `echo fm-send`.
+
+**Stated gap: a steer nested inside an explicit shell invocation.**
+`bash -c 'bin/fm-send.sh rac196 ok'` is allowed.
+The lexer sees `bash` as the command word and the program as a quoted data word, and the arm policy's own `bash -c` unwrapping is private to that file rather than part of the exported classifier surface.
+This sits inside the guard's agent-mistake threat model: an agent skipping the skill reaches for the steer, not for a shell wrapper around it.
+Closing it would mean either exporting that unwrapping from `bin/fm-arm-command-policy.mjs` or duplicating it here, and duplicating shell classification is the thing this design exists to avoid.
 
 ### Routes this guard does not cover
 
@@ -52,6 +85,7 @@ Two escalation surfaces are outside a PreToolUse hook's reach, and are recorded 
 
 - **Plain chat.** Firstmate escalating a finding as ordinary prose in its reply is not a tool call, so no PreToolUse hook can see it. `AGENTS.md` section 9 explicitly prefers plain chat for a yes-or-no decision, so this is a real residual gap. Closing it would need a turn-end mechanism, not a PreToolUse one.
 - **`lavish-axi`.** A structured review surface is a third way to put options in front of the captain. It is a `Bash` call and could be added to the steer prefilter in one line, but it was not in the authorized scope of the change that introduced this guard, and widening the deny surface is a captain-owned call.
+- **A steer nested inside `bash -c`.** Covered under the classifier's stated gap above.
 
 ## Detecting a finding
 
@@ -62,6 +96,12 @@ The guard uses two functions from that owner: `status_open_decisions` for the st
 
 `blocked` also opens a keyed status decision and is deliberately **outside** this gate.
 It means "firstmate action is needed", not "a reviewer asked a product question", and gating it would deny ordinary unblocking work.
+
+That filter has a consequence worth stating, because it is a way the gate goes quiet without anyone choosing it.
+`blocked` and `needs-decision` share one keyed fold, so a `blocked` line carrying the same `[key=…]` as an open `needs-decision` **replaces** it, and the finding disappears from this guard's `needs-decision`-only view.
+The likely trigger is benign and in-protocol: a worker waiting on the answer reports itself blocked under the same key, and the finding it was waiting on stops being gated.
+The fold belongs to `bin/fm-classify-lib.sh` fleet-wide, so this is not a guard defect and is not fixed by loosening the filter here.
+Re-raising `needs-decision` under that key increments its ordinal, which makes it a new finding and re-arms the gate.
 
 ### Finding identity
 
@@ -112,7 +152,13 @@ If it were written only on a gated call, first sight would be the `AskUserQuesti
 The guard would then deny work that was done right, on the very first attempt, every time.
 
 Observing on every call moves first sight to the first tool call after the finding appeared, which precedes any load made in response to it.
-The overwhelmingly common case, no finding open anywhere, costs one `grep` and nothing else.
+
+Because that pass runs on every tool call, its cost is part of the contract.
+Two greps carry it.
+A whole-fleet `grep -l needs-decision state/*.status` runs first, ahead of the git scope check and both library sources, and exits the guard outright while no task in the home has ever had an ask-user finding.
+It stops short-circuiting permanently after the first one, because status files are append-only and a resolved finding leaves its opening line in place forever.
+From then on a per-file `grep -q` at the top of the scan is what keeps the steady state cheap: only files that still mention `needs-decision` are parsed, instead of every status file in the home being folded twice on every tool call.
+A line whose verb parses to `needs-decision` must contain that substring, so the skip cannot change the open set.
 
 ## Fail-safe, not fail-noisy
 
@@ -125,7 +171,8 @@ Every undeterminable state therefore **allows and stays silent**:
 - no readable state directory, or an unreadable status file;
 - an absent or unreadable session transcript;
 - a transcript whose entry format this guard no longer recognizes;
-- a state directory too read-only to hold the ledger.
+- a state directory too read-only to hold the ledger;
+- a missing Node runtime or a missing `bin/fm-ask-user-command-policy.mjs`, which disarms the steer route only and leaves the `AskUserQuestion` route gated.
 
 The transcript-format probe deserves its own note.
 Before treating "no load found" as evidence, the guard confirms it can still parse a recognizable entry in the transcript's recent tail.
@@ -133,7 +180,8 @@ A future harness release that changes the transcript shape would otherwise turn 
 Any parse failure disarms the guard instead.
 
 The cost of that choice is stated plainly: an unwritable state directory or an unparseable transcript silently disarms the gate.
-`test_fail_safe_states_allow_silently` asserts each of these against a fixture that is proven to deny in its baseline, so none of them can pass vacuously.
+A `blocked` line landing on an open finding's key disarms it the same way, for a different reason - see the fold note under "Detecting a finding".
+`test_fail_safe_states_allow_silently` and `test_missing_steer_classifier_allows_silently` assert each of these against a fixture that is proven to deny in its baseline, so none of them can pass vacuously.
 
 ## Scope
 
@@ -293,7 +341,12 @@ FM_CLAUDE_LIVE_E2E=1 bash tests/fm-ask-user-gate-live-e2e.test.sh
 
 It exercises the real installed Claude Code and fails naming the harness and version.
 Run it after every Claude upgrade and before trusting the dates above.
-Its three cases assert side effects, never model prose, and case B is the control that proves case A's deny is a real deny rather than a session that never tried.
+
+Its three cases assert side effects, never model prose.
+Each also carries its own structural attempt assertion, because an absent steer marker is equally true of a session that never tried, and no other case can supply that proof: each case is a different session with a different prompt.
+A second PreToolUse hook in the lab home records every tool call to `state/attempts.log` and exits 0 without touching any decision, and a case whose log holds no `Bash` attempt at the gated steer fails saying it proved nothing rather than passing.
+That is what keeps the file honest against the release it exists to catch: a future Claude that simply declines to try would otherwise leave the deny cases green.
+
 Recorded result on 2026-08-25, claude 2.1.241: all three cases pass.
 
 The AskUserQuestion route is not exercised by that guard, because headless `claude -p` does not expose the tool.
@@ -303,3 +356,4 @@ Its live evidence is the interactive capture above; the portable regression pins
 
 `tests/fm-ask-user-pretool-check.test.sh` is the portable regression, run by CI with no harness.
 It pins both routes, the per-finding gate including the stale-load case and the reopened-key case, the fail-safe family against a baseline that is proven to deny, the primary-home scoping, the structural-proof rule against this guard's own deny text, all three transport entry forms, the escape hatch, and the Claude wiring itself.
+It also pins the steer classifier from the outside, through the guard rather than against the policy module: inspecting `bin/fm-send.sh` allows, invoking it denies from every shell position listed above, and removing the policy module disarms the steer route alone.

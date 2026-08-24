@@ -31,6 +31,8 @@ install_guard() {
   cp "$ROOT/bin/fm-ask-user-pretool-check.sh" "$dir/bin/"
   cp "$ROOT/bin/fm-primary-scope-lib.sh" "$dir/bin/"
   cp "$ROOT/bin/fm-classify-lib.sh" "$dir/bin/"
+  cp "$ROOT/bin/fm-ask-user-command-policy.mjs" "$dir/bin/"
+  cp "$ROOT/bin/fm-arm-command-policy.mjs" "$dir/bin/"
   chmod +x "$dir/bin/fm-ask-user-pretool-check.sh"
 }
 
@@ -465,6 +467,90 @@ test_quoted_steer_still_matches() {
   pass "ordinary quoting and escaping around the steer entry point still reach the gate"
 }
 
+# A guard that denies `cat bin/fm-send.sh` wedges the diagnosis of the very thing
+# it gated, so the steer route is a command-WORD decision, not a mention of the
+# script anywhere in the command line.
+test_mentioning_the_steer_script_is_not_steering() {
+  local home transcript cmd
+  home=$(make_primary_home "$TMP_ROOT/mentions")
+  transcript="$TMP_ROOT/mentions.jsonl"
+  transcript_noise "$transcript" 'session opens'
+  printf 'needs-decision [key=k]: open question\n' > "$home/state/rac196.status"
+
+  for cmd in \
+    'cat bin/fm-send.sh' \
+    'grep -rn fm-send bin/' \
+    'ls -la bin/fm-send.sh' \
+    'git log --oneline bin/fm-send.sh' \
+    'echo fm-send'
+  do
+    run_guard "$home" "$transcript" Bash "$cmd"
+    assert_allowed_silently "read-only command <$cmd>"
+  done
+
+  for cmd in \
+    'bin/fm-send.sh rac196 ok' \
+    '"bin/fm-send.sh" rac196 ok' \
+    "bin/fm-'send'.sh rac196 ok" \
+    'FM_HOME=/h bin/fm-send.sh rac196 ok' \
+    'command bin/fm-send.sh rac196 ok' \
+    'bin/fm-send.sh rac196 --key Escape'
+  do
+    run_guard "$home" "$transcript" Bash "$cmd"
+    assert_denied "steer invocation <$cmd>" 'rac196 [key=k]'
+  done
+
+  pass "inspecting bin/fm-send.sh is allowed while invoking it is denied"
+}
+
+# The steer still lands from a subshell, a brace group, a pipeline stage, and a
+# backgrounded job, so none of those positions is skipped. `sh -c '<steer>'` is a
+# recorded gap, not an oversight; see docs/ask-user-guard.md.
+test_steer_in_a_compound_command_is_denied() {
+  local home transcript cmd
+  home=$(make_primary_home "$TMP_ROOT/compound")
+  transcript="$TMP_ROOT/compound.jsonl"
+  transcript_noise "$transcript" 'session opens'
+  printf 'needs-decision [key=k]: open question\n' > "$home/state/rac196.status"
+
+  for cmd in \
+    '(bin/fm-send.sh rac196 ok)' \
+    '{ bin/fm-send.sh rac196 ok; }' \
+    'echo ok | bin/fm-send.sh rac196 ok' \
+    'bin/fm-send.sh rac196 ok &' \
+    'true && bin/fm-send.sh rac196 ok'
+  do
+    run_guard "$home" "$transcript" Bash "$cmd"
+    assert_denied "steer position <$cmd>" 'rac196 [key=k]'
+  done
+
+  pass "a steer in a subshell, brace group, pipeline, background job, or list still gates"
+}
+
+# The classifier is a downstream owner, so its absence is an undeterminable state
+# like every other one in this guard: allow, silently.
+test_missing_steer_classifier_allows_silently() {
+  local home transcript
+  home=$(make_primary_home "$TMP_ROOT/no-classifier")
+  transcript="$TMP_ROOT/no-classifier.jsonl"
+  transcript_noise "$transcript" 'session opens'
+  printf 'needs-decision [key=k]: open question\n' > "$home/state/rac196.status"
+
+  # Baseline: this fixture denies, so the allow below cannot pass vacuously.
+  run_guard "$home" "$transcript" Bash 'bin/fm-send.sh rac196 ok'
+  assert_denied 'classifier-present baseline' 'rac196 [key=k]'
+
+  rm -f "$home/bin/fm-ask-user-command-policy.mjs"
+  run_guard "$home" "$transcript" Bash 'bin/fm-send.sh rac196 ok'
+  assert_allowed_silently 'steer with no command policy installed'
+
+  # The other route is unaffected: it needs no shell classification at all.
+  run_guard "$home" "$transcript" AskUserQuestion
+  assert_denied 'asking the captain with no command policy installed' 'rac196 [key=k]'
+
+  pass "a missing steer command policy allows the steer silently and leaves the ask route gated"
+}
+
 test_escape_hatch_allows() {
   local home transcript out rc payload
   home=$(make_primary_home "$TMP_ROOT/escape")
@@ -548,6 +634,9 @@ test_deny_text_cannot_satisfy_itself
 test_reading_the_skill_file_counts_as_a_load
 test_harness_entry_forms
 test_quoted_steer_still_matches
+test_mentioning_the_steer_script_is_not_steering
+test_steer_in_a_compound_command_is_denied
+test_missing_steer_classifier_allows_silently
 test_escape_hatch_allows
 test_multiple_findings_need_each_one_loaded
 test_claude_hook_is_wired

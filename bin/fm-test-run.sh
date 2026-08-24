@@ -392,7 +392,7 @@ tests/fm-afk-pi-herdr-return-e2e.test.sh 42
 tests/fm-afk-return.test.sh 1105
 tests/fm-ask-user-authority.test.sh 68
 tests/fm-ask-user-gate-live-e2e.test.sh 20
-tests/fm-ask-user-pretool-check.test.sh 3100
+tests/fm-ask-user-pretool-check.test.sh 4100
 tests/fm-backend-cmux-smoke.test.sh 29
 tests/fm-backend-cmux.test.sh 2349
 tests/fm-backend-herdr-focus-flash-e2e.test.sh 21

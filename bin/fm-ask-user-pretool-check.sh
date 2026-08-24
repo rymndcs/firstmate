@@ -16,7 +16,9 @@
 # since that finding appeared.
 #
 # bin/fm-classify-lib.sh is the sole owner of keyed open/resolved status
-# semantics; this guard never re-implements that parse. See docs/ask-user-guard.md
+# semantics and bin/fm-ask-user-command-policy.mjs owns the steer command-word
+# decision on top of the shell classifier in bin/fm-arm-command-policy.mjs; this
+# guard re-implements neither parse. See docs/ask-user-guard.md
 # for the complete contract, the recorded harness payload evidence, and the
 # limitations this guard deliberately does not cover.
 #
@@ -40,7 +42,8 @@
 #            empty stdin, missing jq, an unavailable classify library or primary
 #            scope library, no readable state directory, an absent or unreadable
 #            session transcript, a transcript whose entry format this guard no
-#            longer recognizes, and an unwritable observation ledger. A guard
+#            longer recognizes, an unwritable observation ledger, and a missing
+#            Node runtime or steer command policy. A guard
 #            that wrongly denies blocks the whole fleet, including the steering
 #            needed to unblock it, so it is worse than the problem it solves.
 #
@@ -129,13 +132,19 @@ ROUTE=""
 LC_ALL=C NORMALIZED=$(printf '%s' "$TOOL" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9')
 [ "$NORMALIZED" != askuserquestion ] || ROUTE=ask
 
-# Strip the syntax bytes a shell joins within one word before looking for the
-# steer entry point, so an ordinary quoted or escaped fragment cannot hide it.
-# Unlike the arm and cd guards this transport has no downstream classifier to
-# delegate an undecidable command to - here delegation would mean DENY - so a
-# quoting-decoder marker deliberately does not escalate. Deliberate obfuscation
-# is out of scope under the same agent-mistake threat model those guards use, and
-# escalating on `$'` would false-deny ordinary commands during every open finding.
+# Strict-superset FAST PATH only; it owns no classification semantics. Strip the
+# syntax bytes a shell joins within one word before looking for the steer entry
+# point, so an ordinary quoted or escaped fragment cannot hide it, then let
+# bin/fm-ask-user-command-policy.mjs decide below whether the command actually
+# INVOKES the steer. Anything this substring test misses can never be denied, so
+# it must stay broader than the classifier.
+#
+# A quoting-decoder marker (`$'…'`, `$"…"`) deliberately does not escalate here,
+# unlike in the arm and cd transports. There, escalation hands an undecidable
+# command to a classifier that can still decide it precisely; here the marker
+# would have to escalate past a fast path that already allows, which during an
+# open finding would mean denying every command containing `$'`. Deliberate
+# obfuscation stays out of scope under the same agent-mistake threat model.
 if [ -z "$ROUTE" ] && [ -n "$CMD" ]; then
   PREFILTER=$CMD
   PREFILTER=${PREFILTER//\\/}
@@ -196,6 +205,13 @@ OPEN_LABELS=""
 
 for status_file in "$STATE"/*.status; do
   [ -f "$status_file" ] || continue
+  # Per-file twin of the whole-fleet precheck above, and what keeps the steady
+  # state cheap once any task has ever had a finding: status files are
+  # append-only, so a resolved finding leaves its opening line behind and the
+  # fleet-wide grep stops short-circuiting for that home's whole lifetime. A line
+  # whose verb parses to needs-decision must contain that substring, so a file
+  # without it cannot contribute an identity.
+  grep -q 'needs-decision' "$status_file" 2>/dev/null || continue
   task=${status_file##*/}
   task=${task%.status}
   openings=$(status_decision_openings "$status_file" 2>/dev/null) || continue
@@ -301,6 +317,22 @@ fi
 # Observation is complete. A call this guard could never deny stops here, having
 # paid only for the ledger, never for the transcript work below.
 [ -n "$ROUTE" ] || exit 0
+
+# Resolve the steer route precisely, now that a finding is open and the answer
+# can change the decision. The prefilter above is a strict superset that also
+# matches read-only inspection of the steer script itself;
+# bin/fm-ask-user-command-policy.mjs answers the real question - is a command word
+# whose basename is fm-send.sh executed anywhere in this program? - reusing the
+# shell classifier owned by bin/fm-arm-command-policy.mjs. Every undeterminable
+# state here allows silently like all the others: no Node, a missing policy file,
+# a lexer error inside the policy, or an answer this transport does not recognize.
+if [ "$ROUTE" = send ]; then
+  ASK_USER_POLICY="$SCRIPT_DIR/fm-ask-user-command-policy.mjs"
+  command -v node >/dev/null 2>&1 || exit 0
+  [ -f "$ASK_USER_POLICY" ] || exit 0
+  POLICY_OUTPUT=$(node "$ASK_USER_POLICY" --command "$CMD" 2>/dev/null) || exit 0
+  [ "$POLICY_OUTPUT" = deny ] || exit 0
+fi
 
 # Before treating "no load found" as evidence, confirm this guard can still read
 # the transcript format at all. A future harness release that changes the

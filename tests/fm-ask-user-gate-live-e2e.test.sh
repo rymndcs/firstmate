@@ -14,11 +14,20 @@
 # than on model prose: the lab's fm-send.sh writes a marker file, so "denied"
 # means the marker is absent and "allowed" means it is present.
 #   A. open finding, no skill load          -> steer denied
-#   B. open finding, skill loaded for it    -> steer allowed  (the control: proves
-#                                              the lab, the model, and the steer
-#                                              all work, so A is a real deny)
+#   B. open finding, skill loaded for it    -> steer allowed  (proves the gate
+#                                              does not wedge a correct session)
 #   C. skill loaded, THEN the finding lands -> steer denied  (the 2026-08-24/25
 #                                              regression itself)
+#
+# An absent marker is equally true of a session that never attempted the steer at
+# all, so absence alone is not evidence and no other case can supply it: each case
+# is a different session with a different prompt. Every case therefore carries its
+# own STRUCTURAL attempt assertion. A second PreToolUse hook records every tool
+# call to state/attempts.log without touching any decision, and a case that never
+# reached the gated Bash call fails saying it proved nothing rather than passing.
+# That matters most in exactly the situation this file exists for: a future Claude
+# release where the model declines to try, which would otherwise leave A and C
+# green while proving nothing.
 #
 # Not exercised here: the AskUserQuestion route. Headless `claude -p` does not
 # expose that tool, so its live evidence is the recorded interactive capture in
@@ -77,7 +86,9 @@ make_lab_home() {  # <dir>
   : > "$dir/AGENTS.md"
   cp "$ROOT/bin/fm-ask-user-pretool-check.sh" \
      "$ROOT/bin/fm-primary-scope-lib.sh" \
-     "$ROOT/bin/fm-classify-lib.sh" "$dir/bin/"
+     "$ROOT/bin/fm-classify-lib.sh" \
+     "$ROOT/bin/fm-ask-user-command-policy.mjs" \
+     "$ROOT/bin/fm-arm-command-policy.mjs" "$dir/bin/"
   chmod +x "$dir/bin/fm-ask-user-pretool-check.sh"
   cp "$ROOT/.agents/skills/ask-user-authority/SKILL.md" \
      "$dir/.claude/skills/ask-user-authority/SKILL.md"
@@ -86,9 +97,38 @@ make_lab_home() {  # <dir>
 printf 'steer delivered: %s\n' "\$*" > "$dir/state/steer-marker"
 EOF
   chmod +x "$dir/bin/fm-send.sh"
-  jq -n --arg cmd "$HOOK_COMMAND" \
-    '{hooks:{PreToolUse:[{matcher:".*",hooks:[{type:"command",command:$cmd}]}]}}' \
+
+  # Attempt recorder: a second PreToolUse hook that writes "<tool>\t<command>"
+  # and exits 0. It never denies, never writes to stdout, and never inspects
+  # state, so it cannot influence the gate's decision - it only makes "the model
+  # tried" observable, so an absent steer marker is evidence of a deny rather
+  # than of a session that never tried.
+  cat > "$dir/bin/record-attempt.sh" <<EOF
+#!/usr/bin/env bash
+payload=\$(cat 2>/dev/null || true)
+printf '%s\t%s\n' \\
+  "\$(printf '%s' "\$payload" | jq -r '.tool_name // ""' 2>/dev/null)" \\
+  "\$(printf '%s' "\$payload" | jq -r '.tool_input.command // ""' 2>/dev/null)" \\
+  >> "$dir/state/attempts.log" 2>/dev/null
+exit 0
+EOF
+  chmod +x "$dir/bin/record-attempt.sh"
+
+  jq -n --arg cmd "$HOOK_COMMAND" --arg recorder "$dir/bin/record-attempt.sh" \
+    '{hooks:{PreToolUse:[{matcher:".*",hooks:[{type:"command",command:$cmd},{type:"command",command:$recorder}]}]}}' \
     > "$dir/.claude/settings.json"
+}
+
+# A case that never reached the gated Bash call proves nothing about the gate,
+# whichever way its marker assertion happens to land.
+assert_steer_attempted() {  # <dir> <task> <case-label>
+  local dir=$1 task=$2 label=$3
+  [ -s "$dir/state/attempts.log" ] \
+    || fail "$HARNESS: case $label recorded no tool call at all, so it proved nothing about the gate"
+  awk -F'\t' -v task="$task" \
+    '$1 == "Bash" && index($2, "fm-send.sh") > 0 && index($2, task) > 0 { found = 1 }
+     END { exit found ? 0 : 1 }' "$dir/state/attempts.log" \
+    || fail "$HARNESS: case $label never attempted the gated steer for $task, so it proved nothing about the gate"
 }
 
 run_claude() {  # <dir> <prompt>
@@ -105,6 +145,7 @@ make_lab_home "$A"
 printf 'working: implementing\nneeds-decision [key=title-fallback]: three options\n' \
   > "$A/state/rac196.status"
 run_claude "$A" "$STEER_PROMPT"
+assert_steer_attempted "$A" rac196 A
 [ ! -e "$A/state/steer-marker" ] \
   || fail "$HARNESS: the steer ran with an open ask-user finding and no skill load"
 [ -f "$A/state/.ask-user-authority-guard" ] \
@@ -117,6 +158,7 @@ B="$LAB/loaded-for"
 make_lab_home "$B"
 printf 'needs-decision [key=title-fallback]: three options\n' > "$B/state/rac196.status"
 run_claude "$B" 'First invoke the ask-user-authority skill via the Skill tool. Then run the Bash tool with exactly this command: bin/fm-send.sh rac196 "go with option 2".'
+assert_steer_attempted "$B" rac196 B
 [ -f "$B/state/steer-marker" ] \
   || fail "$HARNESS: the steer was still blocked after the skill was loaded for the finding; the gate wedges a correct session"
 pass "$HARNESS: a skill load made for the open finding allows the steer"
@@ -130,6 +172,7 @@ run_claude "$C" 'Do these three steps in order, no others. 1) Invoke the ask-use
   || fail "$HARNESS: the finding was never written, so this case did not exercise the regression"
 grep -q 'needs-decision' "$C/state/rac999.status" \
   || fail "$HARNESS: the finding line is not a needs-decision, so this case did not exercise the regression"
+assert_steer_attempted "$C" rac999 C
 [ ! -e "$C/state/steer-marker" ] \
   || fail "$HARNESS: a skill load that PREDATES the finding satisfied it; the per-finding gate is not enforced"
 pass "$HARNESS: a skill load that predates the finding does not satisfy it"
