@@ -22,7 +22,8 @@ The skill's own step 2 is "Reconstruct the accepted contract from the captain's 
 The failure was not "the skill was never loaded".
 It was "the skill was loaded, an hour and five tickets ago".
 That is why this gate is **per finding** and not per session, and why `test_stale_load_before_finding_is_denied` in `tests/fm-ask-user-pretool-check.test.sh` is the load-bearing regression: a guard that only caught a never-loaded session would look correct and still permit exactly what happened.
-Per finding means per decision, not merely "after the finding appeared": a load is spent by the call it permits, so it cannot be reused on the next finding in the same batch either - see "One load buys one decision".
+Per finding means "after this finding appeared", and on the ask route it also means per call: an allowed `AskUserQuestion` spends the load it used, so the next one needs its own.
+An allowed steer spends nothing, which is a deliberate asymmetry - see "One load buys one escalation to the captain" and the known limit under "The steer route does not consume".
 
 ## Purpose and boundary
 
@@ -277,7 +278,7 @@ The batch shape is the normal morning, not an edge case, and N loads per wake is
 Three properties of the consume rule are deliberate and are stated here rather than left to be discovered:
 
 - **Only a permitted `AskUserQuestion` consumes.** An observation call still stamps first sight and never advances anything, which is what keeps first sight where "Why every tool call observes" below needs it, and a permitted steer leaves every position untouched.
-- **Consumption is per escalation, not per finding-lifetime.** Escalating a finding that is still open a second time needs its own load, and because the ask route consumes everything, a steer that follows an escalation needs one too. `test_load_for_the_finding_allows_both_routes` walks that pair.
+- **Consumption is per call, not per finding-lifetime.** A second `AskUserQuestion` needs its own load even when the same single finding is the only thing open, and because the ask route consumes every open finding's proof, a steer that follows an escalation needs one too. `test_load_for_the_finding_allows_both_routes` walks that pair and asserts the intervening deny.
 - **A ledger that cannot be written still allows.** Consumption is bookkeeping, and a guard must never turn its own bookkeeping failure into a deny.
 
 The row is keyed on the pair, identity and transcript together, not on the identity alone.
@@ -342,15 +343,18 @@ A `blocked` line landing on an open finding's key disarms it the same way, for a
 `test_fail_safe_states_allow_silently` and `test_missing_steer_classifier_allows_silently` assert each of these against a fixture that is proven to deny in its baseline, so none of them can pass vacuously.
 
 The gate also has a cost in the other direction, paid while it is armed rather than while it is disarmed, and it is real enough to state next to these.
-Two denials fall out of the design rather than out of a policy breach, and both hold on every task while any one finding is open anywhere in this home:
+Three denials fall out of the design rather than out of a policy breach, and all three hold on every task while any one finding is open anywhere in this home:
 
 - every use of `bin/fm-send.sh`, including the non-decision nudges recorded under "Routes this guard does not cover";
-- every command carrying the steer path that the walk cannot place, which is the read-only class enumerated under "What the escalation costs" - a guarded existence check, a loop over the path, and inspection behind `nice`, `stdbuf`, `ssh`, or `watch`.
+- every command carrying the steer path that the walk cannot place, which is the read-only class enumerated under "What the escalation costs" - a guarded existence check, a loop over the path, and inspection behind `nice`, `stdbuf`, `ssh`, or `watch`;
+- every `AskUserQuestion`, whatever it is about. The guard routes on the tool name alone and has no notion of a question's subject, so a question with nothing to do with any finding is denied exactly like an escalation of one.
 
 Fail-safe governs what the guard does when it cannot read something; the escalation rule under "The escalation rule" governs what it does when it can read a command but cannot place a steer token in it, and there the tie breaks toward denying.
-Both denials are recoverable by loading the skill once, however many findings the deny names, which is what makes them costs rather than wedges.
-Consumption does not multiply that into one load per call, because neither class consumes: a permitted steer spends nothing, and a permitted read-only command in the escalation class spends nothing either.
-Only `AskUserQuestion` consumes, so only escalating a second finding in the same batch needs a second load.
+
+The remedy differs between the first two classes and the third, and the difference is the whole of the arithmetic.
+The first two are cleared by loading the skill **once**, however many findings the deny names, and stay cleared: neither class consumes, so a permitted steer spends nothing and a permitted read-only command in the escalation class spends nothing either.
+The third costs **one load per call**: an allowed `AskUserQuestion` spends the proof of every open finding, so the next `AskUserQuestion` denies even when the same single finding is the only thing open, and a steer that follows an escalation needs its own load too.
+That is the price of the batch property on the route where it earns its cost, and it is charged per question rather than per finding because the guard cannot tell the two apart.
 
 ## Scope
 

@@ -140,6 +140,11 @@ test_load_for_the_finding_allows_both_routes() {
   assert_allowed_silently 'asking the captain after loading the skill for this finding'
 
   # Asking the captain consumed that load, so the steer route needs its own.
+  # Without this deny the reload below would prove nothing: the case would pass
+  # identically whether or not the ask route consumes.
+  run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh rac196 'go with option 2'"
+  assert_denied 'steering on the load the ask route already spent' 'rac196 [key=title-fallback]'
+
   transcript_tool_use "$transcript" Skill '{"skill":"ask-user-authority"}'
   run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh rac196 'go with option 2'"
   assert_allowed_silently 'steering the worker after loading the skill for this finding'
