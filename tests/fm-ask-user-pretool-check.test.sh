@@ -831,6 +831,82 @@ test_a_spent_load_does_not_cover_a_second_decision() {
   pass "proof is consumed per decision, so re-deciding a still-open finding needs its own load"
 }
 
+# bin/fm-send.sh is firstmate's ordinary fleet transport, not only a decision
+# channel, so consumption is scoped to the task the steer actually reaches. A
+# guard that made every message to every worker cost its own skill load would
+# obstruct exactly the sequences that exist to unwedge workers: the
+# updatefirstmate re-read nudge walks several targets, and stuck-crewmate
+# recovery sends an interrupt and then a corrective line.
+test_steering_an_unrelated_task_does_not_spend_the_load() {
+  local home transcript
+  home=$(make_primary_home "$TMP_ROOT/scoped-consume")
+  transcript="$TMP_ROOT/scoped-consume.jsonl"
+  transcript_noise "$transcript" 'session opens'
+
+  # One finding on rac196; three other live tasks with nothing open, reachable
+  # by task id, by the fm- label the updater prints, and by window target.
+  printf 'needs-decision [key=k]: open question\n' > "$home/state/rac196.status"
+  printf 'window=fmsess:fm-rac197\n' > "$home/state/rac197.meta"
+  printf 'window=fmsess:fm-rac198\n' > "$home/state/rac198.meta"
+  printf 'window=remote:sm7\n' > "$home/state/sm7.meta"
+  run_guard "$home" "$transcript" Read
+  assert_allowed_silently 'ungated call stamping the finding'
+  transcript_tool_use "$transcript" Skill '{"skill":"ask-user-authority"}'
+
+  # An updatefirstmate-shaped nudge sequence across three unrelated targets.
+  run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh rac197 're-read AGENTS.md'"
+  assert_allowed_silently 'nudging the first unrelated task'
+  run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh fm-rac198 're-read AGENTS.md'"
+  assert_allowed_silently 'nudging the second unrelated task by its fm- label'
+  run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh remote:sm7 're-read AGENTS.md'"
+  assert_allowed_silently 'nudging the third unrelated target by window'
+
+  # A stuck-crewmate-shaped interrupt then corrective line, same target twice.
+  run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh rac197 --key Escape"
+  assert_allowed_silently 'interrupting an unrelated worker'
+  run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh rac197 'use the brief answer'"
+  assert_allowed_silently 'following the interrupt with a corrective line'
+
+  # None of that spent the load, so the finding's own task is still decidable.
+  run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh rac196 'go with option 2'"
+  assert_allowed_silently 'deciding the finding after the unrelated steers'
+
+  # And deciding it did spend the load.
+  run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh rac196 'and one more thing'"
+  assert_denied 'steering the finding own task again on a spent load' 'rac196 [key=k]'
+
+  pass "steering tasks with nothing open leaves the load unspent; steering the finding's own task spends it"
+}
+
+# A target the walk cannot name, or one that names nothing in this home, could be
+# reaching anybody, so it is treated as reaching every open finding. That is the
+# same fail-toward-the-gate rule the command classifier uses, and deliberately not
+# the fail-safe rule that governs unreadable state.
+test_an_unattributable_steer_consumes_everything() {
+  local home transcript
+  home=$(make_primary_home "$TMP_ROOT/unattributable")
+  transcript="$TMP_ROOT/unattributable.jsonl"
+  transcript_noise "$transcript" 'session opens'
+  printf 'needs-decision [key=k]: open question\n' > "$home/state/rac196.status"
+  run_guard "$home" "$transcript" Read
+  assert_allowed_silently 'ungated call stamping the finding'
+
+  transcript_tool_use "$transcript" Skill '{"skill":"ask-user-authority"}'
+  run_guard "$home" "$transcript" Bash "$home/bin/fm-send.sh nobody-here 'decided'"
+  assert_allowed_silently 'steering a target that names nothing in this home'
+  run_guard "$home" "$transcript" AskUserQuestion
+  assert_denied 'asking after an unattributable steer spent the load' 'rac196 [key=k]'
+
+  # A steer the walk cannot place names no target at all, so it consumes too.
+  transcript_tool_use "$transcript" Skill '{"skill":"ask-user-authority"}'
+  run_guard "$home" "$transcript" Bash "eval $home/bin/fm-send.sh rac196 ok"
+  assert_allowed_silently 'an unplaceable steer is permitted once the skill is loaded'
+  run_guard "$home" "$transcript" AskUserQuestion
+  assert_denied 'asking after an unplaceable steer spent the load' 'rac196 [key=k]'
+
+  pass "a steer whose target cannot be attributed consumes every open finding"
+}
+
 # --- Claude wiring ----------------------------------------------------------
 
 test_claude_hook_is_wired() {
@@ -876,4 +952,6 @@ test_escape_hatch_allows
 test_a_later_finding_on_another_task_regates_both_routes
 test_one_load_does_not_cover_a_whole_batch
 test_a_spent_load_does_not_cover_a_second_decision
+test_steering_an_unrelated_task_does_not_spend_the_load
+test_an_unattributable_steer_consumes_everything
 test_claude_hook_is_wired

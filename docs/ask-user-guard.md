@@ -187,7 +187,10 @@ Two escalation surfaces are outside a PreToolUse hook's reach, and are recorded 
 
 One cost runs the other way, and belongs here rather than being left implicit.
 Every non-decision use of `bin/fm-send.sh` is denied too, on any task, while a single finding is open anywhere in this home: the `--key Escape` nudge in [`stuck-crewmate-recovery`](../.agents/skills/stuck-crewmate-recovery/SKILL.md) and the `updatefirstmate` re-read nudge are genuine invocations and the guard cannot tell them from a decision.
-That is an authorized consequence of gating the steer entry point across the whole home rather than per task, and it is recoverable in one step: load `ask-user-authority` for the open finding, or launch the session with `FM_ALLOW_ASK_USER=1`.
+That is an authorized consequence of gating the steer entry point across the whole home rather than per task.
+The remedy is one load per open finding, not one load overall: the deny names every finding still unproven, and each needs its own.
+What it is not is one load per message, because a steer that reaches a task with nothing open does not spend the load that cleared the finding - see "Consumption is scoped to who the steer reaches".
+So a nudge or recovery sequence across workers with nothing open costs one load for the open finding and nothing further, and `FM_ALLOW_ASK_USER=1` at session launch remains the deliberate exception.
 It is a cost, not a wedge, and the deny message names both routes out.
 
 ## Detecting a finding
@@ -245,7 +248,7 @@ A load counts only if it appears in the transcript at or after that finding's re
 ### One load buys one decision
 
 Proof is **consumed** by the call it permits.
-When the guard allows a gated call, it moves each open finding's recorded offset to just past the load that satisfied it, so that load can never satisfy anything else.
+When the guard allows a gated call, it moves the recorded offset of each finding that call could have decided to just past the load that satisfied it, so that load can never satisfy anything else.
 
 Without that, the gate would be per finding only in the temporal sense.
 Several crewmates raise findings while firstmate is away, so it wakes to three or four open at once, loads the skill once, and decides all of them; positional proof that is never spent lets one load cover the whole batch.
@@ -260,6 +263,25 @@ Three properties of the consume rule are deliberate and are stated here rather t
 - **Consumption is per decision, not per finding-lifetime.** Re-deciding a finding that is still open needs its own load, so an ask-the-captain followed by a steer to the worker on the same finding costs two loads. That is the intended reading: each decision is a separate application of the procedure. `test_a_spent_load_does_not_cover_a_second_decision` pins it.
 - **A ledger that cannot be written still allows.** Consumption is bookkeeping, and a guard must never turn its own bookkeeping failure into a deny.
 
+### Consumption is scoped to who the steer reaches
+
+`bin/fm-send.sh` is not only a decision channel; it is firstmate's ordinary fleet transport.
+Consuming every open finding on every permitted steer would mean that, while one finding sits unanswered anywhere in the home, each individual message to each worker costs its own skill load.
+That breaks the sequences that exist to unwedge workers: [`stuck-crewmate-recovery`](../.agents/skills/stuck-crewmate-recovery/SKILL.md) sends an interrupt and then a corrective line, and [`updatefirstmate`](../.agents/skills/updatefirstmate/SKILL.md) nudges each updated target in turn.
+A guard that obstructs the tools used to fix problems is worse than the omission it prevents.
+
+So an allowed steer consumes only the findings on the task it reaches.
+`bin/fm-send.sh` takes its target as the first argument, so the classifier reports the first non-option word after the command word alongside its verdict, and the transport resolves it: a bare task id is direct, and anything else - the `fm-<id>` label the updater prints, a `<session>:fm-<id>` window, a `remote:<id>` terminal - goes through `window_to_task` in `bin/fm-classify-lib.sh`, which stays the single owner of that mapping.
+Findings on every other task keep their positions, so a nudge sequence or a recovery sequence aimed at workers with nothing open costs nothing after the first load.
+`test_steering_an_unrelated_task_does_not_spend_the_load` pins both shapes.
+
+Two cases deliberately consume **everything**:
+
+- **`AskUserQuestion`.** It carries no target and is the ask-the-captain route, so it could be escalating any open finding.
+- **A steer whose target cannot be attributed.** No target word at all, a target the walk could not name because it could not place the steer, or a target that names nothing in this home. Unknown target means treat it as a possible decision delivery, which is the same fail-toward-the-gate rule "The escalation rule" uses and deliberately not the fail-safe rule that governs unreadable state.
+
+`test_an_unattributable_steer_consumes_everything` pins that direction.
+
 The row is keyed on the pair, identity and transcript together, not on the identity alone.
 Two sessions can be open on the same home - a captain-launched second `claude` in the firstmate checkout is the realistic case - and each has its own first sight of the same finding.
 Keying on the identity alone let whichever session wrote last silently revoke the other's established position, so a load that session had genuinely made in response to the finding stopped counting and the finding denied indefinitely.
@@ -273,8 +295,13 @@ Pruning on write is what keeps the file bounded now that it holds a row per sess
 **Residual: the concurrent write is narrowed, not eliminated.**
 The sync is a read-modify-write finished by a single `mv`, so two sessions syncing in the same instant - which is exactly when both are missing a row, right after a finding appears - can still lose the later writer's rows to the winner's rename.
 The guard re-reads after the rename and syncs once more when its own row is missing, which collapses the window to a retry rather than closing it.
-What survives is one spurious deny in that instant, recoverable with one more load, against the indefinite denial the identity-only key produced.
-`test_two_sessions_keep_their_own_first_sight` is strictly sequential and cannot see this case; the retry is asserted only by construction.
+The residual runs in both directions, and both are stated because the second one weakens the gate rather than the fleet.
+
+- **Toward a spurious deny.** The losing writer's own row is gone, so its next call stamps first sight at the current size and a load it genuinely made stops counting. One extra load recovers it, against the indefinite denial the identity-only key produced.
+- **Toward a spent load being refunded.** The sync copies every other session's rows verbatim from the snapshot it read before its own rename, so a rename that lands late writes back the winner's **pre-consumption** offset. The re-read only checks that its own row is present, never that another session's row still carries the offset that session consumed, so no retry fires and one load buys a second decision.
+
+Both need the same two-concurrent-sessions precondition inside the same single-rename window, so the practical exposure is equally small, and the retry is deliberately not widened to chase the second direction.
+`test_two_sessions_keep_their_own_first_sight` is strictly sequential and cannot see either case; the retry is asserted only by construction.
 
 ### Why every tool call observes
 
@@ -323,7 +350,8 @@ Two denials fall out of the design rather than out of a policy breach, and both 
 - every command carrying the steer path that the walk cannot place, which is the read-only class enumerated under "What the escalation costs" - a guarded existence check, a loop over the path, and inspection behind `nice`, `stdbuf`, `ssh`, or `watch`.
 
 Fail-safe governs what the guard does when it cannot read something; the escalation rule under "The escalation rule" governs what it does when it can read a command but cannot place a steer token in it, and there the tie breaks toward denying.
-Both denials are recoverable in one step, which is what makes them costs rather than wedges.
+Both denials are recoverable by loading the skill, one load per open finding rather than one load overall, which is what makes them costs rather than wedges.
+Consumption does not multiply that into one load per call: a permitted steer spends the load only for the task it reaches.
 
 ## Scope
 
