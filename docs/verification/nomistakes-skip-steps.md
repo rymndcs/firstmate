@@ -17,7 +17,7 @@ Keeping it proportionate therefore needs a supported control, not an approach th
 
 ```sh
 $ no-mistakes --version
-no-mistakes version v1.46.0
+no-mistakes version v1.46.0 (20892e6) 2026-08-06T06:41:38Z
 $ no-mistakes axi run --help
 Flags:
   -h, --help            help for run
