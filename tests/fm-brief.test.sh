@@ -202,7 +202,7 @@ test_ship_modes_generate_clean_briefs() {
   for id_mode in "brief-nomistakes-a1:no-mistakes" "brief-directpr-a2:direct-PR" "brief-localonly-a3:local-only"; do
     id=${id_mode%%:*}
     mode=${id_mode##*:}
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1; status=$?
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" --checks targeted >/dev/null 2>&1; status=$?
     expect_code 0 "$status" "fm-brief.sh $id --mode $mode should exit 0"
     brief="$home/data/$id/brief.md"
     assert_present "$brief" "$id: brief was not scaffolded"
@@ -251,7 +251,7 @@ test_ship_mode_is_explicit_not_registry() {
   local home brief
   home="$TMP_ROOT/explicit-over-registry-home"
   write_registry "$home"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-explicit-a5 direct-proj --mode no-mistakes >/dev/null 2>&1 \
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-explicit-a5 direct-proj --mode no-mistakes --checks targeted >/dev/null 2>&1 \
     || fail "explicit no-mistakes brief on a direct-PR project should scaffold"
   brief="$home/data/brief-explicit-a5/brief.md"
   grep -qx "Delivery contract: mode=no-mistakes" "$brief" \
@@ -260,7 +260,7 @@ test_ship_mode_is_explicit_not_registry() {
     "explicit no-mistakes brief did not render the pipeline definition of done"
 
   # An unregistered project is not a blocker either, because nothing is looked up.
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-explicit-a6 never-registered --mode local-only >/dev/null 2>&1 \
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-explicit-a6 never-registered --mode local-only --checks targeted >/dev/null 2>&1 \
     || fail "unregistered project should still scaffold from the explicit mode"
   grep -qx "Delivery contract: mode=local-only" "$home/data/brief-explicit-a6/brief.md" \
     || fail "unregistered project did not honour the explicit --mode"
@@ -295,14 +295,14 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   home="$TMP_ROOT/configured-authority-home"
   write_registry "$home"
   id="brief-direct-authority-a4"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR --checks targeted >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_grep "The configured merge authority decides whether to merge the PR; firstmate relays the outcome." "$brief" \
     "direct-PR brief lost configured merge authority"
   assert_no_grep "The captain reviews and merges the PR" "$brief" \
     "direct-PR brief hard-coded captain-only authority"
   id="brief-local-authority-a4"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" local-proj --mode local-only >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" local-proj --mode local-only --checks targeted >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_grep "The configured merge authority approves the ready branch, then firstmate merges it into local \`main\` through the guarded fast-forward path." "$brief" \
     "local-only brief lost configured merge authority and guarded landing"
@@ -313,7 +313,7 @@ test_faster_paths_use_configured_authority_without_stacked_review() {
   assert_no_grep "make \`--intent\` preserve all relevant content from this brief" "$home/data/$id/brief.md" \
     "local-only brief must not include the no-mistakes --intent contract"
   id="brief-direct-intent-a4"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" direct-proj --mode direct-PR --checks targeted >/dev/null 2>&1
   assert_no_grep "make \`--intent\` preserve all relevant content from this brief" "$home/data/$id/brief.md" \
     "direct-PR brief must not include the no-mistakes --intent contract"
   pass "fm-brief.sh: faster paths use configured authority without stacked review"
@@ -326,7 +326,7 @@ test_no_mistakes_dod_wording() {
   home="$TMP_ROOT/wording-home"
   mkdir -p "$home/data"
   id="brief-wording-b1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes --checks targeted >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "brief was not scaffolded"
   assert_grep "no-mistakes itself provides for the mechanics" "$brief" \
@@ -402,7 +402,7 @@ test_pr_description_summarize_wiring() {
 
   id="brief-pr-desc-nm1"
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes --checks targeted >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "no-mistakes brief was not scaffolded"
   assert_grep "$ROOT/.agents/skills/pr-description-summarize/SKILL.md" "$brief" \
@@ -412,7 +412,7 @@ test_pr_description_summarize_wiring() {
 
   id="brief-pr-desc-dp1"
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR >/dev/null 2>&1
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode direct-PR --checks targeted >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "direct-PR brief was not scaffolded"
   assert_grep "$ROOT/.agents/skills/pr-description-summarize/SKILL.md" "$brief" \
@@ -422,7 +422,7 @@ test_pr_description_summarize_wiring() {
 
   id="brief-pr-desc-lo1"
   FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
-    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only >/dev/null 2>&1
+    "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --checks targeted >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "local-only brief was not scaffolded"
   assert_no_grep "pr-description-summarize" "$brief" \
@@ -435,7 +435,7 @@ test_ship_project_memory_wording() {
   home="$TMP_ROOT/project-memory-home"
   mkdir -p "$home/data"
   id="brief-memory-c1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes --checks targeted >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "brief was not scaffolded"
   assert_grep "Record only project knowledge useful to almost every future session." "$brief" \
@@ -452,7 +452,7 @@ test_herdr_lab_contract_is_explicit_and_complete() {
   home="$TMP_ROOT/herdr-lab-home"
   mkdir -p "$home/data"
   id="brief-herdr-lab-d1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes --herdr-lab >/dev/null 2>&1
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes --checks targeted --herdr-lab >/dev/null 2>&1
   brief="$home/data/$id/brief.md"
   assert_present "$brief" "Herdr lab brief was not scaffolded"
   assert_grep "# Herdr isolation - HARD SAFETY CONTRACT" "$brief" \
@@ -504,7 +504,7 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout() {
     if [ "$kind" = scout ]; then
       FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
     else
-      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes --checks targeted >/dev/null 2>&1
     fi
     brief="$home/data/$id/brief.md"
     assert_grep "# Herdr lifecycle declaration - NOT ENABLED" "$brief" \
@@ -719,7 +719,7 @@ test_pause_verb_override_renders_all_brief_scaffolds() {
     case "$kind" in
       ship)
         FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
-          "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
+          "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes --checks targeted >/dev/null 2>&1
         ;;
       scout)
         FM_HOME="$home" FM_CLASSIFY_PAUSED_VERB=awaiting \
@@ -801,7 +801,7 @@ test_supplied_branch_replaces_the_default_everywhere() {
   for id_mode in "brief-branch-e1:no-mistakes" "brief-branch-e2:direct-PR" "brief-branch-e3:local-only"; do
     id=${id_mode%%:*}
     mode=${id_mode##*:}
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" --branch "$linear" >/dev/null 2>&1 \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" --checks targeted --branch "$linear" >/dev/null 2>&1 \
       || fail "$id: --branch scaffold on mode $mode exited non-zero"
     brief="$home/data/$id/brief.md"
     assert_grep "git checkout -b $linear" "$brief" \
@@ -831,7 +831,7 @@ test_absent_branch_keeps_the_default_shape() {
   for id_mode in "brief-nobranch-f1:no-mistakes" "brief-nobranch-f2:direct-PR" "brief-nobranch-f3:local-only"; do
     id=${id_mode%%:*}
     mode=${id_mode##*:}
-    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" --checks targeted >/dev/null 2>&1 \
       || fail "$id: plain scaffold on mode $mode exited non-zero"
     brief="$home/data/$id/brief.md"
     assert_grep "git checkout -b fm/$id" "$brief" \
@@ -862,14 +862,94 @@ test_branch_is_validated_and_refused_where_it_does_not_apply() {
     assert_contains "$out" "$expect" "$label: refusal did not explain why"
     assert_absent "$home/data/brief-badbranch-$n/brief.md" "$label: refused scaffold still wrote a brief"
   done <<'ROWS'
-missing value|some-proj --mode no-mistakes --branch --yolo|requires a value
-empty value|some-proj --mode no-mistakes --branch=|requires a branch name
-leading dash|some-proj --mode no-mistakes --branch=-force|must not start with a dash
-invalid git ref|some-proj --mode no-mistakes --branch=rac..105|not a valid git branch name
+missing value|some-proj --mode no-mistakes --checks targeted --branch --yolo|requires a value
+empty value|some-proj --mode no-mistakes --checks targeted --branch=|requires a branch name
+leading dash|some-proj --mode no-mistakes --checks targeted --branch=-force|must not start with a dash
+invalid git ref|some-proj --mode no-mistakes --checks targeted --branch=rac..105|not a valid git branch name
 branch on a scout|some-proj --scout --branch=rcs/rac-105|--branch applies only to ship briefs
 branch on a secondmate charter|--secondmate --no-projects --branch=rcs/rac-105|--branch applies only to ship briefs
 ROWS
   pass "fm-brief.sh: an unusable --branch is refused, and scout/secondmate scaffolds refuse it outright"
+}
+
+# A ship task's check scope is firstmate's other explicit per-task decision. It
+# is enforced by refusal rather than by instruction because two hand-written
+# check instructions in a row scoped the local runner and left the pipeline's
+# test step unscoped, so a whole-suite run started on a handful of image files.
+test_ship_checks_is_required_and_closed_set() {
+  local home out status label args expect n=0
+  home="$TMP_ROOT/checks-required-home"
+  mkdir -p "$home/data"
+  while IFS='|' read -r label args expect; do
+    [ -n "$label" ] || continue
+    n=$((n + 1))
+    # shellcheck disable=SC2086  # args is an intentional word-split arg list
+    out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "brief-checks-$n" $args 2>&1)
+    status=$?
+    [ "$status" -ne 0 ] || fail "$label: expected a non-zero exit"
+    assert_contains "$out" "$expect" "$label: refusal did not explain the contract"
+    assert_absent "$home/data/brief-checks-$n/brief.md" "$label: refused scaffold still wrote a brief"
+  done <<'ROWS'
+missing --checks|some-proj --mode no-mistakes|ship briefs require --checks
+empty --checks value|some-proj --mode local-only --checks|requires a value
+unknown checks value|some-proj --mode local-only --checks partial|must be one of full, targeted
+checks on a scout brief|some-proj --scout --checks full|--checks applies only to ship briefs
+checks on a secondmate charter|--secondmate --no-projects --checks targeted|--checks applies only to ship briefs
+ROWS
+  # The refusal must name both accepted values, since naming the flag alone
+  # leaves the caller to guess the vocabulary.
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-checks-words some-proj --mode local-only 2>&1)
+  assert_contains "$out" "full" "the refusal must name the full scope"
+  assert_contains "$out" "targeted" "the refusal must name the targeted scope"
+  pass "fm-brief.sh: ship --checks is required and closed-set validated"
+}
+
+# The regression that actually happened: a hand-written check instruction scoped
+# only the local CI runner, and the no-mistakes pipeline's own test step ran the
+# whole suite anyway. Both generated contracts must name BOTH places tests run.
+test_check_contract_covers_both_places_tests_run() {
+  local home id brief scope
+  home="$TMP_ROOT/checks-contract-home"
+  mkdir -p "$home/data"
+  for scope in full targeted; do
+    id="brief-checkscope-$scope"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes --checks "$scope" >/dev/null 2>&1 \
+      || fail "$scope: ship scaffold with --checks $scope exited non-zero"
+    brief="$home/data/$id/brief.md"
+    assert_grep "# Checks" "$brief" "$scope: brief has no generated check contract"
+    assert_grep "Check scope for this task: **$scope**" "$brief" \
+      "$scope: brief did not record the scope firstmate chose"
+    # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+    assert_grep 'bin/ci-local' "$brief" "$scope: check contract omitted the project's local CI runner"
+    assert_grep "pipeline's own test step" "$brief" \
+      "$scope: check contract omitted the no-mistakes pipeline's own test step - the half that was missed"
+    assert_no_grep "CHECKSDOC" "$brief" "$scope: brief leaked a heredoc delimiter"
+  done
+
+  # targeted must tell the worker how to keep the pipeline step proportionate
+  # and to state what it ran, rather than leaving it to invent an approach.
+  brief="$home/data/brief-checkscope-targeted/brief.md"
+  # shellcheck disable=SC2016  # single quotes are deliberate: the backticks must stay literal
+  assert_grep 'no-mistakes axi run --skip test' "$brief" \
+    "targeted contract did not name the supported way to scope the pipeline test step"
+  assert_grep "which tests you ran" "$brief" \
+    "targeted contract did not require the worker to state its scope"
+
+  # full must forbid skipping that step and require per-job reporting.
+  brief="$home/data/brief-checkscope-full/brief.md"
+  assert_grep "run the whole suite" "$brief" "full contract did not let the pipeline test step run in full"
+  assert_grep "NOT RUN" "$brief" "full contract did not require an unrunnable job to be reported as NOT RUN"
+
+  # Scout and secondmate deliverables ship no change, so neither carries one.
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-checkscope-scout some-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold exited non-zero"
+  assert_no_grep "# Checks" "$home/data/brief-checkscope-scout/brief.md" \
+    "a scout brief grew a check contract it has no change to check"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='ops' "$ROOT/bin/fm-brief.sh" brief-checkscope-mate --secondmate --no-projects >/dev/null 2>&1 \
+    || fail "secondmate charter scaffold exited non-zero"
+  assert_no_grep "# Checks" "$home/data/brief-checkscope-mate/brief.md" \
+    "a secondmate charter grew a check contract it has no change to check"
+  pass "fm-brief.sh: both check contracts cover the local runner and the pipeline test step"
 }
 
 test_script_parses
@@ -877,6 +957,8 @@ test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
+test_ship_checks_is_required_and_closed_set
+test_check_contract_covers_both_places_tests_run
 test_ship_mode_is_explicit_not_registry
 test_supplied_branch_replaces_the_default_everywhere
 test_absent_branch_keeps_the_default_shape

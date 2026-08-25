@@ -6,7 +6,7 @@
 # description, acceptance criteria, and context, and may adjust other sections
 # when the task genuinely deviates (e.g. working an existing external PR instead
 # of shipping a new one).
-# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> [--branch <name>] [--herdr-lab]
+# Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> --checks <full|targeted> [--branch <name>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
 #   --scout writes the scout contract instead: the deliverable is a report at
@@ -40,6 +40,21 @@
 # "Delivery contract: mode=<mode>" line. bin/fm-spawn.sh reads that line and refuses
 # to launch a ship task whose explicit --mode disagrees, so an adjusted brief and the
 # recorded task metadata cannot drift apart.
+# For ship tasks, --checks is REQUIRED and generates the brief's whole check
+# contract. Firstmate makes the size judgement at intake; the flag records it, and
+# the scaffold - not firstmate's prose - writes the resulting instruction:
+#   full      the change can break things beyond the files it touches, so the
+#             project's local CI runner AND the no-mistakes pipeline's own `test`
+#             step both run in full, every job reported by name
+#   targeted  the change is small enough that a whole-suite run is disproportionate,
+#             so both of those are kept proportionate and the worker states which
+#             tests it ran and why
+# The flag exists because a hand-written check instruction reliably scoped only the
+# local runner and left the pipeline's `test` step running the whole suite anyway.
+# `no-mistakes axi run --skip` is that step's only scoping control and it accepts
+# `test`; docs/verification/nomistakes-skip-steps.md holds the version-scoped
+# evidence and the command that refreshes it.
+# --checks is refused on scout and secondmate scaffolds: neither ships a change.
 # Ship briefs begin with a worktree-isolation assertion before the branch step.
 # --mode is refused on scout and secondmate scaffolds: a scout's deliverable is a
 # report rather than a merge, and a charter is not a delivery contract.
@@ -135,6 +150,8 @@ HERDR_LAB=0
 NO_PROJECTS=0
 MODE=
 MODE_SET=0
+CHECKS=
+CHECKS_SET=0
 BRANCH_ARG=
 BRANCH_SET=0
 POS=()
@@ -146,6 +163,7 @@ for a in "$@"; do
     esac
     case "$want_value" in
       mode) MODE=$a; MODE_SET=1 ;;
+      checks) CHECKS=$a; CHECKS_SET=1 ;;
       branch) BRANCH_ARG=$a; BRANCH_SET=1 ;;
       *) echo "error: internal parser state for --$want_value" >&2; exit 1 ;;
     esac
@@ -159,6 +177,8 @@ for a in "$@"; do
     --no-projects) NO_PROJECTS=1 ;;
     --mode) want_value=mode ;;
     --mode=*) MODE=${a#--mode=}; MODE_SET=1 ;;
+    --checks) want_value=checks ;;
+    --checks=*) CHECKS=${a#--checks=}; CHECKS_SET=1 ;;
     --branch) want_value=branch ;;
     --branch=*) BRANCH_ARG=${a#--branch=}; BRANCH_SET=1 ;;
     # yolo never reaches the worker: it is firstmate's approval authority, not a
@@ -186,6 +206,24 @@ if [ "$KIND" = ship ]; then
   esac
 elif [ "$MODE_SET" -eq 1 ]; then
   echo "error: --mode applies only to ship briefs; a scout delivers a report and a secondmate charter is not a delivery contract" >&2
+  exit 1
+fi
+
+# The check scope is the other explicit per-task decision, and the one a
+# hand-written brief kept getting half right: a scoped local runner plus an
+# unscoped pipeline test step. Refuse the scaffold rather than let firstmate
+# write the contract by hand again.
+if [ "$KIND" = ship ]; then
+  [ "$CHECKS_SET" -eq 1 ] || {
+    echo "error: ship briefs require --checks <full|targeted>; full when the change can break things beyond the files it touches, targeted when a whole-suite run is disproportionate to it" >&2
+    exit 1
+  }
+  case "$CHECKS" in
+    full|targeted) ;;
+    *) echo "error: --checks must be one of full, targeted (got '$CHECKS')" >&2; exit 1 ;;
+  esac
+elif [ "$CHECKS_SET" -eq 1 ]; then
+  echo "error: --checks applies only to ship briefs; a scout delivers a report and a secondmate charter ships no change" >&2
   exit 1
 fi
 ID=${POS[0]}
@@ -485,6 +523,39 @@ EOF
     ;;
 esac
 
+# The check contract is generated in full from --checks, never written by hand.
+# It always names BOTH places a task's tests run: the project's local CI runner
+# and the no-mistakes pipeline's own `test` step. The pipeline half is the one a
+# hand-written instruction kept omitting, which is how a four-image change once
+# started a whole-suite run.
+if [ "$CHECKS" = full ]; then
+IFS= read -r -d '' CHECKS_SECTION <<'CHECKSDOC' || true
+# Checks
+Check scope for this task: **full**.
+Firstmate judged this change able to break things beyond the files it touches, so BOTH places tests run must run in full.
+
+1. Local checks. Run this project's local CI runner (`bin/ci-local`, or whatever runner this project provides) in full.
+   If the project has no local runner, read its CI workflow, establish every job it defines, and run those.
+2. The pipeline's own test step. When the no-mistakes pipeline runs for this task, let its `test` step run the whole suite; never pass `test` to `--skip`.
+3. Report every job by name with its result. A job that could not run here is reported as NOT RUN with the reason, never folded into a green summary.
+CHECKSDOC
+else
+IFS= read -r -d '' CHECKS_SECTION <<'CHECKSDOC' || true
+# Checks
+Check scope for this task: **targeted**.
+Firstmate judged this change small enough that a whole-suite run is disproportionate to it, so keep BOTH places tests run proportionate - not just the local one.
+
+1. Local checks. Run this project's local CI runner (`bin/ci-local`, or whatever runner this project provides) over the tests and lint your change actually affects, not the whole suite.
+   If the project has no local runner, read its CI workflow, establish what it runs, and run the parts that cover the files you touched.
+2. The pipeline's own test step. When the no-mistakes pipeline runs for this task, its `test` step runs the WHOLE suite regardless of what you ran locally - this is the half that gets missed.
+   Keep it proportionate by starting the run with `no-mistakes axi run --skip test` and running the affected tests yourself instead, comma-joining `test` with any other steps your definition of done already tells you to skip.
+   `--skip` is that step's only scoping control and it accepts `test`, so this is the supported way to keep it proportionate rather than an approach you have to invent.
+   Skipping it is legitimate only because you ran the affected tests yourself: never skip it and run nothing, and never skip it to make a failure go away.
+3. Say plainly in your final report which tests you ran, why that scope covers this change, and what you deliberately did not run.
+CHECKSDOC
+fi
+CHECKS_SECTION=${CHECKS_SECTION%$'\n'}
+
 # read -r -d '' preserves the heredoc's trailing newline that the removed
 # $(...) command substitution used to strip. Drop that one newline so generated
 # briefs stay byte-identical to the historical Bash 5 output.
@@ -539,6 +610,8 @@ For anything the codebase already shows, prefer a pointer to the authoritative f
 If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
 Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
 
+$CHECKS_SECTION
+
 $DOD
 EOF
-echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"
+echo "scaffolded: $BRIEF (ship, mode=$MODE, checks=$CHECKS; replace {TASK})"

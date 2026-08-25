@@ -1045,7 +1045,7 @@ test_brief_prints_the_intake_rules() {
   ln -s "$data" "$home/data"
   out=$(FM_ROOT_OVERRIDE='' FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" \
     FM_STATE_OVERRIDE="$home/state" \
-    "$BRIEF" intake-task some-repo --mode no-mistakes 2>&1)
+    "$BRIEF" intake-task some-repo --mode no-mistakes --checks targeted 2>&1)
   status=$?
   expect_code 0 "$status" 'scaffolding a brief must still succeed'
   assert_contains "$out" 'State what changes and how anyone tells whether it worked.' \

@@ -341,6 +341,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "docs/verification/nomistakes-skip-steps.md",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "docs/verification/process-event-sources.md",
       "audience": "maintainer-verification"
     },
