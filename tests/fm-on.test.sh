@@ -422,6 +422,47 @@ if "$REMOTE_ROOT/bin/fm-remote-entrypoint.sh" 1 "$traversal_root_b64" "$home_b64
 fi
 pass "the fixed entrypoint refuses incompatible protocols and unsafe roots"
 
+# A writer that stops short without closing used to park the entrypoint's stdin
+# capture in the kernel with no output for as long as the transport stayed open,
+# so the wall clock below is the assertion that the read is bounded at all. It
+# is deliberately far longer than the stdin deadline under test: an unbounded
+# read trips it and fails here instead of hanging the suite.
+STALL_FIFO="$TMP_ROOT/stalled-writer.fifo"
+STALL_OUT="$TMP_ROOT/stalled-writer.out"
+STALL_ERR="$TMP_ROOT/stalled-writer.err"
+rm -f "$STALL_FIFO"
+mkfifo "$STALL_FIFO" || fail "could not create the stalled-writer pipe"
+# Delivers a partial payload, then holds the pipe open and sends no end of input.
+( exec 3>"$STALL_FIFO"; printf 'partial payload' >&3; sleep 120 ) &
+STALL_WRITER=$!
+FM_REMOTE_JOB_STDIN_TIMEOUT=2 FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+  FM_REMOTE_JOB_STATE_ROOT="$TMP_ROOT/remote-jobs" \
+  "$REMOTE_ROOT/bin/fm-remote-entrypoint.sh" 1 "$root_b64" "$home_b64" "$argv_b64" \
+  < "$STALL_FIFO" > "$STALL_OUT" 2> "$STALL_ERR" &
+STALL_ENTRY=$!
+STALL_GUARD=$(( $(date +%s) + 60 ))
+STALL_RC=
+while :; do
+  if ! kill -0 "$STALL_ENTRY" 2>/dev/null; then
+    wait "$STALL_ENTRY"
+    STALL_RC=$?
+    break
+  fi
+  if [ "$(date +%s)" -ge "$STALL_GUARD" ]; then
+    kill "$STALL_ENTRY" 2>/dev/null || true
+    kill "$STALL_WRITER" 2>/dev/null || true
+    fail "the entrypoint never returned from a stdin stream that stopped short without closing"
+  fi
+  sleep 0.1
+done
+kill "$STALL_WRITER" 2>/dev/null || true
+[ "${STALL_RC:-0}" -ne 0 ] || fail "a stalled stdin stream was accepted as a complete job input"
+# Silence was the defect, so the refusal has to name the stream and what arrived.
+assert_grep 'stdin stalled' "$STALL_ERR" "the stalled stdin stream was not named in the refusal"
+assert_grep 'bytes delivered' "$STALL_ERR" "the refusal did not report how much the stalled stream delivered"
+[ ! -s "$STALL_OUT" ] || fail "a refused stalled job still relayed remote stdout"
+pass "a stdin stream that stops short without closing is refused by name instead of blocking forever"
+
 cat >> "$LOCAL_HOME/data/secondmates.md" <<EOF
 - build - build delivery (host: remote-mac; root: $REMOTE_ROOT; home: $TMP_ROOT/other-remote-home; scope: build work; projects: beta; added 2026-08-02)
 EOF

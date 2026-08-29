@@ -14,10 +14,12 @@
 # console-login diagnostic. Linux uses the same queue and worker shape without
 # an Aqua requirement.
 #
-# stdin is captured as bounded job input. The completed worker result is relayed
-# with stdout and stderr kept separate and its exit status preserved. An SSH
-# disconnect remains unknown completion to fm-on.sh, which preserves OpenSSH's
-# exit 255 behavior. The shared library header owns job fields, bounds, PATH,
+# stdin is captured as bounded job input, under a byte cap and a stdin deadline
+# that refuses a stalled writer by name instead of parking on a read that never
+# ends. The completed worker result is relayed with stdout and stderr kept
+# separate and its exit status preserved. An SSH disconnect remains unknown
+# completion to fm-on.sh, which preserves OpenSSH's exit 255 behavior. The
+# shared library header owns job fields, bounds, the stdin deadline, PATH,
 # LaunchAgent contract, and worker environment.
 set -eu
 
@@ -134,9 +136,13 @@ fi
 if ! fm_remote_job_ensure_worker "$ROOT" "$ACCOUNT_HOME"; then
   die "${FM_REMOTE_JOB_ERROR:-remote job worker is unavailable; run fm-on.sh <route> fm-remote-doctor.sh --fix}"
 fi
-if ! JOB_ID=$(fm_remote_job_stage "$ACCOUNT_HOME" "$ROOT" "$HOME_PATH" "$COMMAND" "${ARGV[@]:1}"); then
+# Staged without command substitution so a refusal reaches this caller by name:
+# a subshell would strand FM_REMOTE_JOB_ERROR and report the stalled stdin
+# stream as an anonymous staging failure.
+if ! fm_remote_job_stage "$ACCOUNT_HOME" "$ROOT" "$HOME_PATH" "$COMMAND" "${ARGV[@]:1}" >/dev/null; then
   die "${FM_REMOTE_JOB_ERROR:-cannot stage remote job}" 70
 fi
+JOB_ID=$FM_REMOTE_JOB_ID
 if ! fm_remote_job_wait "$ACCOUNT_HOME" "$JOB_ID"; then
   die "${FM_REMOTE_JOB_ERROR:-remote job did not complete}" 70
 fi

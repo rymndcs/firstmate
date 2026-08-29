@@ -15,6 +15,13 @@
 # for done, relay stdout and stderr separately, then reap only their completed
 # record. Input, argv, stdout, and stderr are each capped at 1048576 bytes.
 #
+# Staging captures stdin under both that byte cap and FM_REMOTE_JOB_STDIN_TIMEOUT
+# seconds (default 60), because a byte cap alone still waits forever on a writer
+# that stops short without closing. Reaching the deadline refuses the job and
+# names the stalled stream with the bytes delivered, so a caller whose command
+# reads no input redirects stdin from /dev/null rather than handing the remote
+# an end of input that never arrives.
+#
 # The worker accepts only a tracked, non-symlink executable named fm-*.sh below
 # its configured FM_ROOT/bin. Every child receives env -i with the composed
 # PATH, HOME, FM_HOME, FM_ROOT_OVERRIDE, and FM_REMOTE_JOB_ACTIVE=1. The PATH
@@ -32,6 +39,7 @@ FM_REMOTE_JOB_LABEL=dev.firstmate.remote-job
 FM_REMOTE_JOB_MAX_BYTES=${FM_REMOTE_JOB_MAX_BYTES:-1048576}
 FM_REMOTE_JOB_QUEUE_TIMEOUT=${FM_REMOTE_JOB_QUEUE_TIMEOUT:-360}
 FM_REMOTE_JOB_TIMEOUT=${FM_REMOTE_JOB_TIMEOUT:-360}
+FM_REMOTE_JOB_STDIN_TIMEOUT=${FM_REMOTE_JOB_STDIN_TIMEOUT:-60}
 FM_REMOTE_JOB_WAIT_GRACE=${FM_REMOTE_JOB_WAIT_GRACE:-30}
 FM_REMOTE_JOB_POLL_SECONDS=${FM_REMOTE_JOB_POLL_SECONDS:-0.05}
 FM_REMOTE_JOB_REAP_SECONDS=${FM_REMOTE_JOB_REAP_SECONDS:-3600}
@@ -62,6 +70,8 @@ fm_remote_job_validate_settings() {
   [ "$FM_REMOTE_JOB_QUEUE_TIMEOUT" -le 3600 ] || return 1
   case "$FM_REMOTE_JOB_TIMEOUT" in ''|*[!0-9]*|0) return 1 ;; esac
   [ "$FM_REMOTE_JOB_TIMEOUT" -le 3600 ] || return 1
+  case "$FM_REMOTE_JOB_STDIN_TIMEOUT" in ''|*[!0-9]*|0) return 1 ;; esac
+  [ "$FM_REMOTE_JOB_STDIN_TIMEOUT" -le 3600 ] || return 1
   case "$FM_REMOTE_JOB_WAIT_GRACE" in ''|*[!0-9]*) return 1 ;; esac
   [ "$FM_REMOTE_JOB_WAIT_GRACE" -le 300 ] || return 1
   case "$FM_REMOTE_JOB_REAP_SECONDS" in ''|*[!0-9]*|0) return 1 ;; esac
@@ -431,6 +441,49 @@ fm_remote_job_read_deadline() { # <job-dir>
   fm_remote_job_read_number "$1" deadline
 }
 
+# Capture stdin into <destination>, bounded by both the byte cap and a wall
+# clock. A bare "head -c" is bounded only by bytes: it waits for end of input
+# that a writer which stops short without closing never sends, so the read
+# parks in the kernel at zero CPU with no output for as long as the transport
+# stays open. That is silence, not a slow command, so the deadline here ends it
+# and names the stream and the bytes that reached the record.
+#
+# The reader is one direct child so the deadline can kill the blocked read
+# itself rather than a wrapper it would outlive. Its stdin is handed over
+# explicitly because a background job in a non-interactive shell otherwise
+# inherits /dev/null and would capture nothing at all.
+fm_remote_job_capture_stdin() { # <destination> <max-bytes> <timeout-seconds> <deadline-marker>
+  local destination=$1 max=$2 timeout=$3 marker=$4 reader deadline captured status=0
+  : > "$destination" || return 1
+  rm -f -- "$marker" || return 1
+  exec 9<&0 || return 1
+  head -c "$((max + 1))" <&9 > "$destination" &
+  reader=$!
+  exec 9<&- || true
+  deadline=$(( $(date +%s) + timeout ))
+  while kill -0 "$reader" 2>/dev/null; do
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      : > "$marker" || true
+      kill "$reader" 2>/dev/null || true
+      break
+    fi
+    sleep "$FM_REMOTE_JOB_POLL_SECONDS"
+  done
+  wait "$reader" || status=$?
+  captured=$(LC_ALL=C wc -c < "$destination" 2>/dev/null | tr -d ' ') || captured=
+  case "$captured" in ''|*[!0-9]*) captured=0 ;; esac
+  if [ -e "$marker" ]; then
+    rm -f -- "$marker" || true
+    FM_REMOTE_JOB_ERROR="remote job stdin stalled: no end of input after ${timeout}s, ${captured} of at most ${max} bytes delivered; redirect stdin from /dev/null when the remote command reads no input"
+    return 1
+  fi
+  [ "$status" -eq 0 ] || {
+    FM_REMOTE_JOB_ERROR="cannot capture remote job stdin after ${captured} bytes"
+    return 1
+  }
+  return 0
+}
+
 fm_remote_job_stage() { # <account-home> <root> <home> <command> [args...]; stdin is captured
   local account_home=$1 root=$2 home=$3 command=$4 stage id destination bytes queue_deadline
   shift 4
@@ -455,10 +508,15 @@ fm_remote_job_stage() { # <account-home> <root> <home> <command> [args...]; stdi
     ! printf '%s\n' "$home" > "$stage/home" ||
     ! printf '%s\n' "$queue_deadline" > "$stage/queue_deadline" ||
     ! printf '%s\n' "$FM_REMOTE_JOB_TIMEOUT" > "$stage/timeout" ||
-    ! printf '%s\0' "$command" "$@" > "$stage/argv" ||
-    ! head -c "$((FM_REMOTE_JOB_MAX_BYTES + 1))" > "$stage/stdin"; then
+    ! printf '%s\0' "$command" "$@" > "$stage/argv"; then
     rm -rf -- "$stage"
     FM_REMOTE_JOB_ERROR="cannot capture remote job input"
+    return 1
+  fi
+  if ! fm_remote_job_capture_stdin "$stage/stdin" "$FM_REMOTE_JOB_MAX_BYTES" \
+    "$FM_REMOTE_JOB_STDIN_TIMEOUT" "$stage/.stdin-deadline"; then
+    rm -rf -- "$stage"
+    FM_REMOTE_JOB_ERROR="${FM_REMOTE_JOB_ERROR:-cannot capture remote job input}"
     return 1
   fi
   for bytes in root home queue_deadline timeout argv stdin; do chmod 600 "$stage/$bytes" || { rm -rf -- "$stage"; return 1; }; done
