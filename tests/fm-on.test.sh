@@ -441,11 +441,12 @@ FM_REMOTE_JOB_STDIN_TIMEOUT=2 FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
   < "$STALL_FIFO" > "$STALL_OUT" 2> "$STALL_ERR" &
 STALL_ENTRY=$!
 STALL_GUARD=$(( $(date +%s) + 60 ))
-STALL_RC=
+STALL_RC=0
 while :; do
   if ! kill -0 "$STALL_ENTRY" 2>/dev/null; then
-    wait "$STALL_ENTRY"
-    STALL_RC=$?
+    # A refusal is the expected result here, so the status is collected rather
+    # than allowed to end the run under the set -e in force from line 135 on.
+    wait "$STALL_ENTRY" || STALL_RC=$?
     break
   fi
   if [ "$(date +%s)" -ge "$STALL_GUARD" ]; then
@@ -456,7 +457,7 @@ while :; do
   sleep 0.1
 done
 kill "$STALL_WRITER" 2>/dev/null || true
-[ "${STALL_RC:-0}" -ne 0 ] || fail "a stalled stdin stream was accepted as a complete job input"
+[ "$STALL_RC" -ne 0 ] || fail "a stalled stdin stream was accepted as a complete job input"
 # Silence was the defect, so the refusal has to name the stream and what arrived.
 assert_grep 'stdin stalled' "$STALL_ERR" "the stalled stdin stream was not named in the refusal"
 assert_grep 'bytes delivered' "$STALL_ERR" "the refusal did not report how much the stalled stream delivered"
