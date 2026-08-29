@@ -86,7 +86,17 @@ fm_test_cleanup() {
 
 fm_test_tmproot() {
   local prefix=${1:-fm-test} root
-  root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX")
+  root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX") || root=
+  # Report an unusable root and hand back a non-zero status. This runs inside
+  # the caller's command substitution, so the exit below ends only that
+  # subshell: every caller must also refuse an empty root, because `cd ""`
+  # succeeds without moving and would make the caller's own rm -rf EXIT trap
+  # delete the checkout it is running from.
+  if [ -z "$root" ] || [ ! -d "$root" ]; then
+    printf 'not ok - could not create a temp root for %s under %s\n' \
+      "$prefix" "${TMPDIR:-/tmp}" >&2
+    exit 1
+  fi
   if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then
     trap fm_test_cleanup EXIT
   fi

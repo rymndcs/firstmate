@@ -16,6 +16,9 @@ TMP_ROOT=$(fm_test_tmproot fm-remote-doctor)
 LABEL=dev.firstmate.herdr.fm-remote
 INTERACTIVE_LABEL=dev.firstmate.herdr
 mkdir -p "$TMP_ROOT"
+# `cd ""` succeeds without moving, so an empty root here would canonicalize to
+# the current directory and the EXIT trap below would rm -rf this checkout.
+[ -n "$TMP_ROOT" ] || exit 1
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
 JOB_LABEL=dev.firstmate.remote-job
 CASE_N=0
