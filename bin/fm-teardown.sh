@@ -104,6 +104,11 @@
 # leased home releases its durable treehouse lease so the pool slot is freed,
 # never left leased forever. If the treehouse return fails, teardown leaves the
 # leased home and state in place instead of hiding a still-held lease.
+# A landed, non-forced ship cleanup also deletes attributable backup refs from
+# the project's recorded no-mistakes gate remote. Only the task's pipeline-head,
+# pre-rebase-gate-head, and six-digit timestamped gate-head refs qualify. The
+# gate must be a verified bare store for the project's origin; missing stores,
+# old ref names, and deletion errors never stop the remaining teardown.
 # After a treehouse return succeeds, teardown re-checks the ONE shared
 # no-mistakes daemon and restarts it from a safe directory if the return's
 # process sweep took it down, so other lanes' in-flight validation runs never
@@ -1181,6 +1186,50 @@ cleanup_stale_lock_for_safety_check() {
 # neither block nor fail teardown.
 restore_shared_nomistakes_daemon() {
   "$FM_ROOT/bin/fm-nomistakes-daemon.sh" ensure || true
+}
+
+# The project's no-mistakes remote records the gate store selected by the tool.
+# Only the task's current backup-ref convention is attributable; older names
+# and refs belonging to another task stay reachable for a separate decision.
+cleanup_gate_backup_refs() {
+  local gate_repo gate_real project_origin gate_origin refs ref
+  [ "$KIND" = ship ] && [ "$FORCE" != --force ] || return 0
+  gate_repo=$(git -C "$PROJ" config --get remote.no-mistakes.url 2>/dev/null) || {
+    echo "teardown: no no-mistakes gate remote for $ID; skipping backup-ref cleanup" >&2
+    return 0
+  }
+  case "$gate_repo" in
+    /*/.no-mistakes/repos/*.git) ;;
+    *) echo "teardown: unrecognized gate store for $ID; skipping backup-ref cleanup" >&2; return 0 ;;
+  esac
+  gate_real=$(CDPATH='' cd -- "$gate_repo" 2>/dev/null && pwd -P) || {
+    echo "teardown: gate store missing or unreadable for $ID; skipping backup-ref cleanup" >&2
+    return 0
+  }
+  case "$gate_real" in
+    /*/.no-mistakes/repos/*.git) ;;
+    *) echo "teardown: gate store path is unsafe for $ID; skipping backup-ref cleanup" >&2; return 0 ;;
+  esac
+  project_origin=$(git -C "$PROJ" config --get remote.origin.url 2>/dev/null) || project_origin=
+  gate_origin=$(git -C "$gate_real" config --get remote.origin.url 2>/dev/null) || gate_origin=
+  if [ -z "$project_origin" ] || [ "$project_origin" != "$gate_origin" ] \
+    || [ "$(git -C "$gate_real" rev-parse --is-bare-repository 2>/dev/null || true)" != true ]; then
+    echo "teardown: gate store identity could not be verified for $ID; skipping backup-ref cleanup" >&2
+    return 0
+  fi
+  refs=$(git -C "$gate_real" for-each-ref --format='%(refname)' refs/backup 2>/dev/null) || {
+    echo "teardown: cannot read gate backup refs for $ID; skipping backup-ref cleanup" >&2
+    return 0
+  }
+  while IFS= read -r ref; do
+    case "$ref" in
+      "refs/backup/$ID-pipeline-head"|"refs/backup/$ID-pre-rebase-gate-head"|\
+      "refs/backup/$ID-gate-head-"[0-9][0-9][0-9][0-9][0-9][0-9])
+        git -C "$gate_real" update-ref -d "$ref" 2>/dev/null \
+          || echo "teardown: could not remove gate backup ref $ref; continuing" >&2
+        ;;
+    esac
+  done <<< "$refs"
 }
 
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
@@ -2319,6 +2368,7 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 [ -n "$TASK_TMP" ] && rm -rf "$TASK_TMP"
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
+cleanup_gate_backup_refs || true
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token"

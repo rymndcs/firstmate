@@ -654,6 +654,78 @@ run_teardown() {
     "$TEARDOWN" task-x1 "$@"
 }
 
+add_gate_store() {
+  local case_dir=$1 gate_repo
+  gate_repo="$case_dir/.no-mistakes/repos/gate.git"
+  mkdir -p "$(dirname "$gate_repo")"
+  git clone -q --bare "$case_dir/origin.git" "$gate_repo"
+  git -C "$case_dir/project" remote add no-mistakes "$gate_repo"
+  printf '%s\n' "$gate_repo"
+}
+
+test_landed_task_clears_only_its_gate_backups() {
+  local case_dir gate_repo head ref rc
+  case_dir=$(make_case gate-backup-cleanup)
+  write_meta "$case_dir" no-mistakes ship
+  gate_repo=$(add_gate_store "$case_dir")
+  head=$(git -C "$gate_repo" rev-parse HEAD)
+  for ref in \
+    refs/backup/task-x1-pipeline-head \
+    refs/backup/task-x1-pre-rebase-gate-head \
+    refs/backup/task-x1-gate-head-123456 \
+    refs/backup/task-x10-pipeline-head \
+    refs/backup/task-x10-pre-rebase-gate-head \
+    refs/backup/task-x10-gate-head-123456 \
+    refs/backup/rac187-pushed-head; do
+    git -C "$gate_repo" update-ref "$ref" "$head"
+  done
+  git -C "$case_dir/project" update-ref refs/backup/task-x1-pipeline-head "$head"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "gate-backup-cleanup: teardown should succeed"
+  for ref in \
+    refs/backup/task-x1-pipeline-head \
+    refs/backup/task-x1-pre-rebase-gate-head \
+    refs/backup/task-x1-gate-head-123456; do
+    ! git -C "$gate_repo" show-ref --verify --quiet "$ref" \
+      || fail "gate-backup-cleanup: task backup survived in gate store: $ref"
+  done
+  for ref in \
+    refs/backup/task-x10-pipeline-head \
+    refs/backup/task-x10-pre-rebase-gate-head \
+    refs/backup/task-x10-gate-head-123456 \
+    refs/backup/rac187-pushed-head; do
+    git -C "$gate_repo" show-ref --verify --quiet "$ref" \
+      || fail "gate-backup-cleanup: unrelated backup was removed: $ref"
+  done
+  git -C "$case_dir/project" show-ref --verify --quiet refs/backup/task-x1-pipeline-head \
+    || fail "gate-backup-cleanup: project clone backup was removed"
+  pass "landed task removes only its attributable gate-store backup refs"
+}
+
+test_missing_gate_store_does_not_block_teardown() {
+  local case_dir rc
+  case_dir=$(make_case missing-gate-store)
+  write_meta "$case_dir" no-mistakes ship
+  git -C "$case_dir/project" remote add no-mistakes "$case_dir/.no-mistakes/repos/missing.git"
+
+  set +e
+  run_teardown "$case_dir" > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+
+  expect_code 0 "$rc" "missing-gate-store: teardown should succeed"
+  assert_grep 'gate store missing or unreadable' "$case_dir/stderr" \
+    "missing-gate-store: missing store was not reported"
+  [ ! -e "$case_dir/state/task-x1.meta" ] \
+    || fail "missing-gate-store: teardown did not remove task metadata"
+  pass "missing gate store is reported without interrupting teardown"
+}
+
 # --- shared no-mistakes daemon recovery after a treehouse return -------------
 #
 # `treehouse return` terminates the returned worktree's lingering processes, so a
@@ -2726,6 +2798,8 @@ MD
 }
 
 test_shared_daemon_restored_after_a_successful_return
+test_landed_task_clears_only_its_gate_backups
+test_missing_gate_store_does_not_block_teardown
 test_shared_daemon_left_untouched_when_healthy
 test_shared_daemon_absent_is_a_clean_no_op
 test_shared_daemon_failure_never_fails_teardown
