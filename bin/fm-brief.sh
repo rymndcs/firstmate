@@ -90,6 +90,12 @@
 # self-governance section when a touched project AGENTS.md lacks it.
 # Refuses to overwrite an existing brief.
 #
+# Ship review step: when this home configures config/ship-review.md, every ship
+# brief ends with that file's text, placeholders filled for this task
+# (bin/fm-ship-review-lib.sh owns the substitution; docs/configuration.md "Ship
+# review step" owns the file). Scout and secondmate scaffolds never carry it, and
+# without the file a ship brief is unchanged.
+#
 # Standing knowledge at the intake moment: scaffolding a ship or scout brief is
 # where a task is defined, tiered and scoped, so before the scaffold is written
 # this prints to stderr the verbatim knowledge-file sections tagged `intake`
@@ -119,6 +125,8 @@ esac
 . "$SCRIPT_DIR/fm-marker-lib.sh"
 # shellcheck source=bin/fm-classify-lib.sh
 . "$SCRIPT_DIR/fm-classify-lib.sh"
+# shellcheck source=bin/fm-ship-review-lib.sh
+. "$SCRIPT_DIR/fm-ship-review-lib.sh"
 PAUSED_VERB=${FM_CLASSIFY_PAUSED_VERB:-$FM_CLASSIFY_PAUSED_VERB_DEFAULT}
 
 resolve_directory_input() {
@@ -561,6 +569,16 @@ CHECKS_SECTION=${CHECKS_SECTION%$'\n'}
 # briefs stay byte-identical to the historical Bash 5 output.
 DOD=${DOD%$'\n'}
 
+# The home's configured review step closes every ship brief. Read it before the
+# brief is written so an unreadable file stops the scaffold with nothing on disk.
+REVIEW_STATUS=0
+REVIEW_TEXT=$(fm_ship_review_text "$ID" "$BRANCH" "$STATE/$ID.status") || REVIEW_STATUS=$?
+case "$REVIEW_STATUS" in
+  0) REVIEW_SECTION=$'\n\n'"$REVIEW_TEXT" ;;
+  1) REVIEW_SECTION= ;;
+  *) rmdir "$DATA/$ID" 2>/dev/null || true; exit 1 ;;
+esac
+
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
@@ -612,6 +630,6 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $CHECKS_SECTION
 
-$DOD
+$DOD$REVIEW_SECTION
 EOF
 echo "scaffolded: $BRIEF (ship, mode=$MODE, checks=$CHECKS; replace {TASK})"

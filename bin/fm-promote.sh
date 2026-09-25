@@ -18,6 +18,13 @@
 # task that shipped from the start (see that script's header for why a tracker's
 # own branch name matters). Omitted, the promoted task uses fm/<task-id> and no
 # branch= is recorded, leaving the meta byte-identical to the historical form.
+# Ship review step: when this home configures config/ship-review.md, promotion
+# writes that text, placeholders filled for this task, to data/<task-id>/ship-review.md
+# and the printed ship instructions tell the crewmate to follow it before reporting
+# done, exactly as a ship brief would carry it (bin/fm-ship-review-lib.sh owns the
+# substitution; docs/configuration.md "Ship review step" owns the file). An
+# unreadable file refuses before the meta changes. Without the file the output is
+# unchanged.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch <name>]
 set -eu
 
@@ -25,6 +32,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+# shellcheck source=bin/fm-ship-review-lib.sh
+. "$SCRIPT_DIR/fm-ship-review-lib.sh"
 
 MODE=
 YOLO=
@@ -98,6 +108,22 @@ grep -qx 'kind=scout' "$META" || { echo "error: task $ID is not a scout task (ki
 
 BRANCH=${BRANCH_ARG:-fm/$ID}
 
+# Resolve the home's review step before touching the meta, so an unreadable
+# review file refuses the promotion with nothing changed.
+REVIEW_STATUS=0
+REVIEW_TEXT=$(fm_ship_review_text "$ID" "$BRANCH" "$STATE/$ID.status") || REVIEW_STATUS=$?
+case "$REVIEW_STATUS" in
+  0|1) ;;
+  *) exit 1 ;;
+esac
+REVIEW_FILE="$DATA/$ID/ship-review.md"
+REVIEW_STEP=
+if [ "$REVIEW_STATUS" -eq 0 ]; then
+  mkdir -p "$DATA/$ID"
+  printf '%s\n' "$REVIEW_TEXT" > "$REVIEW_FILE"
+  REVIEW_STEP="; then follow the review step in $REVIEW_FILE before reporting done"
+fi
+
 TMP="$META.tmp"
 grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^branch=' "$META" > "$TMP"
 {
@@ -111,4 +137,4 @@ mv "$TMP" "$META"
 
 HOME_Q=$(printf '%q' "$FM_HOME")
 echo "promoted $ID to ship mode=$MODE yolo=$YOLO (teardown protection restored)"
-echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch $BRANCH; implement; report done>'"
+echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch $BRANCH; implement$REVIEW_STEP; report done>'"

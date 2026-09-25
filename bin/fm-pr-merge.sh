@@ -14,6 +14,14 @@
 # the captain's own words and decides nothing - no merge, authority, or posture
 # verdict is derived here, and the print adds no refusal, touches no stdout, and
 # can never fail a merge.
+# Ship review gate: when this home's config/ship-review-gate requires it, the
+# merge refuses before recording the PR or calling gh-axi unless the task's
+# status log records a completed review with an existing report, and names
+# exactly what is missing - the same gate bin/fm-merge-local.sh applies, so both
+# landing paths hold one standard. The captain's emergency override is
+# FM_SHIP_REVIEW_OVERRIDE='<reason>' on one invocation, always logged.
+# bin/fm-ship-review-lib.sh owns the line format, the override, and its log;
+# docs/configuration.md "Ship review step" owns the config file.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
 set -eu
 
@@ -21,9 +29,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-ship-review-lib.sh
+. "$SCRIPT_DIR/fm-ship-review-lib.sh"
 
 if [ "$#" -lt 2 ]; then
   echo "error: invalid PR merge request" >&2
@@ -92,6 +103,8 @@ if [ ! -f "$META" ] || [ -L "$META" ]; then
   echo "error: task metadata is unavailable" >&2
   exit 1
 fi
+
+fm_ship_review_gate "$ID" "$STATE/$ID.status" "$DATA" fm-pr-merge.sh || exit 1
 
 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
 grep -qxF "pr=$URL" "$META" || {

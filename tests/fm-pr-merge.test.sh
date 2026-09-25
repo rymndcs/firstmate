@@ -14,6 +14,9 @@
 #   (f) malformed PR URL fails fast without calling gh-axi
 #   (g) explicit merge method is not overridden by the default --squash
 #   (h) repo override args fail fast because the repo comes from the URL
+#   (i) a required ship review gate refuses before recording or calling gh-axi
+#       when no review is recorded, merges once it is, and lets a logged
+#       captain override through (bin/fm-ship-review-lib.sh)
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -88,6 +91,8 @@ run_pr_merge() {
   local case_dir=$1 rc; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_TEST_GH_AXI_LOG="$case_dir/gh-axi.log" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_MERGE" "$@"
@@ -301,7 +306,48 @@ test_parses_pr_url_for_gh_axi() {
   pass "fm-pr-merge parses a GitHub PR URL into gh-axi number and --repo arguments"
 }
 
+test_review_gate_holds_the_pr_landing_path() {
+  local case_dir rc report log
+  case_dir=$(make_case review-gate)
+  mkdir -p "$case_dir/wt" "$case_dir/config"
+  add_gh_mocks "$case_dir" 7777777777777777777777777777777777777777
+  printf 'required\n' > "$case_dir/config/ship-review-gate"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "review-gate: an unreviewed task's PR was merged"
+  assert_grep 'no "review: passed <report path>" line' "$case_dir/stderr" \
+    "review-gate: the refusal did not say what is missing"
+  [ ! -s "$case_dir/gh-axi.log" ] || fail "review-gate: gh-axi ran for a refused landing"
+  assert_no_grep 'pr=' "$case_dir/state/task-x1.meta" "review-gate: a refused landing still recorded the PR"
+
+  FM_SHIP_REVIEW_OVERRIDE='captain approved an unreviewed hotfix' \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "review-gate: the captain's override did not merge"
+  log="$case_dir/data/task-x1/ship-review-overrides.log"
+  assert_grep 'fm-pr-merge.sh task=task-x1 ' "$log" "review-gate: the override log does not name the landing and task"
+  assert_grep 'reason=captain approved an unreviewed hotfix' "$log" \
+    "review-gate: the override was not logged with its reason"
+  assert_grep 'SHIP REVIEW OVERRIDE' "$case_dir/stderr" "review-gate: the override was silent on stderr"
+
+  : > "$case_dir/gh-axi.log"
+  report="$case_dir/report.md"
+  printf 'No P1 or P2 open.\n' > "$report"
+  printf 'review: passed %s\n' "$report" > "$case_dir/state/task-x1.status"
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr" \
+    || fail "review-gate: a reviewed task's PR was refused: $(cat "$case_dir/stderr")"
+  [ -s "$case_dir/gh-axi.log" ] || fail "review-gate: the reviewed task's PR was never merged"
+  pass "fm-pr-merge applies the ship review gate before recording or merging"
+}
+
 test_records_pr_and_head_before_merging
+test_review_gate_holds_the_pr_landing_path
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge

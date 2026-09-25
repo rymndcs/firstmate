@@ -286,6 +286,33 @@ test_promote_requires_and_records_the_delivery_contract() {
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
 }
 
+# A promoted scout ships like any other ship task, so a home's configured review
+# step reaches it too: written beside the task and named in the ship instructions.
+# A home without it promotes exactly as before.
+test_promote_carries_the_configured_review_step() {
+  local home bare out review
+  home="$TMP_ROOT/promote-review/home"
+  bare="$TMP_ROOT/promote-review/bare"
+  mkdir -p "$home/state" "$home/config" "$bare/state"
+  printf 'window=fm-promote-r1\nkind=scout\nworktree=/tmp/wt\n' > "$home/state/promote-r1.meta"
+  printf 'window=fm-promote-r1\nkind=scout\nworktree=/tmp/wt\n' > "$bare/state/promote-r1.meta"
+  printf 'Review {BRANCH} for {TASK_ID}, then log to {STATUS_FILE}.\n' > "$home/config/ship-review.md"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-r1 --mode local-only --yolo off 2>&1) \
+    || fail "promotion with a review step configured failed: $out"
+  review="$home/data/promote-r1/ship-review.md"
+  assert_grep "Review fm/promote-r1 for promote-r1, then log to $home/state/promote-r1.status." "$review" \
+    "promotion did not write the review step with its placeholders filled"
+  assert_contains "$out" "follow the review step in $review before reporting done" \
+    "the promoted ship instructions did not name the review step"
+
+  out=$(FM_HOME="$bare" FM_STATE_OVERRIDE="$bare/state" "$PROMOTE" promote-r1 --mode local-only --yolo off 2>&1) \
+    || fail "promotion without a review step failed: $out"
+  assert_absent "$bare/data/promote-r1/ship-review.md" "a home with no review config still got a review step"
+  assert_not_contains "$out" "review step" "a home with no review config still named a review step"
+  pass "fm-promote: a promoted scout carries the home's configured review step"
+}
+
 # A task whose brief was scaffolded on a supplied branch name (bin/fm-brief.sh
 # --branch) must have that name in its durable record, because every later
 # consumer resolves the task branch from there after a restart - deriving
@@ -387,6 +414,7 @@ test_spawn_refuses_a_brief_mode_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
+test_promote_carries_the_configured_review_step
 test_spawn_records_only_a_supplied_branch
 test_promote_records_only_a_supplied_branch
 test_project_mode_maps_the_conditional_policy

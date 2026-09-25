@@ -311,6 +311,29 @@ Secondmate homes inherit this file from the primary and each enforces its own co
 Each task's validation pipeline also spawns its own reviewer agents, which no spawn gate observes.
 A limit of 3 workers is a limit on workers, not a limit on agents or processes.
 
+## Ship review step (config/ship-review.md / config/ship-review-gate)
+
+A home that requires a review process on every ship task configures it here, so the step reaches every task mechanically rather than depending on firstmate remembering to write it into each set of instructions.
+Both files are optional, local, and gitignored, and each works on its own.
+[`bin/fm-ship-review-lib.sh`](../bin/fm-ship-review-lib.sh) is the single owner of the mechanics: placeholder substitution, the review-completion line format, the override, and its log.
+
+`config/ship-review.md` holds the review step as Markdown written to the worker.
+When it exists, `bin/fm-brief.sh` appends its text to the end of every ship brief it scaffolds, and `bin/fm-promote.sh` writes it to `data/<id>/ship-review.md` and names that file in the printed ship instructions, so a promoted scout carries the same step.
+The placeholders `{TASK_ID}`, `{BRANCH}`, and `{STATUS_FILE}` are filled for each task at scaffold time.
+Scout briefs and secondmate charters never carry it.
+An absent file leaves every scaffold unchanged; a path that exists but cannot be read stops the scaffold or promotion before anything is written.
+
+`config/ship-review-gate` makes landing depend on the review having run.
+When its first line is `required`, both landing paths, `bin/fm-merge-local.sh` and `bin/fm-pr-merge.sh`, refuse a task unless the latest `review:` line in its status log reads `review: passed <absolute report path>` and that report is a non-empty file, and the refusal says exactly which of those is missing.
+The PR path applies the same gate so the standard does not depend on which delivery mode a task used.
+An absent file or first line `off` means no gate; any other first line, or an unreadable file, refuses landing and names the file, so a broken gate never silently opens.
+The review text is where a home tells workers to append that line, and where it sets any tighter scope for small diffs; the scripts grant no exemption by task size or kind.
+
+For an emergency, the captain's explicit word allows one landing without a completed review by setting `FM_SHIP_REVIEW_OVERRIDE='<the captain's reason>'` on that single invocation.
+It is never a stored default, a blank reason is refused, and every use is logged to `data/<id>/ship-review-overrides.log`, which survives cleanup, and announced on standard error before the landing proceeds.
+
+These files are local to their home and are not part of secondmate inherited configuration; a secondmate home that should apply the same step gets its own copies.
+
 ## Linear status binding (config/linear-api-key)
 
 `config/linear-api-key` is an optional local, gitignored file whose first line is a Linear API key.
@@ -536,6 +559,7 @@ FM_PROC_ROOT_OVERRIDE=   # alternate /proc root for the Linux process-identity r
 FM_BACKEND=             # optional runtime backend override for new spawns; tmux/herdr/zellij/orca/cmux support ship/scout spawns, codex-app is not accepted
 FM_TRACE_CONTEXT=       # optional trace-context override; see "Trace context propagation"
 FM_ALLOW_OVER_CREW_LIMIT=   # set to 1 for one deliberate spawn past config/crew-limit; per invocation, never a default
+FM_SHIP_REVIEW_OVERRIDE=    # the captain's reason, for one landing past a required config/ship-review-gate; logged, never a default
 HERDR_SESSION=default  # herdr-only: named session for normal backend ops; not enough for destructive cleanup (docs/herdr-backend.md)
 FM_BACKEND_HERDR_COMPOSER_LINES=20  # herdr-only: tail lines scanned by composer-state guard/fallback paths; idle-baseline submit confirmation uses agent-state
 FM_BACKEND_HERDR_IDLE_RE='^Type a message\.\.\.$'  # herdr-only: empty-composer placeholder regex after shared ghost extraction plus border and prompt stripping

@@ -18,6 +18,13 @@
 # point where those rules reach it. It surfaces the captain's own words and
 # decides nothing; the print adds no refusal, touches no stdout, and can never
 # fail a merge.
+# Ship review gate: when this home's config/ship-review-gate requires it, the
+# landing refuses, after every other check and before the fast-forward, unless
+# the task's status log records a completed review with an existing report, and
+# names exactly what is missing. The captain's emergency override is
+# FM_SHIP_REVIEW_OVERRIDE='<reason>' on one invocation, always logged.
+# bin/fm-ship-review-lib.sh owns the line format, the override, and its log;
+# docs/configuration.md "Ship review step" owns the config file.
 # Usage: fm-merge-local.sh <task-id>
 set -eu
 
@@ -25,6 +32,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
+# shellcheck source=bin/fm-ship-review-lib.sh
+. "$SCRIPT_DIR/fm-ship-review-lib.sh"
 "$FM_ROOT/bin/fm-guard.sh" || true
 ID=${1:?usage: fm-merge-local.sh <task-id>}
 META="$STATE/$ID.meta"
@@ -78,6 +88,10 @@ if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BRANCH"; then
   echo "Have the crewmate rebase $BRANCH onto $DEFAULT, then retry." >&2
   exit 1
 fi
+
+# The review gate runs last among the refusals, so an override is logged only
+# for a landing that is otherwise ready to happen.
+fm_ship_review_gate "$ID" "$STATE/$ID.status" "$DATA" fm-merge-local.sh || exit 1
 
 before=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
 git -C "$PROJ" merge --ff-only "$BRANCH" >/dev/null

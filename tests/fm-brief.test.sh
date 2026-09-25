@@ -952,8 +952,55 @@ test_check_contract_covers_both_places_tests_run() {
   pass "fm-brief.sh: both check contracts cover the local runner and the pipeline test step"
 }
 
+# A home's config/ship-review.md closes every ship brief with its review step,
+# placeholders filled for the task; a home without it scaffolds exactly as before,
+# and scout and secondmate scaffolds never carry it.
+test_ship_review_step_is_appended_only_when_configured() {
+  local home bare id brief bare_brief status out
+  home="$TMP_ROOT/review-home"
+  bare="$TMP_ROOT/review-bare-home"
+  mkdir -p "$home/data" "$home/config" "$bare/data"
+  # shellcheck disable=SC2016 # The backticks are literal Markdown in the review text.
+  printf '%s\n' '# Review step' \
+    'Review {BRANCH} for {TASK_ID}; then append `review: passed <report>` to {STATUS_FILE}.' \
+    'Literal & and \\ survive.' > "$home/config/ship-review.md"
+
+  id="brief-review-r1"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --checks targeted --branch rcs/r1-hotfix >/dev/null 2>&1 \
+    || fail "a ship scaffold with a review step configured exited non-zero"
+  brief="$home/data/$id/brief.md"
+  assert_grep "Review rcs/r1-hotfix for $id; then append \`review: passed <report>\` to $home/state/$id.status." "$brief" \
+    "the ship brief did not carry the configured review step with its placeholders filled"
+  assert_grep 'Literal & and \\ survive.' "$brief" "the review text's literal characters were altered"
+  [ "$(tail -1 "$brief")" = 'Literal & and \\ survive.' ] \
+    || fail "the review step does not close the ship brief"
+
+  FM_HOME="$bare" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --checks targeted --branch rcs/r1-hotfix >/dev/null 2>&1 \
+    || fail "a ship scaffold without a review step exited non-zero"
+  bare_brief="$bare/data/$id/brief.md"
+  assert_no_grep "# Review step" "$bare_brief" "a home with no review config still got a review step"
+  [ "$(head -n "$(wc -l < "$bare_brief")" "$brief" | sed "s#$home#HOME#g")" = "$(sed "s#$bare#HOME#g" "$bare_brief")" ] \
+    || fail "the configured review step changed the brief above it instead of only appending"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-review-scout some-proj --scout >/dev/null 2>&1 \
+    || fail "scout scaffold exited non-zero with a review step configured"
+  assert_no_grep "# Review step" "$home/data/brief-review-scout/brief.md" "a scout brief carried the ship review step"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER='ops' "$ROOT/bin/fm-brief.sh" brief-review-mate --secondmate --no-projects >/dev/null 2>&1 \
+    || fail "secondmate scaffold exited non-zero with a review step configured"
+  assert_no_grep "# Review step" "$home/data/brief-review-mate/brief.md" "a secondmate charter carried the ship review step"
+
+  rm -f "$home/config/ship-review.md"
+  mkdir "$home/config/ship-review.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-review-broken some-proj --mode local-only --checks targeted 2>&1); status=$?
+  [ "$status" -ne 0 ] || fail "an unreadable review config did not stop the ship scaffold"
+  assert_contains "$out" "$home/config/ship-review.md" "the refusal did not name the unreadable review config"
+  assert_absent "$home/data/brief-review-broken/brief.md" "a refused scaffold still wrote a brief"
+  pass "fm-brief.sh: the configured ship review step closes every ship brief and nothing else"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
+test_ship_review_step_is_appended_only_when_configured
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
 test_ship_mode_is_required_and_closed_set
