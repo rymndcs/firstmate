@@ -17,9 +17,12 @@
 # Ship review gate (config/ship-review-gate = required; bin/fm-ship-review-lib.sh):
 #   (e) no review line                      -> refuses, says what is missing, main unmoved
 #   (f) review line, report missing         -> refuses naming the report path
+#   (f2) review line, report empty          -> refuses naming the report path
+#   (f3) review line, relative report path  -> refuses as not absolute
 #   (g) review line + existing report       -> lands
 #   (h) a later non-pass review line        -> withdraws the pass and refuses
 #   (i) captain override with a reason      -> lands and logs the reason
+#   (i2) override log cannot be written     -> refuses, main unmoved
 #   (j) blank override                      -> refuses
 #   (k) malformed gate file                 -> refuses naming the file, override or not
 #   (l) gate file says off                  -> lands with no review line
@@ -190,6 +193,32 @@ test_review_gate_refuses_a_missing_report() {
   pass "fm-merge-local review gate refuses when the named report does not exist"
 }
 
+test_review_gate_refuses_an_empty_report() {
+  local case_dir report
+  case_dir=$(make_gated_case gate-empty-report)
+  report="$case_dir/empty-report.md"
+  : > "$report"
+  printf 'review: passed %s\n' "$report" > "$case_dir/state/task-m1.status"
+  expect_gate_refusal "$case_dir" gate-empty-report "$report named in $case_dir/state/task-m1.status does not exist or is empty"
+  pass "fm-merge-local review gate refuses when the named report is empty"
+}
+
+test_review_gate_refuses_a_relative_report_path() {
+  local case_dir
+  case_dir=$(make_gated_case gate-relative-report)
+  mkdir -p "$case_dir/rel"
+  printf '# Review\nNo P1 or P2 open.\n' > "$case_dir/rel/report.md"
+  printf 'review: passed rel/report.md\n' > "$case_dir/state/task-m1.status"
+  # Run from the directory the relative path resolves in, so only the absolute
+  # path check can refuse it.
+  (
+    cd "$case_dir" || exit 1
+    expect_gate_refusal "$case_dir" gate-relative-report \
+      "the review report path \"rel/report.md\" in $case_dir/state/task-m1.status is not absolute"
+  ) || exit 1
+  pass "fm-merge-local review gate refuses a report path that is not absolute"
+}
+
 test_review_gate_passes_with_line_and_report() {
   local case_dir report out
   case_dir=$(make_gated_case gate-passes)
@@ -224,6 +253,21 @@ test_review_gate_override_lands_and_is_logged() {
   assert_grep 'captain: prod is down, review after' "$log" "gate-override: the reason was not logged"
   assert_grep 'fm-merge-local.sh task=task-m1' "$log" "gate-override: the log does not name the landing and task"
   pass "fm-merge-local review gate override lands the task and logs the reason"
+}
+
+test_review_gate_unwritable_override_log_refuses() {
+  local case_dir
+  case_dir=$(make_gated_case gate-override-unlogged)
+  printf 'not a directory\n' > "$case_dir/data/task-m1"
+  expect_gate_refusal "$case_dir" gate-override-unlogged \
+    "cannot write the ship review override log $case_dir/data/task-m1/ship-review-overrides.log" \
+    FM_SHIP_REVIEW_OVERRIDE='captain ok'
+  rm -f "$case_dir/data/task-m1"
+  mkdir -p "$case_dir/data/task-m1/ship-review-overrides.log"
+  expect_gate_refusal "$case_dir" gate-override-unlogged \
+    "cannot write the ship review override log $case_dir/data/task-m1/ship-review-overrides.log" \
+    FM_SHIP_REVIEW_OVERRIDE='captain ok'
+  pass "fm-merge-local review gate refuses an override whose log cannot be written"
 }
 
 test_review_gate_blank_override_refuses() {
@@ -267,9 +311,12 @@ test_recorded_branch_is_the_one_that_lands
 test_default_branch_shape_still_lands
 test_review_gate_refuses_without_a_review_line
 test_review_gate_refuses_a_missing_report
+test_review_gate_refuses_an_empty_report
+test_review_gate_refuses_a_relative_report_path
 test_review_gate_passes_with_line_and_report
 test_review_gate_later_line_withdraws_the_pass
 test_review_gate_override_lands_and_is_logged
+test_review_gate_unwritable_override_log_refuses
 test_review_gate_blank_override_refuses
 test_review_gate_malformed_file_refuses
 test_review_gate_dangling_file_refuses

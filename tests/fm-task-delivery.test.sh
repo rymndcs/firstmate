@@ -313,6 +313,36 @@ test_promote_carries_the_configured_review_step() {
   pass "fm-promote: a promoted scout carries the home's configured review step"
 }
 
+# A review config that exists but cannot be read must stop the promotion with the
+# task record untouched, whether it is a dangling symlink or a directory.
+test_promote_refuses_an_unreadable_review_step() {
+  local home meta out status
+  home="$TMP_ROOT/promote-review-broken/home"
+  mkdir -p "$home/state" "$home/config"
+  meta="$home/state/promote-r2.meta"
+  printf 'window=fm-promote-r2\nkind=scout\nworktree=/tmp/wt\n' > "$meta"
+
+  ln -s "$TMP_ROOT/promote-review-broken/missing.md" "$home/config/ship-review.md"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-r2 --mode local-only --yolo off 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "promotion with a dangling review config should exit non-zero"
+  assert_contains "$out" "$home/config/ship-review.md" "the dangling review config refusal did not name the file"
+  assert_contains "$out" "exists but is not a readable file" "the dangling review config refusal did not say why"
+  assert_grep 'kind=scout' "$meta" "a promotion refused for a dangling review config still changed the task record"
+  assert_absent "$home/data/promote-r2/ship-review.md" "a refused promotion still wrote a review step"
+
+  rm -f "$home/config/ship-review.md"
+  mkdir "$home/config/ship-review.md"
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-r2 --mode local-only --yolo off 2>&1)
+  status=$?
+  [ "$status" -ne 0 ] || fail "promotion with a directory as the review config should exit non-zero"
+  assert_contains "$out" "$home/config/ship-review.md" "the directory review config refusal did not name the file"
+  assert_contains "$out" "exists but is not a readable file" "the directory review config refusal did not say why"
+  assert_grep 'kind=scout' "$meta" "a promotion refused for a directory review config still changed the task record"
+  assert_absent "$home/data/promote-r2/ship-review.md" "a refused promotion still wrote a review step"
+  pass "fm-promote: an unreadable review config refuses the promotion and changes nothing"
+}
+
 # A task whose brief was scaffolded on a supplied branch name (bin/fm-brief.sh
 # --branch) must have that name in its durable record, because every later
 # consumer resolves the task branch from there after a restart - deriving
@@ -415,6 +445,7 @@ test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
 test_promote_carries_the_configured_review_step
+test_promote_refuses_an_unreadable_review_step
 test_spawn_records_only_a_supplied_branch
 test_promote_records_only_a_supplied_branch
 test_project_mode_maps_the_conditional_policy
