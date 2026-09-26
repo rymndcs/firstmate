@@ -39,7 +39,7 @@ fm_ship_review_config_dir() {
 fm_ship_review_text() {  # <task-id> <branch> <status-file>
   local id=$1 branch=$2 status_file=$3 file text
   file="$(fm_ship_review_config_dir)/ship-review.md"
-  [ -e "$file" ] || return 1
+  [ -e "$file" ] || [ -L "$file" ] || return 1
   if [ ! -f "$file" ] || [ ! -r "$file" ]; then
     echo "error: $file exists but is not a readable file; fix or remove it" >&2
     return 2
@@ -57,7 +57,7 @@ fm_ship_review_text() {  # <task-id> <branch> <status-file>
 fm_ship_review_gate_required() {
   local file first=
   file="$(fm_ship_review_config_dir)/ship-review-gate"
-  [ -e "$file" ] || return 1
+  [ -e "$file" ] || [ -L "$file" ] || return 1
   if [ ! -f "$file" ] || [ ! -r "$file" ]; then
     echo "REFUSED: ship review gate $file exists but is not a readable file; fix it to 'required' or 'off'" >&2
     return 2

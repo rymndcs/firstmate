@@ -990,6 +990,13 @@ test_ship_review_step_is_appended_only_when_configured() {
   assert_no_grep "# Review step" "$home/data/brief-review-mate/brief.md" "a secondmate charter carried the ship review step"
 
   rm -f "$home/config/ship-review.md"
+  ln -s "$TMP_ROOT/missing-ship-review.md" "$home/config/ship-review.md"
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-review-dangling some-proj --mode local-only --checks targeted 2>&1); status=$?
+  [ "$status" -ne 0 ] || fail "a dangling review config did not stop the ship scaffold"
+  assert_contains "$out" "$home/config/ship-review.md" "the dangling review config refusal did not name the config"
+  assert_absent "$home/data/brief-review-dangling/brief.md" "a dangling review config still wrote a brief"
+  rm -f "$home/config/ship-review.md"
+
   mkdir "$home/config/ship-review.md"
   out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-review-broken some-proj --mode local-only --checks targeted 2>&1); status=$?
   [ "$status" -ne 0 ] || fail "an unreadable review config did not stop the ship scaffold"

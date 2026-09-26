@@ -244,6 +244,15 @@ test_review_gate_malformed_file_refuses() {
   pass "fm-merge-local review gate refuses a malformed gate file even with an override"
 }
 
+test_review_gate_dangling_file_refuses() {
+  local case_dir
+  case_dir=$(make_gated_case gate-dangling)
+  rm -f "$case_dir/config/ship-review-gate"
+  ln -s "$case_dir/config/missing-gate" "$case_dir/config/ship-review-gate"
+  expect_gate_refusal "$case_dir" gate-dangling "$case_dir/config/ship-review-gate"
+  pass "fm-merge-local review gate refuses a dangling gate file"
+}
+
 test_review_gate_off_lands_without_review() {
   local case_dir out
   case_dir=$(make_gated_case gate-off)
@@ -263,6 +272,7 @@ test_review_gate_later_line_withdraws_the_pass
 test_review_gate_override_lands_and_is_logged
 test_review_gate_blank_override_refuses
 test_review_gate_malformed_file_refuses
+test_review_gate_dangling_file_refuses
 test_review_gate_off_lands_without_review
 test_missing_recorded_branch_refuses_by_name
 test_non_local_only_task_is_refused
