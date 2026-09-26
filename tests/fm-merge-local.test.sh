@@ -26,6 +26,9 @@
 #   (j) blank override                      -> refuses
 #   (k) malformed gate file                 -> refuses naming the file, override or not
 #   (l) gate file says off                  -> lands with no review line
+#   (m) pass pinned to an older commit      -> refuses naming both shas
+#   (n) pass records no reviewed commit     -> refuses
+#   (i3) override, fast-forward then fails  -> refuses and writes no override log
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -162,6 +165,15 @@ write_report() {  # <case-dir>; echoes the report path
   printf '%s\n' "$report"
 }
 
+branch_head() {  # <case-dir>
+  git -C "$1/project" rev-parse fm/task-m1
+}
+
+# Record a review pass pinned to <sha> (default: the task branch head).
+write_pass() {  # <case-dir> <report> [<sha>]
+  printf 'review: passed %s %s\n' "${3:-$(branch_head "$1")}" "$2" >> "$1/state/task-m1.status"
+}
+
 expect_gate_refusal() {  # <case-dir> <label> <expected-text> [env assignments...]
   local case_dir=$1 label=$2 want=$3 out status before
   shift 3
@@ -181,14 +193,14 @@ test_review_gate_refuses_without_a_review_line() {
   local case_dir
   case_dir=$(make_gated_case gate-no-line)
   printf 'done: ready in branch fm/task-m1\n' > "$case_dir/state/task-m1.status"
-  expect_gate_refusal "$case_dir" gate-no-line 'no "review: passed <report path>" line'
+  expect_gate_refusal "$case_dir" gate-no-line 'no "review: passed <reviewed commit> <report path>" line'
   pass "fm-merge-local review gate refuses a task with no review line"
 }
 
 test_review_gate_refuses_a_missing_report() {
   local case_dir
   case_dir=$(make_gated_case gate-no-report)
-  printf 'review: passed %s/gone/report.md\n' "$case_dir" > "$case_dir/state/task-m1.status"
+  write_pass "$case_dir" "$case_dir/gone/report.md"
   expect_gate_refusal "$case_dir" gate-no-report "the review report $case_dir/gone/report.md"
   pass "fm-merge-local review gate refuses when the named report does not exist"
 }
@@ -198,7 +210,7 @@ test_review_gate_refuses_an_empty_report() {
   case_dir=$(make_gated_case gate-empty-report)
   report="$case_dir/empty-report.md"
   : > "$report"
-  printf 'review: passed %s\n' "$report" > "$case_dir/state/task-m1.status"
+  write_pass "$case_dir" "$report"
   expect_gate_refusal "$case_dir" gate-empty-report "$report named in $case_dir/state/task-m1.status does not exist or is empty"
   pass "fm-merge-local review gate refuses when the named report is empty"
 }
@@ -208,7 +220,7 @@ test_review_gate_refuses_a_relative_report_path() {
   case_dir=$(make_gated_case gate-relative-report)
   mkdir -p "$case_dir/rel"
   printf '# Review\nNo P1 or P2 open.\n' > "$case_dir/rel/report.md"
-  printf 'review: passed rel/report.md\n' > "$case_dir/state/task-m1.status"
+  write_pass "$case_dir" rel/report.md
   # Run from the directory the relative path resolves in, so only the absolute
   # path check can refuse it.
   (
@@ -223,8 +235,9 @@ test_review_gate_passes_with_line_and_report() {
   local case_dir report out
   case_dir=$(make_gated_case gate-passes)
   report=$(write_report "$case_dir")
-  printf 'working: implemented\nreview: passed %s\ndone: ready in branch fm/task-m1\n' "$report" \
-    > "$case_dir/state/task-m1.status"
+  printf 'working: implemented\n' > "$case_dir/state/task-m1.status"
+  write_pass "$case_dir" "$report"
+  printf 'done: ready in branch fm/task-m1\n' >> "$case_dir/state/task-m1.status"
   out=$(run_merge_local "$case_dir" task-m1 2>&1) \
     || fail "gate-passes: a reviewed task was refused: $out"
   assert_contains "$out" "merged fm/task-m1 into local main" "gate-passes: the reviewed task did not land"
@@ -236,9 +249,48 @@ test_review_gate_later_line_withdraws_the_pass() {
   local case_dir report
   case_dir=$(make_gated_case gate-reopened)
   report=$(write_report "$case_dir")
-  printf 'review: passed %s\nreview: reopened after rework\n' "$report" > "$case_dir/state/task-m1.status"
+  write_pass "$case_dir" "$report"
+  printf 'review: reopened after rework\n' >> "$case_dir/state/task-m1.status"
   expect_gate_refusal "$case_dir" gate-reopened 'the latest review line'
   pass "fm-merge-local review gate honours only the latest review line"
+}
+
+test_review_gate_refuses_a_pass_for_an_older_commit() {
+  local case_dir report reviewed head
+  case_dir=$(make_gated_case gate-stale-pass)
+  report=$(write_report "$case_dir")
+  reviewed=$(branch_head "$case_dir")
+  write_pass "$case_dir" "$report" "$reviewed"
+  printf 'after review\n' > "$case_dir/wt/late.txt"
+  git -C "$case_dir/wt" add late.txt
+  git -C "$case_dir/wt" commit -qm "committed after the review"
+  head=$(branch_head "$case_dir")
+  [ "$head" != "$reviewed" ] || fail "gate-stale-pass: the setup did not move the branch head"
+  expect_gate_refusal "$case_dir" gate-stale-pass "reviewed commit $reviewed is not the branch head $head"
+  pass "fm-merge-local review gate refuses a pass pinned to an older commit, naming both shas"
+}
+
+test_review_gate_refuses_a_pass_without_a_commit() {
+  local case_dir report
+  case_dir=$(make_gated_case gate-unpinned-pass)
+  report=$(write_report "$case_dir")
+  printf 'review: passed %s\n' "$report" > "$case_dir/state/task-m1.status"
+  expect_gate_refusal "$case_dir" gate-unpinned-pass "does not record the reviewed commit"
+  pass "fm-merge-local review gate refuses a pass that records no reviewed commit"
+}
+
+test_review_gate_override_is_not_logged_when_the_landing_fails() {
+  local case_dir
+  case_dir=$(make_gated_case gate-override-ff-fails)
+  # A held index lock passes every pre-landing check but makes the fast-forward fail.
+  : > "$case_dir/project/.git/index.lock"
+  expect_gate_refusal "$case_dir" gate-override-ff-fails "index.lock" \
+    FM_SHIP_REVIEW_OVERRIDE='captain: land it anyway'
+  rm -f "$case_dir/project/.git/index.lock"
+  if [ -s "$case_dir/data/task-m1/ship-review-overrides.log" ]; then
+    fail "gate-override-ff-fails: an override was logged for a landing that never happened"
+  fi
+  pass "fm-merge-local writes the override log only after the fast-forward succeeds"
 }
 
 test_review_gate_override_lands_and_is_logged() {
@@ -315,6 +367,9 @@ test_review_gate_refuses_an_empty_report
 test_review_gate_refuses_a_relative_report_path
 test_review_gate_passes_with_line_and_report
 test_review_gate_later_line_withdraws_the_pass
+test_review_gate_refuses_a_pass_for_an_older_commit
+test_review_gate_refuses_a_pass_without_a_commit
+test_review_gate_override_is_not_logged_when_the_landing_fails
 test_review_gate_override_lands_and_is_logged
 test_review_gate_unwritable_override_log_refuses
 test_review_gate_blank_override_refuses

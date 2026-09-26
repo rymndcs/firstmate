@@ -20,9 +20,12 @@
 # fail a merge.
 # Ship review gate: when this home's config/ship-review-gate requires it, the
 # landing refuses, after every other check and before the fast-forward, unless
-# the task's status log records a completed review with an existing report, and
-# names exactly what is missing. The captain's emergency override is
-# FM_SHIP_REVIEW_OVERRIDE='<reason>' on one invocation, always logged.
+# the task's status log records a completed review pinned to the branch head
+# being landed, with an existing report, and names exactly what is missing. The
+# fast-forward then lands that exact commit, so a commit pushed onto the branch
+# after the check cannot ride along. The captain's emergency override is
+# FM_SHIP_REVIEW_OVERRIDE='<reason>' on one invocation, logged only once the
+# fast-forward has succeeded.
 # bin/fm-ship-review-lib.sh owns the line format, the override, and its log;
 # docs/configuration.md "Ship review step" owns the config file.
 # Usage: fm-merge-local.sh <task-id>
@@ -89,14 +92,18 @@ if ! git -C "$PROJ" merge-base --is-ancestor "$DEFAULT" "$BRANCH"; then
   exit 1
 fi
 
-# The review gate runs last among the refusals, so an override is logged only
-# for a landing that is otherwise ready to happen.
-fm_ship_review_gate "$ID" "$STATE/$ID.status" "$DATA" fm-merge-local.sh || exit 1
+# The review gate runs last among the refusals and compares the review pass
+# with the exact commit about to land.
+BRANCH_HEAD=$(git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$BRANCH^{commit}")
+# shellcheck disable=SC2329 # Invoked by name from fm_ship_review_gate.
+task_branch_head() { printf '%s\n' "$BRANCH_HEAD"; }
+fm_ship_review_gate "$ID" "$STATE/$ID.status" "$DATA" fm-merge-local.sh task_branch_head || exit 1
 
 before=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
-git -C "$PROJ" merge --ff-only "$BRANCH" >/dev/null
+git -C "$PROJ" merge --ff-only "$BRANCH_HEAD" >/dev/null
 after=$(git -C "$PROJ" rev-parse --short "$DEFAULT")
 echo "merged $BRANCH into local $DEFAULT ($before -> $after) in $PROJ"
+fm_ship_review_record_override
 
 # The approved landing IS the Done transition, so it happens here rather than as
 # a step an agent has to remember afterwards. bin/fm-linear.sh is silent for a

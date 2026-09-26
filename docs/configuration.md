@@ -324,13 +324,16 @@ Scout briefs and secondmate charters never carry it.
 An absent file leaves every scaffold unchanged; a path that exists but cannot be read stops the scaffold or promotion before anything is written.
 
 `config/ship-review-gate` makes landing depend on the review having run.
-When its first line is `required`, both landing paths, `bin/fm-merge-local.sh` and `bin/fm-pr-merge.sh`, refuse a task unless the latest `review:` line in its status log reads `review: passed <absolute report path>` and that report is a non-empty file, and the refusal says exactly which of those is missing.
+When its first line is `required`, both landing paths, `bin/fm-merge-local.sh` and `bin/fm-pr-merge.sh`, refuse a task unless the latest `review:` line in its status log reads `review: passed <reviewed commit> <absolute report path>`, the reviewed commit's full sha is still the head being landed, and that report is a non-empty file, and the refusal says exactly which of those is missing.
+A commit made after the review therefore needs a new pass: the refusal names both the reviewed commit and the current head.
 The PR path applies the same gate so the standard does not depend on which delivery mode a task used.
 An absent file or first line `off` means no gate; any other first line, or an unreadable file, refuses landing and names the file, so a broken gate never silently opens.
 The review text is where a home tells workers to append that line, and where it sets any tighter scope for small diffs; the scripts grant no exemption by task size or kind.
 
 For an emergency, the captain's explicit word allows one landing without a completed review by setting `FM_SHIP_REVIEW_OVERRIDE='<the captain's reason>'` on that single invocation.
-It is never a stored default, a blank reason is refused, and every use is logged to `data/<id>/ship-review-overrides.log`, which survives cleanup, and announced on standard error before the landing proceeds.
+It is never a stored default and a blank reason is refused.
+The landing is refused up front if `data/<id>/ship-review-overrides.log` cannot be written, and the entry is written, and announced on standard error, only after the landing succeeds, so a failed landing leaves no override on record.
+That log survives cleanup.
 
 These files are local to their home and are not part of secondmate inherited configuration; a secondmate home that should apply the same step gets its own copies.
 

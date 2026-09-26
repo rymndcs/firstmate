@@ -16,10 +16,12 @@
 # can never fail a merge.
 # Ship review gate: when this home's config/ship-review-gate requires it, the
 # merge refuses before recording the PR or calling gh-axi unless the task's
-# status log records a completed review with an existing report, and names
-# exactly what is missing - the same gate bin/fm-merge-local.sh applies, so both
-# landing paths hold one standard. The captain's emergency override is
-# FM_SHIP_REVIEW_OVERRIDE='<reason>' on one invocation, always logged.
+# status log records a completed review pinned to the PR's current head commit
+# (read with `gh pr view`), with an existing report, and names exactly what is
+# missing - the same gate bin/fm-merge-local.sh applies, so both landing paths
+# hold one standard. The captain's emergency override is
+# FM_SHIP_REVIEW_OVERRIDE='<reason>' on one invocation, logged only once the
+# merge request has succeeded.
 # bin/fm-ship-review-lib.sh owns the line format, the override, and its log;
 # docs/configuration.md "Ship review step" owns the config file.
 # Usage: fm-pr-merge.sh <task-id> <pr-url> [-- <extra gh-axi pr merge args>]
@@ -104,7 +106,9 @@ if [ ! -f "$META" ] || [ -L "$META" ]; then
   exit 1
 fi
 
-fm_ship_review_gate "$ID" "$STATE/$ID.status" "$DATA" fm-pr-merge.sh || exit 1
+# shellcheck disable=SC2329 # Invoked by name from fm_ship_review_gate.
+pr_head_commit() { gh pr view "$URL" --json headRefOid -q .headRefOid; }
+fm_ship_review_gate "$ID" "$STATE/$ID.status" "$DATA" fm-pr-merge.sh pr_head_commit || exit 1
 
 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
 grep -qxF "pr=$URL" "$META" || {
@@ -120,6 +124,11 @@ fi
 MERGE_STATUS=0
 gh-axi pr merge "$PR_NUMBER" --repo "$PR_OWNER/$PR_REPO" "${merge_args[@]+"${merge_args[@]}"}" "$@" \
   || MERGE_STATUS=$?
+
+# A captain override is recorded only for a merge request that succeeded.
+if [ "$MERGE_STATUS" -eq 0 ]; then
+  fm_ship_review_record_override
+fi
 
 # A confirmed merge IS the Done transition, so it happens here rather than as a
 # step an agent has to remember afterwards. bin/fm-linear.sh is silent for a

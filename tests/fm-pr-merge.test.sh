@@ -15,8 +15,10 @@
 #   (g) explicit merge method is not overridden by the default --squash
 #   (h) repo override args fail fast because the repo comes from the URL
 #   (i) a required ship review gate refuses before recording or calling gh-axi
-#       when no review is recorded, merges once it is, and lets a logged
-#       captain override through (bin/fm-ship-review-lib.sh)
+#       when no review is recorded or the pass is pinned to another commit than
+#       the PR head, merges once the pass matches the head, and lets a captain
+#       override through, logging it only when the merge succeeds
+#       (bin/fm-ship-review-lib.sh)
 set -u
 
 # shellcheck source=tests/lib.sh
@@ -320,7 +322,7 @@ test_review_gate_holds_the_pr_landing_path() {
   rc=$?
   set -e
   [ "$rc" -ne 0 ] || fail "review-gate: an unreviewed task's PR was merged"
-  assert_grep 'no "review: passed <report path>" line' "$case_dir/stderr" \
+  assert_grep 'no "review: passed <reviewed commit> <report path>" line' "$case_dir/stderr" \
     "review-gate: the refusal did not say what is missing"
   [ ! -s "$case_dir/gh-axi.log" ] || fail "review-gate: gh-axi ran for a refused landing"
   assert_no_grep 'pr=' "$case_dir/state/task-x1.meta" "review-gate: a refused landing still recorded the PR"
@@ -338,7 +340,19 @@ test_review_gate_holds_the_pr_landing_path() {
   : > "$case_dir/gh-axi.log"
   report="$case_dir/report.md"
   printf 'No P1 or P2 open.\n' > "$report"
-  printf 'review: passed %s\n' "$report" > "$case_dir/state/task-x1.status"
+  # A pass pinned to a commit that is not the PR head refuses, naming both.
+  printf 'review: passed %s %s\n' 6666666666666666666666666666666666666666 "$report" > "$case_dir/state/task-x1.status"
+  set +e
+  run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "review-gate: a pass for another commit merged the PR"
+  assert_grep 'reviewed commit 6666666666666666666666666666666666666666 is not the branch head 7777777777777777777777777777777777777777' \
+    "$case_dir/stderr" "review-gate: the stale-pass refusal did not name both commits"
+  [ ! -s "$case_dir/gh-axi.log" ] || fail "review-gate: gh-axi ran for a stale review pass"
+
+  printf 'review: passed %s %s\n' 7777777777777777777777777777777777777777 "$report" > "$case_dir/state/task-x1.status"
   run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/31 \
     > "$case_dir/stdout" 2> "$case_dir/stderr" \
     || fail "review-gate: a reviewed task's PR was refused: $(cat "$case_dir/stderr")"
@@ -346,8 +360,30 @@ test_review_gate_holds_the_pr_landing_path() {
   pass "fm-pr-merge applies the ship review gate before recording or merging"
 }
 
+test_review_override_is_not_logged_when_the_merge_fails() {
+  local case_dir rc
+  case_dir=$(make_case review-override-merge-fails)
+  mkdir -p "$case_dir/wt" "$case_dir/config"
+  add_gh_mocks_merge_fails "$case_dir"
+  printf 'required\n' > "$case_dir/config/ship-review-gate"
+  : > "$case_dir/gh-axi.log"
+
+  set +e
+  FM_SHIP_REVIEW_OVERRIDE='captain: merge it anyway' \
+    run_pr_merge "$case_dir" task-x1 https://github.com/example/repo/pull/32 \
+    > "$case_dir/stdout" 2> "$case_dir/stderr"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "review-override-merge-fails: a failed merge reported success"
+  if [ -s "$case_dir/data/task-x1/ship-review-overrides.log" ]; then
+    fail "review-override-merge-fails: an override was logged for a merge that never happened"
+  fi
+  pass "fm-pr-merge writes the override log only after the merge succeeds"
+}
+
 test_records_pr_and_head_before_merging
 test_review_gate_holds_the_pr_landing_path
+test_review_override_is_not_logged_when_the_merge_fails
 test_merge_failure_propagates_after_recording
 test_extra_merge_args_forwarded
 test_missing_meta_refuses_before_merge
