@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse seatbelt: the only thing firstmate may send to GitHub is `main`.
+# PreToolUse seatbelt: firstmate may send only `main` or `master` to GitHub.
 #
 # The captain, 2026-08-17, standing until he says otherwise:
 #
@@ -17,7 +17,7 @@
 #
 # ALLOWED, permanently and with no flag to set:
 #
-#   - pushing `main` to a remote. That is the captain's own sanctioned route and the one time
+#   - pushing `main` or `master` to a remote. That is the captain's sanctioned route and the one time
 #     GitHub is meant to run anything.
 #
 # REFUSED, permanently and with no way to lift it from here:
@@ -25,7 +25,7 @@
 #   1. a spawn or brief on a mode that ends in a pull request
 #   2. a validation run whose skip list does not disable push AND pr AND ci
 #   3. creating, merging or reverting a pull request - no exceptions, ever
-#   4. pushing anything that is not `main`, and any forced push
+#   4. pushing anything that is not `main` or `master`, and any forced push
 #   5. starting or re-running a GitHub Actions workflow
 #
 # There is deliberately NO environment override. The captain, 2026-08-30: *"I want you to remove
@@ -119,7 +119,7 @@ if [ -z "$WHY" ]; then
   esac
 fi
 
-# 4. A push carrying `main` and nothing else is the sanctioned route. Anything else - another
+# 4. A push carrying only `main` or `master` is the sanctioned route. Anything else - another
 #    branch, a tag, a bare `push` whose refspec is implicit, or any forced push - is not.
 # Only a real `git ... push` invocation, never prose that happens to contain the word - the
 # guard's own source and its refusal messages both do.
@@ -130,7 +130,7 @@ if [ -z "$WHY" ] && printf '%s' "$CMD" | grep -qE '(^|[;&|[:space:]])git([[:spac
       # the redirection cut, `push origin main 2>&1 | tail` reads `2>` as a second refspec and
       # a perfectly good push of main is refused.
       PUSH_ARGS="$(printf '%s' "$CMD" | sed -n 's/.*[[:space:]]push[[:space:]]*//p' |
-                   sed -E 's/[0-9]*[<>].*//; s/[;&|].*//')"
+                   sed -E 's/[0-9]*[<>].*//; s/[;&|)].*//')"
       # Tokenised, not substring-matched: `-f` can be the first argument, where a pattern
       # anchored on a leading space never sees it. `+ref` is a forced refspec.
       FORCED=0
@@ -143,17 +143,17 @@ if [ -z "$WHY" ] && printf '%s' "$CMD" | grep -qE '(^|[;&|[:space:]])git([[:spac
         1)
           WHY="forcing a remote update. A forced update is never firstmate's to make" ;;
         *)
-          # Every ref named must be main. `HEAD:main` counts; a bare push names none, so the
+          # Every ref named must be main or master. `HEAD:main` counts; a bare push names none, so the
           # branch is whatever happens to be checked out and that is not good enough.
           REFS="$(printf '%s' "$PUSH_ARGS" | tr ' ' '\n' | grep -v '^-' | grep -v '^$' |
                   tail -n +2)"
           if [ -z "$REFS" ]; then
-            WHY="pushing without naming a branch - name main explicitly"
+            WHY="pushing without naming a branch - name main or master explicitly"
           else
             for ref in $REFS; do
               case "${ref##*:}" in
-                main) : ;;
-                *) WHY="pushing '${ref}' - main is the only branch firstmate may push"; break ;;
+                main|master) : ;;
+                *) WHY="pushing '${ref}' - only main or master may be pushed"; break ;;
               esac
             done
           fi
@@ -168,7 +168,7 @@ fi
 REASON="[no-github] refusing: ${WHY}. The captain's standing instruction of 2026-08-17 is that \
 firstmate reaches GitHub for one thing only - \"Skip the PR creation since I also ran out of \
 github credits ... so the only time it runs on github is when we push main to github.\" Pushing \
-main is permitted and needs no flag; everything else here is not, and there is no environment \
+main or master is permitted and needs no flag; everything else here is not, and there is no environment \
 variable to lift it, deliberately. Ship work runs --mode local-only: the worker stops at a clean \
 ready branch and you land it with bin/fm-merge-local.sh. Review rigor is not dropped with the \
 pull request - run the validation pipeline as --skip push,pr,ci (all three; 'pr,ci' alone leaves \
