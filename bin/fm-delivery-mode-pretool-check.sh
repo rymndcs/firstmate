@@ -25,8 +25,7 @@
 #   1. a spawn or brief on a mode that ends in a pull request
 #   2. a validation run whose skip list does not disable push AND pr AND ci
 #   3. creating, merging or reverting a pull request - no exceptions, ever
-#   4. bare, forced, deleting, tag, or extra-ref pushes; every named destination must be
-#      `main` or `master`, including each push in a chain or a shell -c command
+#   4. pushes without explicit main/master refs, deletes, force, extra refs or unsafe options
 #   5. starting or re-running a GitHub Actions workflow
 #
 # There is deliberately NO environment override. The captain, 2026-08-30: *"I want you to remove
@@ -34,6 +33,9 @@
 # An escape hatch that an agent may set is an escape hatch an agent will leave set, so the
 # exemption is written into the rule instead of parked behind a switch. Widening this needs a
 # code change, in a diff, which is the point.
+# Push checks ignore quotes and shell syntax: even a commit message or grep pattern mentioning
+# a refused push is refused. Put such text in a file instead of the command. Only the small
+# option allowlist below is accepted; git configuration overrides are never allowed on pushes.
 #
 # Review rigor is NOT what is being dropped: the pipeline still runs as `--skip push,pr,ci`,
 # keeping review, fixes, tests, lint and documentation. Only the remote is off limits.
@@ -120,105 +122,50 @@ if [ -z "$WHY" ]; then
   esac
 fi
 
-# 4. Inspect shell words without evaluating them. Quotes protect prose, but a shell -c
-# argument is itself a command and must be inspected recursively. Unknown push options
-# are refused rather than guessed: abbreviations and option bundles can change which
-# refs Git sends. This is a literal-command seatbelt, not a shell interpreter; it cannot
-# resolve aliases, variables, sourced scripts, or remote configuration.
-if [ -z "$WHY" ]; then
-  WHY="$(printf '%s\n' "$CMD" | awk '
-    function deny(reason) { print reason; exit }
-    function push(args, n, start,    i,t,remote,refs,options,dest) {
-      options=1
-      for (i=start; i<=n; i++) {
-        t=args[i]
-        if (options && t=="--") { options=0; continue }
-        if (options && t ~ /^-/) {
-          if (t ~ /^--(force|delete|tags|all|mirror|follow-tags)/ || t ~ /^-[^-]*[fd]/)
-            deny("forcing, deleting, or sending extra refs with " t " - only explicit non-forced trunk updates are permitted")
-          if (t=="--receive-pack" || t=="--exec" || t=="--repo" || t=="-o" || t=="--push-option") {
-            if (++i>n) deny("pushing with an option missing its value")
-            if (t=="--repo") remote=1
-            continue
-          }
-          if (t ~ /^--(receive-pack|exec|repo|push-option)=/) {
-            if (t ~ /^--repo=/) remote=1
-            continue
-          }
-          if (t ~ /^-[quvn]+$/ || t ~ /^--(quiet|verbose|dry-run|porcelain|progress|no-progress|set-upstream|atomic|no-verify|signed|no-signed|no-follow-tags)$/ || t ~ /^--signed=/)
-            continue
-          deny("pushing with an unrecognised option " t " - its ref scope cannot be verified")
+# 4. Check every git ... push sequence as plain text, including quoted mentions.
+if [ -z "$WHY" ] && ! printf '%s\n' "$CMD" | awk '
+  function safe(t) { return t ~ /^(-u|--set-upstream|-q|--quiet|-v|--verbose|-n|--dry-run)$/ }
+  function check(    n,w,g,p,i,t,remote,refs) {
+    n = split(segment, w, /[[:space:]]+/)
+    for (g = 1; g <= n; g++) if (w[g] == "git") {
+      for (p = g + 1; p <= n; p++) if (w[p] == "push") {
+        for (i = g + 1; i < p; i++) {
+          t = w[i]
+          if (t == "-C" && i + 1 < p) { i++; continue }
+          if (t ~ /^-C./) continue
+          if (t ~ /^-/ && !safe(t)) bad = 1
         }
-        if (!remote) { remote=1; continue }
-        if (t ~ /^\+/) deny("forcing a remote update with " t)
-        if (t ~ /^:/) deny("deleting a remote ref with " t)
-        if (t=="tag" || t ~ /(^|:)refs\/tags\//) deny("pushing a tag refspec " t)
-        dest=t
-        sub(/^[^:]*:/, "", dest)
-        if (dest!="main" && dest!="master") deny("pushing " t " - only main or master may be pushed")
-        refs++
-      }
-      if (!refs) deny("pushing without naming a branch - name main or master explicitly")
-    }
-    function command(args,n,depth,    i,t,j) {
-      for (i=1; i<=n; i++) {
-        t=args[i]
-        if (t ~ /^[A-Za-z_][A-Za-z_0-9]*=/ || t ~ /^(command|exec|env|sudo|time|!|if|then|elif|else|do)$/) continue
-        if (t=="git" || t ~ /\/git$/) {
-          for (j=i+1; j<=n; j++) {
-            t=args[j]
-            if (t=="-C" || t=="-c" || t=="--git-dir" || t=="--work-tree" || t=="--namespace") { j++; continue }
-            if (t ~ /^-/) continue
-            if (t=="push") push(args,n,j+1)
-            break
-          }
-        } else if (t ~ /(^|\/)(bash|sh|zsh|dash|ksh)$/) {
-          for (j=i+1; j<=n; j++) {
-            if (args[j] ~ /^-[^-]*c/) {
-              if (depth>=16) deny("shell wrappers nested too deeply to verify push scope")
-              scan(args[j+1],depth+1)
-              break
-            }
-          }
+        remote = refs = 0
+        for (i = p + 1; i <= n; i++) {
+          t = w[i]
+          if (t == "") continue
+          if (t ~ /^-/) { if (!safe(t)) bad = 1; continue }
+          if (!remote) { remote = 1; continue }
+          refs++
+          if (t ~ /^\+/ || t ~ /(^|:)refs\/tags\// ||
+              t !~ /^(main|master|[^:]+:(main|master))$/) bad = 1
         }
-        break
+        if (!refs) bad = 1
       }
     }
-    function scan(s,depth,    args,n,i,c,q,word,active,redirect,nextchar) {
-      n=0
-      for (i=1; i<=length(s)+1; i++) {
-        c=substr(s,i,1)
-        if (q!="") {
-          if (c==q) q=""
-          else if (c=="\\" && q=="\"") {
-            nextchar=substr(s,i+1,1)
-            if (nextchar ~ /[\\"$`]/ || nextchar=="\n") { i++; if (nextchar!="\n") word=word nextchar }
-            else word=word c
-          } else word=word c
-          continue
-        }
-        if (c=="\\") { i++; c=substr(s,i,1); if (c!="\n") { word=word c; active=1 }; continue }
-        if (c=="\"" || c==sprintf("%c",39)) { q=c; active=1; continue }
-        if (c=="#" && !active) { while (i<=length(s) && substr(s,i,1)!="\n") i++; c="\n" }
-        if (c=="" || c ~ /[[:space:];&|()<>]/) {
-          if (active) {
-            if (!redirect && !(c ~ /[<>]/ && word ~ /^[0-9]+$/)) args[++n]=word
-            if (redirect) redirect=0
-            word=""; active=0
-          }
-          if (c ~ /[<>]/ && c!="") {
-            redirect=1
-            while (substr(s,i+1,1) ~ /[<>&|]/ && i<length(s)) i++
-          } else if (c=="" || c ~ /[;&|()\n]/) {
-            command(args,n,depth); n=0; redirect=0
-          }
-        } else { word=word c; active=1 }
-      }
-      if (q!="") command(args,n,depth)
+    segment = ""; depth = 0
+  }
+  {
+    # Quotes and backslashes never protect words or separators. Redirections are not refs.
+    gsub(/[\047"`\\]/, "")
+    gsub(/[0-9]*[<>]+&?[[:space:]]*[^[:space:];&|()<>]+/, " ")
+    for (k = 1; k <= length($0); k++) {
+      c = substr($0, k, 1)
+      if (c ~ /[;&|]/ || (c == ")" && !depth)) check()
+      else if (c == "(") { depth++; segment = segment " " }
+      else if (c == ")") { depth--; segment = segment " " }
+      else segment = segment c
     }
-    { input=input $0 "\n" }
-    END { scan(input,0) }
-  ')"
+    check()
+  }
+  END { exit bad ? 1 : 0 }
+'; then
+  WHY="push text must name only main or master with a non-empty source, no force, delete, tags, extra refs or configuration overrides, and only known-safe options (quoted mentions count; put prose in a file)"
 fi
 
 [ -n "$WHY" ] || exit 0
@@ -226,8 +173,7 @@ fi
 REASON="[no-github] refusing: ${WHY}. The captain's standing instruction of 2026-08-17 is that \
 firstmate reaches GitHub for one thing only - \"Skip the PR creation since I also ran out of \
 github credits ... so the only time it runs on github is when we push main to github.\" Pushing \
-only explicit non-forced, non-deleting main or master updates is permitted and needs no flag; \
-extra refs and tags are refused, and there is no environment \
+only main or master with safe options is permitted; everything else here is not, and there is no environment \
 variable to lift it, deliberately. Ship work runs --mode local-only: the worker stops at a clean \
 ready branch and you land it with bin/fm-merge-local.sh. Review rigor is not dropped with the \
 pull request - run the validation pipeline as --skip push,pr,ci (all three; 'pr,ci' alone leaves \
