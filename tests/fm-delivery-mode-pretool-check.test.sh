@@ -18,8 +18,27 @@ check_cmd() {
   fi
 }
 
+# Use installed spellings, treating case and UTF-8/utf8 aliases as the same locale.
+caller_lang=${LANG:-}
+caller_lc_all=${LC_ALL:-}
+test_locales=$(LC_ALL=C locale -a | LC_ALL=C awk \
+  -v wanted_lang="$caller_lang" -v wanted_all="$caller_lc_all" '
+  function key(s) { s = tolower(s); gsub(/utf-8/, "utf8", s); return s }
+  { installed[key($0)] = $0 }
+  END {
+    candidates[1] = "C"; candidates[2] = "en_US.UTF-8"
+    candidates[3] = wanted_lang; candidates[4] = wanted_all
+    for (i = 1; i <= 4; i++) {
+      k = key(candidates[i])
+      name = k == "c" ? "C" : installed[k]
+      if (name != "" && !seen[k]++) { printf "%s%s", sep, name; sep = " " }
+    }
+    print ""
+  }') || fail "could not select test locales"
+printf 'test locales: %s\n' "$test_locales"
+
 # Commands are data, never executed. @NL@ represents a literal newline in a table row.
-for test_locale in C en_US.UTF-8 "${LANG:-C}" "${LC_ALL:-${LANG:-C}}"; do
+for test_locale in $test_locales; do
   while IFS='|' read -r expected cmd; do
     cmd=${cmd//@NL@/$'\n'}
     LC_ALL="$test_locale" check_cmd "$expected" "$cmd"
