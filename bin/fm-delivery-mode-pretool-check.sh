@@ -34,8 +34,8 @@
 # exemption is written into the rule instead of parked behind a switch. Widening this needs a
 # code change, in a diff, which is the point.
 # Push checks ignore quotes and shell syntax: even a commit message or grep pattern mentioning
-# a refused push is refused. Put such text in a file instead of the command. Only the small
-# option allowlist below is accepted; git configuration overrides are never allowed on pushes.
+# a refused push is refused. Put such text in a file instead of the command. Options are limited
+# to the small allowlist below plus git -C <dir> or -C<dir>; configuration overrides are refused.
 #
 # Review rigor is NOT what is being dropped: the pipeline still runs as `--skip push,pr,ci`,
 # keeping review, fixes, tests, lint and documentation. Only the remote is off limits.

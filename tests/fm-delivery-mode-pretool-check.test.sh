@@ -29,6 +29,7 @@ done <<'CASES'
 0|git push origin HEAD:master
 0|git push origin main master
 0|git -C dir push origin main
+0|git -Cdir push origin main
 0|(cd repo && git push origin main)
 0|git push origin main 2>&1 | tail -3
 0|git push origin main >file
