@@ -32,6 +32,7 @@ done <<'CASES'
 0|(cd repo && git push origin main)
 0|git push origin main 2>&1 | tail -3
 0|git push origin main >file
+0|git push origin main 2>/dev/null
 0|git push origin >file main
 0|git push -u origin main
 0|git push --set-upstream -q --quiet -v --verbose --dry-run -n origin main
@@ -48,6 +49,8 @@ done <<'CASES'
 2|git push origin feature
 2|git push origin main feature
 2|git push origin HEAD:develop
+2|git push origin main2>&1
+2|git push origin HEAD:main2>/dev/null
 2|git push origin :main
 2|git push origin :master
 2|git push --delete origin main

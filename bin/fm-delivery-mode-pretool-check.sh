@@ -151,9 +151,11 @@ if [ -z "$WHY" ] && ! printf '%s\n' "$CMD" | awk '
     segment = ""; depth = 0
   }
   {
-    # Quotes and backslashes never protect words or separators. Redirections are not refs.
+    # Quotes and backslashes never protect words or separators. Redirections are not refs,
+    # and a file descriptor number belongs to a redirection only at the start of a word.
     gsub(/[\047"`\\]/, "")
-    gsub(/[0-9]*[<>]+&?[[:space:]]*[^[:space:];&|()<>]+/, " ")
+    gsub(/(^|[[:space:]])[0-9]+[<>]/, " >")
+    gsub(/[<>]+&?[[:space:]]*[^[:space:];&|()<>]+/, " ")
     for (k = 1; k <= length($0); k++) {
       c = substr($0, k, 1)
       if (c ~ /[;&|]/ || (c == ")" && !depth)) check()
