@@ -19,11 +19,13 @@ check_cmd() {
 }
 
 # Commands are data, never executed. @NL@ represents a literal newline in a table row.
-while IFS='|' read -r expected cmd; do
-  cmd=${cmd//@NL@/$'\n'}
-  check_cmd "$expected" "$cmd"
-done <<'CASES'
+for test_locale in C en_US.UTF-8 "${LANG:-C}" "${LC_ALL:-${LANG:-C}}"; do
+  while IFS='|' read -r expected cmd; do
+    cmd=${cmd//@NL@/$'\n'}
+    LC_ALL="$test_locale" check_cmd "$expected" "$cmd"
+  done <<'CASES'
 0|git push origin main
+0|echo 'a — b →' ; git push origin main
 0|git push origin master
 0|git push origin HEAD:main
 0|git push origin HEAD:master
@@ -48,6 +50,7 @@ done <<'CASES'
 0|'git' "push" origin 'main'
 0|git push origin main; git push origin master
 2|git push origin feature
+2|echo 'a — b →' ; git push origin feature
 2|git push origin main feature
 2|git push origin HEAD:develop
 2|git push origin main2>&1
@@ -108,6 +111,7 @@ done <<'CASES'
 2|gh-axi workflow run test
 2|gh-axi run rerun 1
 CASES
+done
 pass "command verdict table"
 
 for key in tool_input toolInput; do

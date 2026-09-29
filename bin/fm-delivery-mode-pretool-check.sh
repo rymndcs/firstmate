@@ -50,6 +50,8 @@
 #           --claude.
 #   FAIL OPEN - malformed stdin or missing jq.
 set -u
+# Command text is matched as bytes, regardless of the caller locale or awk implementation.
+export LC_ALL=C
 
 CMD=""
 CMD_SET=0
