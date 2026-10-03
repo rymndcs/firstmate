@@ -185,6 +185,10 @@
       "audience": "agent-runtime"
     },
     {
+      "path": ".agents/skills/task-lifecycle/SKILL.md",
+      "audience": "agent-runtime"
+    },
+    {
       "path": ".agents/skills/updatefirstmate/SKILL.md",
       "audience": "agent-runtime"
     },
@@ -227,6 +231,10 @@
     {
       "path": "docs/calm.md",
       "audience": "operator-current"
+    },
+    {
+      "path": "docs/captain-language.md",
+      "audience": "agent-runtime"
     },
     {
       "path": "docs/cd-guard.md",

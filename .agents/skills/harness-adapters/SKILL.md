@@ -37,6 +37,16 @@ If `config/crew-harness` or `config/secondmate-harness` names an unverified adap
 Do not pause current work for that future-verification choice, and never launch an unverified adapter.
 If the captain asks for a new harness, propose verifying it first: spawn a trivial supervised task using `fm-spawn`'s raw-launch-command escape hatch, confirm every fact empirically, then record the mechanics in `fm-spawn`, its semantic busy source and trust gate in `bin/fm-busy-lib.sh`, any needed `FM_COMPOSER_IDLE_RE` empty-composer override plus any novel bare agent prompt glyph in `bin/fm-composer-lib.sh`'s shared composer classifier (the one fleet-wide owner of the empty/dead-shell/pending decision, so a new harness's own idle composer is not misread as a dead shell), the tmux agent-process liveness classification in `bin/backends/tmux.sh` when the harness can launch a secondmate, and the verified knowledge here.
 
+## Dispatch intake
+
+`AGENTS.md` section 4 keeps the always-loaded dispatch boundary: verified harnesses only, routing precedence, the captain-pick refusal, per-task backend authority, and no silent retry on another backend.
+When dispatch profiles exist, consult them at every crewmate or scout intake and pass the resolved concrete profile required by `fm-spawn`.
+`quota-array-dispatch` is the single owner of the capacity evidence, candidate accounting, and completion-aware selection procedure for a matched profile array, and this skill owns the effort fallback.
+`dispatch-axi` is the capacity read and it ranks without selecting, while `quota-axi` is a data source inside it and never something firstmate reads for capacity itself.
+`docs/configuration.md` owns dispatch-profile and runtime-backend schemas, `bin/fm-harness.sh` owns static resolution, and `bin/fm-spawn.sh` owns launch flags and fail-closed validation.
+`secondmate-provisioning` owns secondmate harness pins and inherited local material, while this skill owns the harness consequences.
+Dispatch only on a backend that `fm-spawn` validates as spawn-capable (selection contract: [`docs/configuration.md`](../../../docs/configuration.md) "Runtime backend").
+
 ## Detection
 
 `bin/fm-harness.sh` prints firstmate's own harness, using verified env markers first and then process ancestry.

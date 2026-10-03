@@ -9,3 +9,8 @@ __pycache__/
 *.pyc
 .env
 config/
+
+# Skills live in .agents/skills, which .claude/skills symlinks to.
+# ~/.gitignore ignores .agents/, so un-ignore it here or new skills never reach worktrees and secondmates.
+!/.agents/
+!/.agents/**
