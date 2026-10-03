@@ -169,7 +169,7 @@ fm_herdr_lab_cancel_provision() { # <pid>
 }
 
 fm_herdr_lab_provision() { # <session>
-  local name=$1 sessions tripwire running attempt server_pid max_attempts timeout_seconds
+  local name=$1 sessions tripwire running attempt server_pid max_attempts timeout_seconds zdotdir
   fm_herdr_lab_validate_name "$name" || return 1
   command -v herdr >/dev/null 2>&1 || { fm_herdr_lab_error "herdr is required"; return 1; }
   command -v jq >/dev/null 2>&1 || { fm_herdr_lab_error "jq is required"; return 1; }
@@ -195,7 +195,13 @@ fm_herdr_lab_provision() { # <session>
   else
     fm_herdr_lab_prepare "$name" || return 1
   fi
-  fm_herdr_lab_raw "$name" server >/dev/null 2>&1 &
+  # Lab panes skip the captain's zsh startup files. An interactive zsh can spend
+  # seconds forking prompt and plugin helpers after launch, which keeps a fresh
+  # lab pane from ever looking like a lone idle shell. ZDOTDIR is inert for
+  # every other shell, so a bash-only host is unaffected.
+  zdotdir="$(fm_herdr_lab_state_dir)/zdotdir"
+  mkdir -p "$zdotdir" || { fm_herdr_lab_error "cannot create lab zsh dotdir $zdotdir"; return 1; }
+  ZDOTDIR="$zdotdir" fm_herdr_lab_raw "$name" server >/dev/null 2>&1 &
   server_pid=$!
   attempt=0
   max_attempts=300

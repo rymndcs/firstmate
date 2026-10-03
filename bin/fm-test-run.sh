@@ -91,6 +91,15 @@ export FM_QUOTA_AXI_READING_DISABLE=${FM_QUOTA_AXI_READING_DISABLE:-1}
 # tests that own the daemon contract unset this and supply their own stub.
 export FM_NOMISTAKES_DAEMON_DISABLE=${FM_NOMISTAKES_DAEMON_DISABLE:-1}
 
+# Runner-level floor for the global-gitignore neutralizer in tests/lib.sh, for
+# the scripts that do not source it: a machine ~/.gitignore listing AGENTS.md or
+# CLAUDE.md would otherwise hide those files from every fixture repo.
+if [ -z "${GIT_CONFIG_COUNT:-}" ]; then
+  export GIT_CONFIG_COUNT=1
+  export GIT_CONFIG_KEY_0=core.excludesFile
+  export GIT_CONFIG_VALUE_0=/dev/null
+fi
+
 MODE=
 LIST_ONLY=0
 LIST_FAMILIES=0

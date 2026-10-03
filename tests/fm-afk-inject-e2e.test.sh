@@ -72,8 +72,12 @@ LOG_FILE="$STATE_DIR/submitted.log"
 # shellcheck source=/dev/null
 . "$DAEMON"
 
-# Private tmux server with a supervisor session.
-"$REAL_TMUX" -L "$SOCKET" new-session -d -s supervisor -x 200 -y 50
+# Private tmux server with a supervisor session. Its panes run a startup-file-free
+# bash: a captain's interactive login shell can take seconds to start, and keys
+# sent before it is ready sit as raw typeahead, so the composer loop would start
+# at an arbitrary later moment inside a scenario's timing window.
+PANE_SHELL='bash --noprofile --norc'
+"$REAL_TMUX" -L "$SOCKET" new-session -d -s supervisor -x 200 -y 50 "$PANE_SHELL"
 SUPERVISOR_PANE=$("$REAL_TMUX" -L "$SOCKET" display-message -p -t supervisor '#{pane_id}')
 
 # Supervisor pane loop: a small deterministic composer that logs each submitted
@@ -111,6 +115,7 @@ submit_line() {
 }
 
 redraw
+: > "$2"
 while IFS= read -r -n 1 _ch; do
   if [ -z "$_ch" ]; then
     submit_line
@@ -126,9 +131,17 @@ LOOP
 chmod +x "$LOOP_SCRIPT"
 
 # Start the loop in the supervisor pane.
+LOOP_READY="$STATE_DIR/supervisor-loop.ready"
 "$REAL_TMUX" -L "$SOCKET" send-keys -t "$SUPERVISOR_PANE" \
-  "bash '$LOOP_SCRIPT' '$LOG_FILE'" Enter
-sleep 1  # let the loop start and settle
+  "bash '$LOOP_SCRIPT' '$LOG_FILE' '$LOOP_READY'" Enter
+# The loop signals readiness itself; a fixed sleep cannot know when the pane
+# shell has started it.
+LOOP_READY_ATTEMPT=0
+while [ ! -e "$LOOP_READY" ] && [ "$LOOP_READY_ATTEMPT" -lt 300 ]; do
+  sleep 0.1
+  LOOP_READY_ATTEMPT=$((LOOP_READY_ATTEMPT + 1))
+done
+[ -e "$LOOP_READY" ] || fail "supervisor composer loop did not start"
 
 # tmux shim: redirects bare `tmux` to the private socket. Optionally swallows
 # the first Enter (file-based flag) for Scenario B.
@@ -153,7 +166,7 @@ chmod +x "$TMUX_SHIM_DIR/tmux"
 
 # Create a fake crewmate window (the watcher lists fm-* windows for stale
 # detection). The pane is an inert shell - it just needs to exist.
-"$REAL_TMUX" -L "$SOCKET" new-window -d -n fm-fake-c1 -t supervisor
+"$REAL_TMUX" -L "$SOCKET" new-window -d -n fm-fake-c1 -t supervisor "$PANE_SHELL"
 
 start_daemon() {
   PATH="$TMUX_SHIM_DIR:$PATH" \

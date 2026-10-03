@@ -406,18 +406,31 @@ fm_backend_zellij_current_path() {  # <target> [expected-label]
   fm_backend_zellij_send_text_line "$target" "printf '%s\n' '$marker_begin'; pwd; printf '%s\n' '$marker_end'" "$expected_label" || return 0
   sleep 0.3
   out=$(fm_backend_zellij_capture "$target" 200 "$expected_label") || return 0
+  # A marker can share a screen row with other text: some interactive shells
+  # (observed with zsh under a powerlevel10k prompt) render the begin marker and
+  # the path as one row, and a long wrapped command row can end in the begin
+  # marker. Drop the quoted copies the echoed command carries, then match each
+  # unquoted marker anywhere in the row.
   while IFS= read -r line; do
-    if [ "$line" = "$marker_begin" ]; then
-      in_block=1
-      chunk=""
-      continue
-    fi
-    if [ "$line" = "$marker_end" ]; then
-      case "$chunk" in /*) last=$chunk ;; esac
-      in_block=0
-      continue
-    fi
-    [ "$in_block" -eq 1 ] && chunk="$chunk$line"
+    line=${line//"'$marker_begin'"/}
+    line=${line//"'$marker_end'"/}
+    case "$line" in
+      *"$marker_begin"*)
+        in_block=1
+        line=${line##*"$marker_begin"}
+        chunk=""
+        ;;
+    esac
+    [ "$in_block" -eq 1 ] || continue
+    case "$line" in
+      *"$marker_end"*)
+        chunk="$chunk${line%%"$marker_end"*}"
+        case "$chunk" in /*) last=$chunk ;; esac
+        in_block=0
+        continue
+        ;;
+    esac
+    chunk="$chunk$line"
   done <<EOF
 $out
 EOF

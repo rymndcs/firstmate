@@ -52,6 +52,16 @@ export FM_NOMISTAKES_DAEMON_DISABLE=1
 # behavior is still proven.
 export FM_DISPATCH_AXI_READING_DISABLE=1
 
+# Neutralize the machine's global gitignore for the suite at large. A captain's
+# ~/.gitignore commonly lists AGENTS.md and CLAUDE.md, and the fixture repos
+# tests build live under TMPDIR where that file still applies, so seeded homes
+# lose those files and every "is this a firstmate home" check refuses. The
+# environment-level setting overrides only core.excludesFile and keeps the
+# rest of the global config, such as identity.
+export GIT_CONFIG_COUNT=1
+export GIT_CONFIG_KEY_0=core.excludesFile
+export GIT_CONFIG_VALUE_0=/dev/null
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034
@@ -85,8 +95,11 @@ fm_test_cleanup() {
 }
 
 fm_test_tmproot() {
-  local prefix=${1:-fm-test} root
-  root=$(mktemp -d "${TMPDIR:-/tmp}/${prefix}.XXXXXX") || root=
+  local prefix=${1:-fm-test} root base=${TMPDIR:-/tmp}
+  # macOS sets TMPDIR with a trailing slash; joining it raw yields `T//name`,
+  # which never prefix-matches the same path once a script normalizes it.
+  base=${base%/}
+  root=$(mktemp -d "$base/${prefix}.XXXXXX") || root=
   # Report an unusable root and hand back a non-zero status. This runs inside
   # the caller's command substitution, so the exit below ends only that
   # subshell: every caller must also refuse an empty root, because `cd ""`
@@ -94,7 +107,7 @@ fm_test_tmproot() {
   # delete the checkout it is running from.
   if [ -z "$root" ] || [ ! -d "$root" ]; then
     printf 'not ok - could not create a temp root for %s under %s\n' \
-      "$prefix" "${TMPDIR:-/tmp}" >&2
+      "$prefix" "$base" >&2
     exit 1
   fi
   if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then

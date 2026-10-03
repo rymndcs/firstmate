@@ -32,7 +32,8 @@
 #
 # Both calls sit on teardown's and bootstrap's critical path, so each is bounded
 # by FM_NOMISTAKES_DAEMON_STATUS_TIMEOUT (10s) and
-# FM_NOMISTAKES_DAEMON_START_TIMEOUT (60s) where coreutils `timeout` exists. A
+# FM_NOMISTAKES_DAEMON_START_TIMEOUT (60s) through coreutils `timeout`, Homebrew
+# `gtimeout`, or a perl alarm (stock macOS ships perl but no `timeout`). A
 # status that runs out of time is more doubt, so it reports `unknown`.
 #
 # Usage:
@@ -129,13 +130,18 @@ nm_daemon_dir_is_linked_worktree() {
   [ -f "$top/.git" ]
 }
 
-# Run `no-mistakes "$@"` under <seconds>, or plainly where coreutils timeout is
-# unavailable. stdin is closed so a prompt can never wait on a terminal.
+# Run `no-mistakes "$@"` under <seconds>, or plainly only when no bounding tool
+# exists at all. stdin is closed so a prompt can never wait on a terminal.
 nm_daemon_run() {
   local seconds=$1
   shift
   if command -v timeout >/dev/null 2>&1; then
     timeout "$seconds" no-mistakes "$@" </dev/null 2>&1
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$seconds" no-mistakes "$@" </dev/null 2>&1
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' \
+      "$seconds" no-mistakes "$@" </dev/null 2>&1
   else
     no-mistakes "$@" </dev/null 2>&1
   fi

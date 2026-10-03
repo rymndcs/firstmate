@@ -649,6 +649,7 @@ run_teardown() {
   local case_dir=$1; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
   PATH="$case_dir/fakebin:$PATH" \
     "$TEARDOWN" task-x1 "$@"
@@ -765,6 +766,7 @@ run_teardown_with_live_daemon_check() {
   local case_dir=$1; shift
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
   FM_NOMISTAKES_DAEMON_DISABLE=0 \
   NM_LOG="$case_dir/nm.log" \
@@ -834,6 +836,7 @@ test_shared_daemon_absent_is_a_clean_no_op() {
   # make "not installed" untestable. git is re-exposed explicitly.
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \
   FM_NOMISTAKES_DAEMON_DISABLE=0 \
   NM_LOG="$case_dir/nm.log" \
@@ -1186,6 +1189,7 @@ test_pr_check_does_not_refresh_stale_pr_head() {
 
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_CHECK" task-x1 https://github.com/example/repo/pull/7 >/dev/null
 
@@ -1194,6 +1198,7 @@ test_pr_check_does_not_refresh_stale_pr_head() {
 
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_CHECK" task-x1 https://github.com/example/repo/pull/7 >/dev/null
 
@@ -1223,6 +1228,7 @@ test_pr_check_records_remote_head_when_local_lags() {
 
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
+  FM_DATA_OVERRIDE="$case_dir/data" \
   PATH="$case_dir/fakebin:$PATH" \
     "$PR_CHECK" task-x1 https://github.com/example/repo/pull/7 >/dev/null
 
@@ -2213,7 +2219,7 @@ SH
       ;;
   esac
   rc=0
-  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_CONFIG_OVERRIDE="$case_dir/config" \
+  FM_ROOT_OVERRIDE="$ROOT" FM_STATE_OVERRIDE="$case_dir/state" FM_DATA_OVERRIDE="$case_dir/data" FM_CONFIG_OVERRIDE="$case_dir/config" \
     FM_FAKE_HERDR_LOG="$log" FM_FAKE_HERDR_CLOSED="$closed" \
     FM_FAKE_HERDR_SESSION_LIST_GARBAGE="$([ "$mode" = unresolvable-lock ] && printf 1 || printf 0)" \
     PATH="$case_dir/fakebin:$PATH" \

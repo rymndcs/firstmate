@@ -62,6 +62,8 @@ cp "$ROOT/bin/fm-remote-doctor.sh" "$ROOT/bin/fm-tasks-axi-lib.sh" \
   "$ROOT/bin/fm-backend.sh" "$REMOTE_ROOT/bin/"
 mkdir -p "$REMOTE_ROOT/bin/backends"
 cp "$ROOT/bin/backends/herdr.sh" "$REMOTE_ROOT/bin/backends/herdr.sh"
+cp "$ROOT/bin/fm-composer-lib.sh" "$ROOT/bin/fm-transition-lib.sh" "$ROOT/bin/fm-wake-lib.sh" \
+  "$REMOTE_ROOT/bin/"
 cat > "$REMOTE_ROOT/bin/fm-mutate.sh" <<'SH'
 #!/usr/bin/env bash
 printf 'mutation\n' >> "$1"

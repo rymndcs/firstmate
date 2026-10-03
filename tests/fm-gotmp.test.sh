@@ -57,6 +57,9 @@ make_fake_root() {
   ln -s "$ROOT/bin/fm-backend.sh" "$fake/bin/fm-backend.sh"
   ln -s "$ROOT/bin/backends/tmux.sh" "$fake/bin/backends/tmux.sh"
   ln -s "$ROOT/bin/fm-tmux-lib.sh" "$fake/bin/fm-tmux-lib.sh"
+  # The tmux adapter sources the session-lock lib; teardown runs the standing-knowledge surfacer.
+  ln -s "$ROOT/bin/fm-session-lock-lib.sh" "$fake/bin/fm-session-lock-lib.sh"
+  ln -s "$ROOT/bin/fm-standing-knowledge.sh" "$fake/bin/fm-standing-knowledge.sh"
   ln -s "$ROOT/bin/fm-composer-lib.sh" "$fake/bin/fm-composer-lib.sh"
   # fm-lock-lib.sh: teardown sources it for the shared lock-staleness proof.
   ln -s "$ROOT/bin/fm-lock-lib.sh" "$fake/bin/fm-lock-lib.sh"
@@ -133,6 +136,9 @@ test_teardown_skips_gracefully_without_tasktmp() {
   ln -s "$ROOT/bin/fm-backend.sh" "$fake/bin/fm-backend.sh"
   ln -s "$ROOT/bin/backends/tmux.sh" "$fake/bin/backends/tmux.sh"
   ln -s "$ROOT/bin/fm-tmux-lib.sh" "$fake/bin/fm-tmux-lib.sh"
+  # The tmux adapter sources the session-lock lib; teardown runs the standing-knowledge surfacer.
+  ln -s "$ROOT/bin/fm-session-lock-lib.sh" "$fake/bin/fm-session-lock-lib.sh"
+  ln -s "$ROOT/bin/fm-standing-knowledge.sh" "$fake/bin/fm-standing-knowledge.sh"
   ln -s "$ROOT/bin/fm-composer-lib.sh" "$fake/bin/fm-composer-lib.sh"
   ln -s "$ROOT/bin/fm-lock-lib.sh" "$fake/bin/fm-lock-lib.sh"
   # fm-gate-refuse-lib.sh: teardown sources it before any fleet mutation.
