@@ -1693,9 +1693,10 @@ FIXTURE
 }
 
 test_claude_captain_hold_late_terminal_output() {
-  local dir out status
-  dir=$(make_primary_dir "$TMP_ROOT/guard-hold-late-terminal-output")
+  local mode=${1:-warning-first} dir out status n identity
+  dir=$(make_primary_dir "$TMP_ROOT/guard-hold-late-terminal-output-$mode")
   cp "$ROOT/bin/fm-captain-hold.sh" "$dir/bin/"
+  install_integrated_autoarm "$dir"
   : > "$dir/state/task.meta"
   seed_claude_failure "$dir"
   seed_claude_budget "$dir" 3
@@ -1703,7 +1704,7 @@ test_claude_captain_hold_late_terminal_output() {
   cat > "$dir/latebin/rm" <<'FIXTURE'
 #!/usr/bin/env bash
 if [ -e "$FM_HOME/state/.claude-autoarm-failure-alarmed" ] && [ ! -e "$FM_HOME/state/.captain-hold" ]; then
-  "$FM_HOME/bin/fm-captain-hold.sh" set 'late hold during final terminal repair'
+  "$FM_HOME/bin/fm-captain-hold.sh" set 'late hold during terminal cleanup'
 fi
 exec /bin/rm "$@"
 FIXTURE
@@ -1712,7 +1713,87 @@ FIXTURE
   assert_present "$dir/state/.captain-hold" 'terminal cleanup did not inject late hold'
   expect_code 0 "$status" 'terminal late hold must allow Stop'
   [ -z "$out" ] || fail "terminal late hold leaked alarm: $out"
-  pass 'captain hold: final terminal cleanup suppresses alarm output'
+  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" 'held terminal warning was consumed without delivery'
+  assert_present "$dir/state/.claude-autoarm-failure-notified" 'held terminal discarded the prior failure notice'
+  assert_present "$dir/state/.turnend-claude-blocks" 'held terminal discarded the failure budget'
+  assert_absent "$dir/state/.claude-autoarm.lock" 'held terminal retained auto-arm ownership'
+  assert_absent "$dir/state/.turnend-claude-blocks.lock" 'held terminal retained budget ownership'
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" 'repeated held Stop must allow silently'
+  [ -z "$out" ] || fail "repeated held Stop leaked output: $out"
+  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" 'repeated held Stop consumed the pending warning'
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" clear
+  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" 'dismissal consumed the pending warning'
+  if [ "$mode" = actionable-first ]; then
+    cat > "$dir/bin/fm-watch-arm.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+. "$(dirname "$0")/fm-wake-lib.sh"
+fm_wake_append signal task "done: pending after release $FM_RELEASE_CYCLE"
+printf 'signal: task done: pending after release %s\n' "$FM_RELEASE_CYCLE"
+FIXTURE
+    chmod +x "$dir/bin/fm-watch-arm.sh"
+    for n in 1 2 3; do
+      out=$(FM_RELEASE_CYCLE=$n run_integrated_autoarm "$dir"); status=$?
+      expect_code 2 "$status" "released actionable cycle $n must request continuation"
+      assert_contains "$out" "pending after release $n" 'released actionable wake was suppressed'
+      [ "$(wc -l < "$dir/state/.wake-queue" | tr -d ' ')" = "$n" ] || fail 'released actionable wake was not durably queued'
+      assert_absent "$dir/state/.claude-autoarm-failure-alarmed" 'actionable delivery consumed the pending terminal warning'
+      out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+      expect_code 0 "$status" 'guard must accept the fresh actionable continuation'
+      [ -z "$out" ] || fail "guard duplicated a fresh actionable continuation: $out"
+    done
+    cp "$ROOT/bin/fm-wake-drain.sh" "$ROOT/bin/fm-guard.sh" "$dir/bin/"
+    out=$(FM_HOME="$dir" "$dir/bin/fm-wake-drain.sh" 2>/dev/null); status=$?
+    expect_code 0 "$status" 'released queued events must drain normally'
+    assert_contains "$out" 'pending after release 3' 'public drain lost the latest released signal for the task'
+    assert_not_contains "$out" 'pending after release 1' 'public drain replayed an older signal for the same task'
+    assert_not_contains "$out" 'pending after release 2' 'public drain replayed an older signal for the same task'
+    [ ! -s "$dir/state/.wake-queue" ] || fail 'public drain did not consume delivered queued events'
+    seed_claude_failure "$dir"
+  fi
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" 'undelivered terminal warning must remain available after release'
+  assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' 'released terminal warning was lost'
+  assert_present "$dir/state/.claude-autoarm-failure-alarmed" 'successful terminal output did not consume the warning'
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  expect_code 2 "$status" 'consumed terminal warning must leave later unhealthy Stops blocking'
+  assert_not_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' 'successful terminal warning repeated'
+  write_integrated_failed_arm "$dir"
+  out=$(run_integrated_autoarm "$dir"); status=$?
+  expect_code 0 "$status" 'consumed terminal warning must suppress later auto-arm continuation'
+  [ -z "$out" ] || fail "consumed terminal warning leaked auto-arm output: $out"
+  identity=$(watcher_identity "$dir" "$$") || fail 'could not identify test parent'
+  record_watcher_lock "$dir" "$$" "$identity"
+  touch "$dir/state/.last-watcher-beat"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" 'positive recovery must clear the consumed failure episode'
+  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" 'positive recovery retained the consumed warning'
+  assert_absent "$dir/state/.claude-autoarm-failure-notified" 'positive recovery retained the prior failure notice'
+  assert_absent "$dir/state/.turnend-claude-blocks" 'positive recovery retained the failure budget'
+  pass "captain hold: terminal warning survives suppression and release ($mode)"
+}
+
+test_claude_terminal_warning_output_failure() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/guard-terminal-output-failure")
+  : > "$dir/state/task.meta"
+  seed_claude_failure "$dir"
+  seed_claude_budget "$dir" 3
+  printf '{"stop_hook_active":true,"session_id":"sess-claude-mode"}' \
+    | CLAUDECODE=1 FM_HOME="$dir" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 \
+      bash "$dir/bin/fm-turnend-guard.sh" --claude 1>&- 2>"$dir/output-error"
+  status=$?
+  assert_contains "$(cat "$dir/output-error")" 'Bad file descriptor' 'closed stdout did not exercise warning write failure'
+  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" 'failed terminal stdout consumed an undelivered warning'
+  expect_code 1 "$status" 'terminal stdout failure must return its write error'
+  assert_present "$dir/state/.claude-autoarm-failure-notified" 'stdout failure reset the failure episode'
+  assert_absent "$dir/state/.claude-autoarm.lock" 'stdout failure retained auto-arm ownership'
+  assert_absent "$dir/state/.turnend-claude-blocks.lock" 'stdout failure retained budget ownership'
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" 'retry after failed stdout must deliver the warning'
+  assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' 'failed stdout warning was not retried'
+  assert_present "$dir/state/.claude-autoarm-failure-alarmed" 'successful stdout retry did not consume the warning'
+  pass 'terminal warning: stdout failure preserves warning for successful retry'
 }
 
 test_claude_captain_hold_late_handoffs() {
@@ -1724,5 +1805,7 @@ test_claude_captain_hold_late_handoffs() {
     test_claude_captain_hold_late_recovery "$late_mode"
   done
   test_claude_captain_hold_late_terminal_output
+  test_claude_captain_hold_late_terminal_output actionable-first
+  test_claude_terminal_warning_output_failure
 }
 test_claude_captain_hold_late_handoffs

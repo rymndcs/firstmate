@@ -330,6 +330,7 @@ terminal_fail_open() {
     fm_lock_release "$OWNER_LOCK"
     return 1
   fi
+  trap 'rm -f "$FAILURE_ALARM" 2>/dev/null || true' EXIT
   fm_lock_release "$BUDGET_LOCK"
   fm_lock_release "$OWNER_LOCK"
   return 0
@@ -379,7 +380,8 @@ if [ "$terminal_status" -eq 0 ]; then
     NEED_DESC="X-mode relay polling active"
   fi
   [ ! -e "$STATE/.captain-hold" ] || exit 0
-  printf '{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: %s, the Stop-owned auto-arm exhausted its bounded retries and one failure notice, no watcher or automatic continuation exists, and the block budget is exhausted. Keep this session attended and diagnose the automatic Stop-hook and watcher startup before relying on unattended supervision."}\n' "$NEED_DESC"
+  printf '{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: %s, the Stop-owned auto-arm exhausted its bounded retries and one failure notice, no watcher or automatic continuation exists, and the block budget is exhausted. Keep this session attended and diagnose the automatic Stop-hook and watcher startup before relying on unattended supervision."}\n' "$NEED_DESC" || exit "$?"
+  trap - EXIT
   exit 0
 fi
 [ "$terminal_status" -eq 2 ] && exit 0
