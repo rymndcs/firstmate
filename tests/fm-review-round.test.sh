@@ -8,6 +8,7 @@ TASK_REPO="$TMP_ROOT/task"
 FIXTURE_HOME="$TMP_ROOT/home"
 FAKEBIN="$TMP_ROOT/fakebin"
 mkdir -p "$TASK_REPO" "$FIXTURE_HOME/.claude/agents" "$FAKEBIN"
+TASK_REPO=$(cd "$TASK_REPO" && pwd -P)
 git -C "$TASK_REPO" init -q
 printf '%s\n' '---' 'name: adv-reviewer' '---' 'Reviewer instructions.' > "$FIXTURE_HOME/.claude/agents/adv-reviewer.md"
 printf '%s\n' '---' 'name: adv-fixer' '---' 'Fixer instructions.' > "$FIXTURE_HOME/.claude/agents/adv-fixer.md"
@@ -199,6 +200,73 @@ matching = [call for call in calls if call == data]
 assert len(matching) == 1, f'expected exactly one fresh {runtime}/{role} invocation, got {len(matching)}'
 PY
 }
+
+export CDPATH="$TASK_REPO"
+cdpath_failures=0
+for day in 2026-10-11 2026-10-12; do
+  runtime=codex
+  round=7
+  if [ "$day" = 2026-10-12 ]; then runtime=claude; round=8; fi
+  for role in reviewer fixer; do
+    for paths in relative-input relative-output relative-both default-output; do
+      printf 'Target: task\nRequested: CDPATH/%s/%s/%s\n' "$day" "$role" "$paths" > "$INPUT"
+      input="$INPUT"
+      output="$TASK_DIR/cdpath-$day-$role-$paths.out"
+      case "$paths" in
+        relative-input|relative-both|default-output)
+          input=${INPUT#"$TASK_REPO/"}
+          case "$input" in /*) fail 'CDPATH test requires a relative input' ;; esac
+          ;;
+      esac
+      output_arg="$output"
+      case "$paths" in
+        relative-output|relative-both)
+          output_arg=${output#"$TASK_REPO/"}
+          case "$output_arg" in /*) fail 'CDPATH test requires a relative output' ;; esac
+          ;;
+        default-output) output="$TASK_DIR/round-$round-$role.out" ;;
+      esac
+      before=$(call_count)
+      rc=0
+      if [ "$paths" = default-output ]; then
+        out=$(FAKE_REVIEW_DATE="$day" launch "$role" --round "$round" --in "$input" 2>&1) || rc=$?
+      else
+        out=$(FAKE_REVIEW_DATE="$day" launch "$role" --round "$round" --in "$input" --out "$output_arg" 2>&1) || rc=$?
+      fi
+      if [ "$rc" -ne 0 ]; then
+        printf 'not ok - CDPATH %s/%s/%s exit %s: %s\n' "$day" "$role" "$paths" "$rc" "$out" >&2
+        cdpath_failures=$((cdpath_failures + 1))
+        continue
+      fi
+      assert_one_call "$before"
+      [ "$out" = "$output" ] || fail 'CDPATH polluted the printed output path'
+      assert_capture "$output" "$runtime" "$role" || fail "CDPATH $day/$role/$paths changed the prompt or runtime"
+    done
+  done
+done
+[ "$cdpath_failures" -eq 0 ] || fail "$cdpath_failures valid CDPATH directory combinations refused"
+pass 'review-round: exported CDPATH preserves relative input, output, and default paths for both runtimes and roles'
+
+SHADOW_ROOT="$TMP_ROOT/cdpath-shadow"
+relative_input=${INPUT#"$TASK_REPO/"}
+mkdir -p "$SHADOW_ROOT/$(dirname "$relative_input")"
+printf 'wrong directory\n' > "$SHADOW_ROOT/$relative_input"
+for day in 2026-10-11 2026-10-12; do
+  runtime=codex
+  [ "$day" != 2026-10-12 ] || runtime=claude
+  for role in reviewer fixer; do
+    printf 'Target: task\nRequested: CDPATH shadow/%s/%s\n' "$day" "$role" > "$INPUT"
+    output="$TASK_DIR/cdpath-shadow-$day-$role.out"
+    before=$(call_count)
+    out=$(CDPATH="$SHADOW_ROOT:$TASK_REPO" FAKE_REVIEW_DATE="$day" launch "$role" --round 9 --in "$relative_input" --out "$output") \
+      || fail "CDPATH shadow redirected $day/$role input"
+    assert_one_call "$before"
+    [ "$out" = "$output" ] || fail 'CDPATH shadow changed the output path'
+    assert_capture "$output" "$runtime" "$role" || fail 'CDPATH shadow changed the exact prompt'
+  done
+done
+[ "$(cat "$SHADOW_ROOT/$relative_input")" = 'wrong directory' ] || fail 'CDPATH shadow input changed'
+pass 'review-round: CDPATH cannot select a shadow directory ahead of the caller directory'
 
 for day in 2026-10-04 2026-10-11 2026-10-12; do
   runtime=codex

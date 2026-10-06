@@ -25,6 +25,7 @@
 # The dated captain rule below is compiled from data/captain.md, not read from
 # private home files at runtime. Local date selects the runtime; no fallback.
 set -euo pipefail
+unset CDPATH
 
 CAPTAIN_REVIEW_CODEX_THROUGH=2026-10-11
 CAPTAIN_REVIEW_CODEX_MODEL=gpt-6.1-sol
