@@ -608,6 +608,7 @@ $rec
 EOF
   make_fake_toolchain "$fakebin"
   make_fake_ps_claude "$fakebin"
+  printf "held\n" > "$home/state/.captain-hold"
 
   # A live secondmate meta with a window pointed at nothing real - if the
   # bootstrap sweep's secondmate_sync ran (a MUTATING step), it would try to
@@ -658,6 +659,7 @@ EOF
   assert_contains "$out" "FLEET STATE" "fleet-state digest section missing on the read-only path"
   assert_contains "$out" "NEXT STEP" "closing reminder missing on the read-only path"
 
+  [ -e "$home/state/.captain-hold" ] || fail "read-only session cleared captain hold"
   pass "a lock refusal prints a loud read-only banner, skips every mutating step, and still completes the digest"
 }
 
@@ -1458,3 +1460,18 @@ test_pi_diagnostic_rejects_missing_turnend_guard_marker
 test_pi_diagnostic_rejects_previous_session_loaded_marker
 
 echo "# fm-session-start.test.sh: all assertions passed"
+
+test_new_session_clears_captain_hold() {
+  local rec root home fakebin out
+  rec=$(new_world captain-hold-start)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf 'context reminder - timestamp\n' > "$home/state/.captain-hold"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" 2>&1)
+  [ ! -e "$home/state/.captain-hold" ] || fail 'new owned session did not clear hold'
+  pass 'session start: clears captain hold after lock acquisition'
+}
+test_new_session_clears_captain_hold

@@ -315,6 +315,7 @@ if [ "$LOCK_RC" -ne 0 ]; then
   }
 fi
 if [ "$READ_ONLY" -eq 0 ]; then
+  rm -f "$STATE/.captain-hold"
   fm_trace_context_session_start "$CONFIG" "$STATE/.trace-context-effective"
 fi
 

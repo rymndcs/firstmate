@@ -123,6 +123,7 @@ fi
 # checkout has the two equal. Child worktrees never carry the gitignored marker,
 # so this exempts them while guarding every real secondmate home.
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
+[ "$CLAUDE_MODE" -eq 0 ] || [ ! -e "$STATE/.captain-hold" ] || exit 0
 
 # --- the actual predicate ----------------------------------------------------
 # shellcheck source=bin/fm-wake-lib.sh
@@ -153,6 +154,7 @@ if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
 fi
 
 block_stop() {
+  [ "$CLAUDE_MODE" -eq 0 ] || [ ! -e "$STATE/.captain-hold" ] || exit 0
   local afk x_mode reason rule
   afk=0
   [ -e "$STATE/.afk" ] && afk=1
@@ -340,6 +342,7 @@ failure_episode_verified() {
 
 i=0
 while [ "$i" -lt $((SYNC_WAIT_MS / 100)) ]; do
+  [ ! -e "$STATE/.captain-hold" ] || exit 0
   if autoarm_owns_recovery; then
     if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
       fm_failure_episode_reset "$STATE" || exit 2

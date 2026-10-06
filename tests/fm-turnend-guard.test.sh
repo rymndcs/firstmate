@@ -1604,3 +1604,18 @@ test_hook_claude_mode_away_mode_never_uses_stop_autoarm_fail_open
 test_hook_claude_mode_allow_resets_budget
 test_hook_claude_mode_waits_for_late_claim
 test_hook_claude_mode_secondmate_reblocks_like_primary
+
+test_claude_captain_hold_allows_stop() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/guard-captain-hold")
+  : > "$dir/state/task.meta"
+  : > "$dir/state/.captain-hold"
+  out=$(printf '{"stop_hook_active":true}' | FM_HOME="$dir" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 "$dir/bin/fm-turnend-guard.sh" --claude 2>&1); status=$?
+  expect_code 0 "$status" 'Claude hold must allow Stop with no watcher'
+  [ -z "$out" ] || fail 'held Claude guard printed output'
+  [ ! -e "$dir/state/.turnend-claude-blocks" ] || fail 'held guard consumed block budget'
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" 'hold must not disable other harness guards'
+  pass 'captain hold: Claude Stop allowed; other harnesses still guarded'
+}
+test_claude_captain_hold_allows_stop

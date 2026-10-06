@@ -599,3 +599,78 @@ test_need_vanished_mid_cycle_closes_quietly
 test_afk_mid_cycle_suppresses_rewake
 test_active_in_marked_secondmate_home
 test_fm_lock_status_still_works_with_shared_lib
+
+test_captain_hold() {
+  local dir out status before child command
+  dir=$(make_primary_dir "$TMP_ROOT/captain-hold")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$ROOT/bin/fm-captain-hold-prompt.sh" "$ROOT/bin/fm-operational-input.sh" "$dir/bin/"
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" set $'context reminder\n200k'
+  [ "$(wc -l < "$dir/state/.captain-hold" | tr -d ' ')" = 1 ] || fail "hold must be one line"
+  out=$(FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" status)
+  assert_contains "$out" 'context reminder 200k - ' 'status must show reason and timestamp'
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 0 "$status" 'held autoarm must be silent'
+  [ -z "$out" ] && [ ! -e "$dir/state/arm-ran" ] || fail 'held autoarm armed or printed'
+  before=$(cat "$dir/state/.captain-hold")
+  command=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$ROOT/.claude/settings.json")
+  out=$(printf '{"prompt":"hello"}' | env -u GROK_AGENT CLAUDE_PROJECT_DIR="$dir" FM_HOME="$dir" bash -c "$command")
+  assert_contains "$out" '/stow then /clear' 'tracked hook must deliver context'
+  out=$(printf '{"prompt":"hello"}' | GROK_AGENT=1 CLAUDE_PROJECT_DIR="$dir" FM_HOME="$dir" bash -c "$command")
+  [ -z "$out" ] || fail 'Claude-compatible Grok hook must be inert'
+  child=$(make_crewmate_worktree_dir "$dir" "$TMP_ROOT/hold-child")
+  cp "$ROOT/bin/fm-captain-hold-prompt.sh" "$ROOT/bin/fm-operational-input.sh" "$child/bin/"
+  : > "$child/state/.captain-hold"
+  out=$(printf '{"prompt":"hello"}' | FM_HOME="$child" "$child/bin/fm-captain-hold-prompt.sh")
+  [ -z "$out" ] || fail 'child task received primary hold context'
+  for prompt in 'hello' 'what is happening?'; do
+    out=$(jq -n --arg prompt "$prompt" '{prompt:$prompt}' | FM_HOME="$dir" "$dir/bin/fm-captain-hold-prompt.sh")
+    assert_contains "$out" '/stow then /clear' 'every captain reply must receive hold context'
+    [ "$(cat "$dir/state/.captain-hold")" = "$before" ] || fail 'captain reply cleared hold'
+  done
+  for prompt in $'\xE2\x81\xA3FIRSTMATE_OP: v1 watcher: heartbeat' $'\xE2\x81\xA3Supervisor escalate'; do
+    out=$(jq -n --arg prompt "$prompt" '{prompt:$prompt}' | FM_HOME="$dir" "$dir/bin/fm-captain-hold-prompt.sh")
+    [ -z "$out" ] || fail 'operational injection received captain context'
+  done
+  out=$(printf 'bad json' | FM_HOME="$dir" "$dir/bin/fm-captain-hold-prompt.sh")
+  [ -z "$out" ] || fail 'malformed payload received context'
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" clear
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" clear
+  out=$(printf '{"prompt":"hello"}' | FM_HOME="$dir" "$dir/bin/fm-captain-hold-prompt.sh")
+  [ -z "$out" ] || fail 'inactive hold received context'
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 2 "$status" 'dismissal must restore autoarm'
+  pass 'captain hold: persistent replies, operational exclusion, explicit dismissal'
+}
+
+test_captain_hold_midcycle_keeps_queue() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hold-midcycle")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$ROOT/bin/fm-wake-drain.sh" "$dir/bin/"
+  cat > "$dir/bin/fm-guard.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+exit 0
+FIXTURE
+  cat > "$dir/bin/fm-watch-arm.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+. "$(dirname "$0")/fm-wake-lib.sh"
+fm_wake_append signal task 'done: queued during hold'
+"$FM_HOME/bin/fm-captain-hold.sh" set 'context reminder'
+printf 'signal: task done: queued during hold\n'
+FIXTURE
+  chmod +x "$dir/bin/fm-guard.sh" "$dir/bin/fm-watch-arm.sh"
+  : > "$dir/state/task.meta"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 0 "$status" 'midcycle hold must suppress actionable rewake'
+  [ -z "$out" ] || fail 'midcycle hold printed output'
+  [ -s "$dir/state/.wake-queue" ] || fail 'hold lost queued wake'
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" clear
+  out=$(FM_HOME="$dir" "$dir/bin/fm-wake-drain.sh")
+  assert_contains "$out" 'queued during hold' 'normal drain must deliver held event'
+  [ ! -s "$dir/state/.wake-queue" ] || fail 'normal drain left delivered event queued'
+  pass 'captain hold: midcycle suppression retains event for normal drain'
+}
+
+test_captain_hold
+test_captain_hold_midcycle_keeps_queue

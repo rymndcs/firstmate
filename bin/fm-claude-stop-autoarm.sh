@@ -18,6 +18,8 @@
 #   - AFK: while state/.afk exists the away daemon owns the watcher and triage;
 #     this hook exits 0 and NEVER rewakes the primary (checked again at
 #     translation time so a mid-cycle AFK transition is honored).
+#   - Captain hold: state/.captain-hold suppresses arming and translation;
+#     pending durable wake records remain untouched until release.
 #   - Need: arms only while work is in flight (state/*.meta) or X mode has a
 #     relay poll to run (state/x-watch.check.sh); an idle home exits 0.
 #   - Single-flight: Claude does not dedupe async hooks, so a home-scoped owner
@@ -104,6 +106,7 @@ fi
 
 # --- AFK: the away daemon owns the watcher and triage; never rewake ----------
 [ -e "$STATE/.afk" ] && exit 0
+[ -e "$STATE/.captain-hold" ] && exit 0
 
 # --- need: in-flight work or an X-mode relay poll ----------------------------
 need_supervision() {
@@ -145,6 +148,7 @@ write_epoch() {  # <outcome>
   rm -f "$tmp" 2>/dev/null || true
 }
 
+[ -e "$STATE/.captain-hold" ] && exit 0
 write_epoch arming
 
 # X mode cadence: source the generated config so an X instance polls at its
@@ -164,6 +168,7 @@ ACTIONABLE=0
 HEALTHY=0
 attempt=0
 while [ "$attempt" -lt "$AUTOARM_ATTEMPTS" ]; do
+  [ -e "$STATE/.captain-hold" ] && exit 0
   attempt=$((attempt + 1))
   OUT=$(mktemp "$STATE/.claude-autoarm-output.XXXXXX") || OUT=
   if [ -n "$OUT" ]; then
@@ -176,6 +181,12 @@ while [ "$attempt" -lt "$AUTOARM_ATTEMPTS" ]; do
   # every subsequent classification and handoff.
   if [ -e "$STATE/.afk" ]; then
     write_epoch afk
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    exit 0
+  fi
+
+  if [ -e "$STATE/.captain-hold" ]; then
+    write_epoch captain-hold
     [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
     exit 0
   fi
@@ -201,6 +212,12 @@ done
 # left to supervise, so close quietly instead of waking the model.
 if ! need_supervision; then
   write_epoch clean
+  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+  exit 0
+fi
+
+if [ -e "$STATE/.captain-hold" ]; then
+  write_epoch captain-hold
   [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
   exit 0
 fi
