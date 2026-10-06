@@ -39,7 +39,20 @@ if (root / 'curl-error').exists():
     sys.exit(22)
 print((root / 'response.json').read_text())
 PY
-chmod +x "$TMP_ROOT/fakebin/security" "$TMP_ROOT/fakebin/curl"
+cat > "$TMP_ROOT/fakebin/dispatch-axi" <<'PYDISPATCH'
+#!/usr/bin/env python3
+import os
+import pathlib
+import sys
+root = pathlib.Path(os.environ['JEV_TEST_ROOT'])
+assert sys.argv[1:] == ['--json']
+with (root / 'capacity-calls').open('a') as f:
+    f.write('read\n')
+if (root / 'capacity-error').exists():
+    sys.exit(1)
+print((root / 'capacity.json').read_text())
+PYDISPATCH
+chmod +x "$TMP_ROOT/fakebin/security" "$TMP_ROOT/fakebin/curl" "$TMP_ROOT/fakebin/dispatch-axi"
 export PATH="$TMP_ROOT/fakebin:$PATH"
 python3 - <<'PY'
 import json
@@ -49,6 +62,16 @@ import subprocess
 
 root = pathlib.Path(os.environ['JEV_TEST_ROOT'])
 script = os.environ['JEV_SCRIPT']
+context = root / 'context.md'
+context.write_text('Context ☃\nwith evidence')
+brief = root / 'brief.md'
+brief.write_text('# Task\nRepair exports.\n\n## Acceptance\nPreserve totals.\n\n# Setup\nDo not include setup.')
+summary = root / 'round-2-summary.md'
+summary_text = ('Task: repair exports.\nRound 1: totals fixed.\nRound 2: escaping fixed.\n'
+                'Open: formula risk, likely, harms users, fix costs $2.\n'
+                'One finding came from an earlier fix.\nCost per round: $4.\n')
+summary.write_text(summary_text)
+(root / 'capacity.json').write_text('{"codex":{"remaining":48}}')
 
 
 def response(probabilities, **changes):
@@ -60,8 +83,8 @@ def response(probabilities, **changes):
 
 def call(options=None, models=False):
     args = [script] + (['--models'] if models else [])
-    return subprocess.run(args + ['Choose a worker? "quoted"\nnext line', 'Context ☃\nwith evidence',
-                                 json.dumps(['continue', 'stop'] if options is None else options)],
+    return subprocess.run(args + ([str(brief)] if models else ['Choose a worker? "quoted"\nnext line', str(context)]) +
+                          [json.dumps(['continue', 'stop'] if options is None else options)],
                           capture_output=True, text=True)
 
 
@@ -123,7 +146,21 @@ response({'0': 0.25, '1': 0.25, '2': 0.25, '3': 0.25})
 assert all(r['captain_permission_required'] for r in
            success(['FABLE-preview', 'openai/gpt-6-astra', 'gpt-6-sol XHIGH', 'fable'], True)['rankings'])
 request = json.loads((root / 'request.json').read_text())
-assert 'Task: Choose a worker?' in request['questions']['ranking']['instructions']
+assert 'candidate worker model' in request['questions']['ranking']['instructions']
+model_context = request['state']['context']
+assert 'Repair exports.' in model_context and 'Preserve totals.' in model_context
+assert 'Do not include setup.' not in model_context
+assert '{"codex":{"remaining":48}}' in model_context
+for limit in ['Fable', 'gpt-6-astra', 'xhigh', 'explicit permission', 'gpt-6.1-sol', '2026-10-11']:
+    assert limit in model_context, limit
+assert len((root / 'capacity-calls').read_text().splitlines()) == 2
+(root / 'capacity.json').write_text('{"codex":{"remaining":12}}')
+success(candidates, True)
+assert '{"codex":{"remaining":12}}' in json.loads((root / 'request.json').read_text())['state']['context']
+(root / 'capacity-error').touch()
+success(candidates, True)
+assert 'dispatch-axi failed' in json.loads((root / 'request.json').read_text())['state']['context']
+(root / 'capacity-error').unlink()
 assert list(request['questions']['ranking']['criteria'].values()) == ['FABLE-preview', 'openai/gpt-6-astra', 'gpt-6-sol XHIGH', 'fable']
 print('ok - fm-jev.sh: model rankings are advisory and protected models/effort require permission')
 
@@ -148,11 +185,42 @@ for marker in ['key-error', 'curl-error']:
     (root / marker).unlink()
 print('ok - fm-jev.sh: Keychain and transport errors are clear, nonzero and redact credentials')
 
+response({'0': 0.91, '1': 0.05, '2': 0.04})
+result = subprocess.run([script, '--review-round', str(summary)], capture_output=True, text=True)
+assert result.returncode == 0, result.stderr
+request = json.loads((root / 'request.json').read_text())
+assert request['state']['context'] == summary_text
+assert list(request['questions']['ranking']['criteria'].values()) == [
+    'start another round', 'stop and land with the open findings recorded', 'stop and drop']
+assert 'review round' in request['questions']['ranking']['instructions']
+assert json.loads(result.stdout)['mode'] == 'decision'
+print('ok - fm-jev.sh: full review summary and fixed review question/options')
+
 calls_before = (root / 'credential-calls').read_text()
 for options in [[], ['only'], ['', 'stop'], ['same', 'same'], 'bad', [None, 'stop'], ['a'] * 256,
                 [{'model': 'gpt-6-sol'}, 'stop']]:
     failure(options)
 assert (root / 'credential-calls').read_text() == calls_before
+for args in [
+    ['question', 'one sentence', '["a","b"]'],
+    ['--models', 'one sentence', '["a","b"]'],
+    ['--review-round', 'one sentence'],
+    ['--review-round', str(root / 'missing.md')],
+    ['--models', str(context), '["a","b"]'],
+]:
+    result = subprocess.run([script] + args, capture_output=True, text=True)
+    assert result.returncode != 0 and result.stdout == '', result
+    assert 'file' in result.stderr or 'Task section' in result.stderr, result.stderr
+assert (root / 'credential-calls').read_text() == calls_before
+extra = root / 'extra.md'
+extra.write_text('Additional evidence')
+response({'0': 0.9, '1': 0.1})
+result = subprocess.run([script, 'question', str(context), '["a","b"]', str(extra)], capture_output=True, text=True)
+assert result.returncode == 0, result.stderr
+request = json.loads((root / 'request.json').read_text())
+assert context.read_text() in request['state']['context'] and extra.read_text() in request['state']['context']
+calls_before = (root / 'credential-calls').read_text()
+print('ok - fm-jev.sh: file-only contexts, multiple evidence files and live capacity failures')
 result = subprocess.run([script, '--help'], capture_output=True, text=True)
 assert result.returncode == 0 and '--models' in result.stdout
 assert (root / 'credential-calls').read_text() == calls_before

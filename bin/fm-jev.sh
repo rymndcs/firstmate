@@ -1,7 +1,15 @@
 #!/usr/bin/env bash
 # fm-jev.sh - advisory Jev rankings for Firstmate decisions and worker models.
 #
-# Usage: fm-jev.sh [--models] <question-or-task> <context> <options-json>
+# Usage:
+#   fm-jev.sh --review-round <round-summary-file>
+#   fm-jev.sh --models <brief-file> <options-json>
+#   fm-jev.sh <question> <context-file> <options-json> [context-file ...]
+# Context is always read from nonempty UTF-8 files; bare text is refused.
+# Review mode reads the whole summary and fixes the question and three options.
+# Model mode reads the brief's Task section, live dispatch-axi --json capacity
+# (or an explicit failure notice), and the captain's model/effort limits.
+# The dated Codex default applies through 2026-10-11.
 # Options are a JSON array of 2-255 distinct nonempty strings. In --models mode,
 # objects with a nonempty model and optional effort/description are also accepted.
 # Output is one JSON object: confident=yes|no, threshold, mode, automatic=no,
@@ -20,12 +28,13 @@ set +x
 set +v
 set -eu
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
-  sed -n '2,18{s/^# \{0,1\}//;p;}' "$0"
+  awk 'NR == 1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
   exit 0
 fi
 exec python3 - "$@" <<'PY'
 import json
 import math
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -38,13 +47,40 @@ def fail(message):
     sys.exit(1)
 
 
+def read_context(path):
+    try:
+        content = Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeError, ValueError):
+        fail("context must come from readable UTF-8 files, never bare text: " + path)
+    if not content.strip():
+        fail("context file is empty: " + path)
+    return content
+
+
 args = sys.argv[1:]
 models = bool(args and args[0] == "--models")
-if models:
+review = bool(args and args[0] == "--review-round")
+if models or review:
     args.pop(0)
-if len(args) != 3 or not args[0].strip():
-    fail("usage: fm-jev.sh [--models] <question-or-task> <context> <options-json>")
-question, context, raw_options = args
+if review and len(args) == 1:
+    context = read_context(args[0])
+    question = "Should we start another review round, stop and land, or stop and drop?"
+    raw_options = json.dumps(["start another round",
+                              "stop and land with the open findings recorded", "stop and drop"])
+elif models and len(args) == 2:
+    brief = read_context(args[0])
+    task = re.search(r"^# Task[ \t]*\r?\n(.*?)(?=^# |\Z)", brief, re.M | re.S)
+    if not task or not task[1].strip():
+        fail("brief file must contain a nonempty # Task section")
+    context = "Task from brief:\n" + task[1]
+    question = "Which candidate worker model best fits this task?"
+    raw_options = args[1]
+else:
+    if models or review or len(args) < 3 or not args[0].strip() or args[0].startswith("--"):
+        fail("usage: --review-round <summary-file>, --models <brief-file> <options-json>, "
+             "or <question> <context-file> <options-json> [context-file ...]; bare text is refused")
+    question, path, raw_options = args[:3]
+    context = "\n\n".join(read_context(p) for p in [path] + args[3:])
 try:
     options = json.loads(raw_options)
     if not isinstance(options, list) or not 2 <= len(options) <= 255:
@@ -62,13 +98,29 @@ try:
 except (ValueError, TypeError):
     fail("options must be 2-255 distinct nonempty strings (or model objects in --models mode)")
 
+if models:
+    try:
+        capacity = subprocess.run(["dispatch-axi", "--json"], capture_output=True,
+                                  text=True, check=True, timeout=30).stdout
+        if not capacity.strip():
+            raise ValueError()
+        json.loads(capacity)
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError):
+        capacity = "dispatch-axi failed; current capacity is unavailable."
+    context += "\n\nCurrent capacity (dispatch-axi):\n" + capacity
+    context += ("\n\nCaptain's limits: Fable, gpt-6-astra and xhigh effort require explicit permission. "
+                "Model selection always belongs to the captain. "
+                "This week's default (2026-10-04 through 2026-10-11): every worker and scout uses "
+                "Codex, gpt-6.1-sol recommended; do not offer Claude as a worker option. "
+                "After 2026-10-11, the standing default returns to Claude first, "
+                "then Codex and DeepSeek as overflow.")
+
 request = {
     "model": "jev-latest",
     "state": {"context": context},
     "questions": {"ranking": {
         "type": "choice",
-        "instructions": ("Which candidate worker model best fits this task? Task: " + question
-                         if models else question),
+        "instructions": question,
         "criteria": {str(i): option for i, option in enumerate(options)},
     }},
 }
