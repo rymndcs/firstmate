@@ -1,3 +1,11 @@
+Captain decision recorded - 2026-10-06
+Captain instructs land now and accepts R4-1 as known; do not fix the negative-only eligibility test.
+R1-2 remains accepted by captain (2026-10-06); no coordination work.
+R4-1 is accepted by captain (2026-10-06); no test correction.
+The historical open-finding text below records the pre-decision review boundary and is superseded by this acceptance.
+Validation is now authorized with --skip review,push,pr,ci; test, lint and docs remain enabled.
+Worker records final review and done only after successful validation; firstmate retains merge ownership.
+
 Captain hold: review round 4 - decision required
 
 Purpose
