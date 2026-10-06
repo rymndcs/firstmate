@@ -92,6 +92,8 @@ printf 'trivial autodetect-smoke brief: nothing to do.\n' > "$DATA/$ID/brief.md"
 PROJ="$TMP_ROOT/scratch-project"
 mkdir -p "$PROJ"
 git -C "$PROJ" init -q
+git -C "$PROJ" config --local commit.gpgsign false
+git -C "$PROJ" config --local tag.gpgsign false
 printf '# scratch\n' > "$PROJ/README.md"
 git -C "$PROJ" add README.md
 git -C "$PROJ" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial

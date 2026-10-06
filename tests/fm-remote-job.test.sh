@@ -74,6 +74,8 @@ SH
 chmod +x "$RUNTIME_BIN/perl"
 
 git -C "$REMOTE_ROOT" init -q -b main
+git -C "$REMOTE_ROOT" config --local commit.gpgsign false
+git -C "$REMOTE_ROOT" config --local tag.gpgsign false
 git -C "$REMOTE_ROOT" config user.email test@example.com
 git -C "$REMOTE_ROOT" config user.name Test
 git -C "$REMOTE_ROOT" add AGENTS.md CLAUDE.md bin

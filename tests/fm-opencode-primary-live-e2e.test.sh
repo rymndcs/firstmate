@@ -154,6 +154,8 @@ run_ahoy_transcript_regressions() {
     "$AHOY_PROJECT/.agents/skills/bearings" \
     "$AHOY_PROJECT/bin"
   git init -q "$AHOY_PROJECT"
+  git -C "$AHOY_PROJECT" config --local commit.gpgsign false
+  git -C "$AHOY_PROJECT" config --local tag.gpgsign false
   cp "$ROOT/.opencode/plugins/fm-primary-sessionstart-nudge.js" \
     "$ROOT/.opencode/plugins/package.json" \
     "$AHOY_PROJECT/.opencode/plugins/"
@@ -295,6 +297,8 @@ mkdir -p "$LAB"
 run_ahoy_transcript_regressions
 run_native_ahoy_regressions
 git clone -q "$ROOT" "$PROJECT"
+git -C "$PROJECT" config --local commit.gpgsign false
+git -C "$PROJECT" config --local tag.gpgsign false
 mkdir -p "$PROJECT/.opencode/plugins/lib"
 cp "$ROOT/.opencode/plugins/fm-primary-watch-arm.js" "$PROJECT/.opencode/plugins/fm-primary-watch-arm.js"
 cp "$ROOT/.opencode/plugins/lib/fm-operational-input.js" "$PROJECT/.opencode/plugins/lib/fm-operational-input.js"

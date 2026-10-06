@@ -99,12 +99,16 @@ chmod +x "$REMOTE_ROOT/bin/tmux"
 install_remote_herdr_fixture "$REMOTE_ROOT" "$HERDR_STATE" "$HERDR_LOG" \
   "$TMP_ROOT/herdr-send-fail" "$TMP_ROOT/herdr.sock"
 git -C "$REMOTE_ROOT" init -q -b main
+git -C "$REMOTE_ROOT" config --local commit.gpgsign false
+git -C "$REMOTE_ROOT" config --local tag.gpgsign false
 git -C "$REMOTE_ROOT" config user.email test@example.com
 git -C "$REMOTE_ROOT" config user.name Test
 git -C "$REMOTE_ROOT" add .
 git -C "$REMOTE_ROOT" commit -qm 'remote fixture root'
 REMOTE_ORIGIN="$TMP_ROOT/firstmate-origin.git"
 git init -q --bare "$REMOTE_ORIGIN"
+git -C "$REMOTE_ORIGIN" config --local commit.gpgsign false
+git -C "$REMOTE_ORIGIN" config --local tag.gpgsign false
 git -C "$REMOTE_ROOT" remote add origin "file://$REMOTE_ORIGIN"
 git -C "$REMOTE_ROOT" push -q -u origin main
 git --git-dir="$REMOTE_ORIGIN" symbolic-ref HEAD refs/heads/main
@@ -112,7 +116,11 @@ git --git-dir="$REMOTE_ORIGIN" symbolic-ref HEAD refs/heads/main
 # One remote-backed direct-PR project. The remote home clones its origin, never
 # the primary working tree.
 git init -q --bare "$TMP_ROOT/alpha.git"
+git -C "$TMP_ROOT/alpha.git" config --local commit.gpgsign false
+git -C "$TMP_ROOT/alpha.git" config --local tag.gpgsign false
 git -C "$PARENT/projects" init -q -b main alpha
+git -C "$PARENT/projects/alpha" config --local commit.gpgsign false
+git -C "$PARENT/projects/alpha" config --local tag.gpgsign false
 git -C "$PARENT/projects/alpha" config user.email test@example.com
 git -C "$PARENT/projects/alpha" config user.name Test
 printf 'alpha\n' > "$PARENT/projects/alpha/README.md"
@@ -820,6 +828,8 @@ rm -f "$PARENT/state/.wake-queue"
 # and fast-forwards to that host-local commit without touching project clones.
 REMOTE_SEED="$TMP_ROOT/firstmate-seed"
 git clone -q "file://$REMOTE_ORIGIN" "$REMOTE_SEED"
+git -C "$REMOTE_SEED" config --local commit.gpgsign false
+git -C "$REMOTE_SEED" config --local tag.gpgsign false
 git -C "$REMOTE_SEED" config user.email test@example.com
 git -C "$REMOTE_SEED" config user.name Test
 printf 'remote update probe\n' > "$REMOTE_SEED/REMOTE_UPDATE_PROBE"

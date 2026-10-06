@@ -375,6 +375,8 @@ make_project() {  # <dir>
   local dir=$1
   mkdir -p "$dir"
   git -C "$dir" init -q
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   printf '# Herdr projection E2E fixture\n' > "$dir/README.md"
   git -C "$dir" add README.md
   git -C "$dir" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
@@ -886,7 +888,11 @@ touch "$SECOND_HOME_A/state/.last-watcher-beat" "$SECOND_HOME_B/state/.last-watc
 # Ensure the secondmate homes look like gitignored firstmate homes so inheritance
 # may write config/herdr-presentation-spaces.
 git -C "$SECOND_HOME_A" init -q
+git -C "$SECOND_HOME_A" config --local commit.gpgsign false
+git -C "$SECOND_HOME_A" config --local tag.gpgsign false
 git -C "$SECOND_HOME_B" init -q
+git -C "$SECOND_HOME_B" config --local commit.gpgsign false
+git -C "$SECOND_HOME_B" config --local tag.gpgsign false
 printf 'config/herdr-presentation-spaces\nconfig/crew-harness\nconfig/crew-dispatch.json\nconfig/backlog-backend\nconfig/backend\nconfig/startup-memory-budget\n' \
   > "$SECOND_HOME_A/.gitignore"
 cp "$SECOND_HOME_A/.gitignore" "$SECOND_HOME_B/.gitignore"

@@ -81,6 +81,8 @@ make_lab_home() {  # <dir>
   local dir=$1
   mkdir -p "$dir/bin" "$dir/state" "$dir/.claude/skills/ask-user-authority"
   git init -q "$dir"
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   git -C "$dir" -c user.name=fmtest -c user.email=fmtest@example.invalid \
     commit -q --allow-empty -m init
   : > "$dir/AGENTS.md"

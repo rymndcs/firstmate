@@ -39,6 +39,8 @@ make_primary_dir() {
   local dir=$1
   mkdir -p "$dir/state"
   git init -q "$dir"
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   git -C "$dir" commit -q --allow-empty -m init
   : > "$dir/AGENTS.md"
   install_autoarm_scripts "$dir"

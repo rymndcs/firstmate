@@ -224,6 +224,8 @@ new_git_world() {
   mkdir -p "$home/state" "$home/data" "$home/config" "$home/projects"
   touch "$home/state/.last-watcher-beat"
   git init -q -b main "$root"
+  git -C "$root" config --local commit.gpgsign false
+  git -C "$root" config --local tag.gpgsign false
   {
     printf '%s\n' '.fm-secondmate-home'
     printf '%s\n' 'data/'

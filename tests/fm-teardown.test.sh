@@ -134,15 +134,21 @@ SH
 
   # Bare origin so the clone has an `origin` remote and origin/HEAD.
   git init -q --bare "$case_dir/origin.git"
+  git -C "$case_dir/origin.git" config --local commit.gpgsign false
+  git -C "$case_dir/origin.git" config --local tag.gpgsign false
   git -C "$case_dir/origin.git" symbolic-ref HEAD refs/heads/main
   # Seed origin with one commit BEFORE cloning so the clone is not empty.
   git clone -q "$case_dir/origin.git" "$case_dir/_seed" 2>/dev/null
+  git -C "$case_dir/_seed" config --local commit.gpgsign false
+  git -C "$case_dir/_seed" config --local tag.gpgsign false
   git -C "$case_dir/_seed" -c user.email=t@t -c user.name=t \
     commit -q --allow-empty -m "origin baseline"
   git -C "$case_dir/_seed" push -q origin main
   rm -rf "$case_dir/_seed"
   # Clone as the project; give it a `main` branch and an origin/HEAD.
   git clone -q "$case_dir/origin.git" "$case_dir/project"
+  git -C "$case_dir/project" config --local commit.gpgsign false
+  git -C "$case_dir/project" config --local tag.gpgsign false
   git -C "$case_dir/project" remote set-head origin main 2>/dev/null || true
   # Add a worktree on a fresh task branch; that branch is where the crewmate
   # commits. Defaults to the fm/<task-id> shape; a caller passes a tracker-supplied
@@ -203,6 +209,8 @@ wt_commit() {
 add_fork_with_pushed_branch() {
   local case_dir=$1
   git init -q --bare "$case_dir/fork.git"
+  git -C "$case_dir/fork.git" config --local commit.gpgsign false
+  git -C "$case_dir/fork.git" config --local tag.gpgsign false
   git -C "$case_dir/project" remote add fork "$case_dir/fork.git"
   # Push the task branch from the worktree to the fork, then fetch into project
   # so refs/remotes/fork/fm-task-x1 is visible from the worktree (shared object db).
@@ -228,6 +236,8 @@ land_on_origin_main() {
   local case_dir=$1 file=$2 content=$3 tmp
   tmp="$case_dir/_land"
   git clone -q "$case_dir/origin.git" "$tmp"
+  git -C "$tmp" config --local commit.gpgsign false
+  git -C "$tmp" config --local tag.gpgsign false
   printf '%s\n' "$content" > "$tmp/$file"
   git -C "$tmp" add -- "$file"
   git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "squash $file"
@@ -416,6 +426,8 @@ land_equivalent_patch_on_origin_branch() {
   local case_dir=$1 branch=$2 file=$3 content=$4 msg=$5 tmp
   tmp="$case_dir/_equiv"
   git clone -q "$case_dir/origin.git" "$tmp"
+  git -C "$tmp" config --local commit.gpgsign false
+  git -C "$tmp" config --local tag.gpgsign false
   printf '%s\n' "$content" > "$tmp/$file"
   git -C "$tmp" add -- "$file"
   git -C "$tmp" -c user.email=t@t -c user.name=t commit -q -m "$msg"
@@ -660,6 +672,8 @@ add_gate_store() {
   gate_repo="$case_dir/.no-mistakes/repos/gate.git"
   mkdir -p "$(dirname "$gate_repo")"
   git clone -q --bare "$case_dir/origin.git" "$gate_repo"
+  git -C "$gate_repo" config --local commit.gpgsign false
+  git -C "$gate_repo" config --local tag.gpgsign false
   git -C "$case_dir/project" remote add no-mistakes "$gate_repo"
   printf '%s\n' "$gate_repo"
 }
@@ -1743,6 +1757,8 @@ test_non_linked_index_lock_path_is_checked_from_worktree() {
   case_dir=$(make_case non-linked-index-lock)
   git -C "$case_dir/project" worktree remove --force "$case_dir/wt"
   git clone -q "$case_dir/origin.git" "$case_dir/wt"
+  git -C "$case_dir/wt" config --local commit.gpgsign false
+  git -C "$case_dir/wt" config --local tag.gpgsign false
   git -C "$case_dir/wt" checkout -q -b fm/task-x1
   write_meta "$case_dir" no-mistakes ship
   wt_commit "$case_dir" "shippable normal clone work"

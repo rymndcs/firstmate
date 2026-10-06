@@ -16,6 +16,8 @@ ERR="$TMP_ROOT/err"
 mkdir -p "$PRIMARY/bin" "$STATE"
 printf '# fixture\n' > "$PRIMARY/AGENTS.md"
 git -C "$PRIMARY" init -q
+git -C "$PRIMARY" config --local commit.gpgsign false
+git -C "$PRIMARY" config --local tag.gpgsign false
 
 BRIEF_ONLY_ROUTE='first classify the work under the AGENTS.md intake contract, then use bin/fm-brief.sh followed by bin/fm-spawn.sh for dispatched work'
 SCOUT_ROUTE='first classify the work under the AGENTS.md intake contract: work already classified as a scout goes to bin/fm-scout.sh "<question>" [project], while authorized ship work and its bounded research go to bin/fm-brief.sh then bin/fm-spawn.sh'
@@ -198,6 +200,8 @@ test_task_worktree_and_non_firstmate_repo_are_inert() {
 
   mkdir -p "$plain/bin"
   git -C "$plain" init -q
+  git -C "$plain" config --local commit.gpgsign false
+  git -C "$plain" config --local tag.gpgsign false
   rc=0
   FM_ROOT_OVERRIDE="$plain" FM_HOME="$plain" FM_STATE_OVERRIDE="$plain/state" \
     "$CHECK" --claude --tool Agent > "$OUT" 2> "$ERR" || rc=$?

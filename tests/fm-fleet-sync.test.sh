@@ -60,15 +60,21 @@ build_pair() {
   mkdir -p "$home/remotes"
 
   git init -q "$work"
+  git -C "$work" config --local commit.gpgsign false
+  git -C "$work" config --local tag.gpgsign false
   git -C "$work" symbolic-ref HEAD refs/heads/main
   commit_file "$work" file.txt v0 C0
 
   git clone --quiet --bare "$work" "$remote"
+  git -C "$remote" config --local commit.gpgsign false
+  git -C "$remote" config --local tag.gpgsign false
   remote_abs=$(cd "$remote" && pwd)
   git -C "$work" remote add origin "file://$remote_abs"
   git -C "$work" push -q -u origin main
 
   git clone --quiet "file://$remote_abs" "$clone"
+  git -C "$clone" config --local commit.gpgsign false
+  git -C "$clone" config --local tag.gpgsign false
   printf '%s\n' "$clone"
 }
 
@@ -105,15 +111,21 @@ build_packed_prunable() {
   mkdir -p "$home/remotes"
 
   git init -q "$work"
+  git -C "$work" config --local commit.gpgsign false
+  git -C "$work" config --local tag.gpgsign false
   git -C "$work" symbolic-ref HEAD refs/heads/main
   commit_file "$work" file.txt v0 C0
   git clone --quiet --bare "$work" "$remote"
+  git -C "$remote" config --local commit.gpgsign false
+  git -C "$remote" config --local tag.gpgsign false
   remote_abs=$(cd "$remote" && pwd)
   git -C "$work" remote add origin "file://$remote_abs"
   git -C "$work" push -q -u origin main
   git -C "$work" push -q origin main:refs/heads/feature
 
   git clone --quiet "file://$remote_abs" "$clone"
+  git -C "$clone" config --local commit.gpgsign false
+  git -C "$clone" config --local tag.gpgsign false
   git -C "$clone" branch -q feature origin/feature
   commit_file "$work" file.txt v1 C1
   git -C "$work" push -q origin main
@@ -345,6 +357,8 @@ test_no_origin_skipped() {
   home=$(new_home)
   clone="$home/projects/theta"
   git init -q "$clone"
+  git -C "$clone" config --local commit.gpgsign false
+  git -C "$clone" config --local tag.gpgsign false
   git -C "$clone" symbolic-ref HEAD refs/heads/main
   commit_file "$clone" file.txt v0 C0
 

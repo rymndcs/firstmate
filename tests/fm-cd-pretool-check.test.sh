@@ -35,6 +35,8 @@ install_cd_scripts() {
 make_primary_fixture() {
   local dir=$1
   git init -q "$dir"
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   git -C "$dir" commit -q --allow-empty -m init
   : > "$dir/AGENTS.md"
   install_cd_scripts "$dir"
@@ -229,6 +231,8 @@ test_inert_when_not_firstmate_repo() {
   local dir out rc
   dir="$TMP_ROOT/not-firstmate"
   git init -q "$dir"
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   git -C "$dir" commit -q --allow-empty -m init
   install_cd_scripts "$dir"   # bin/ present but no AGENTS.md
   out=$("$dir/bin/fm-cd-pretool-check.sh" --claude --command 'cd projects/foo' 2>&1); rc=$?

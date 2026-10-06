@@ -132,6 +132,8 @@ make_primary_dir() {
   local dir=$1
   mkdir -p "$dir/state"
   git init -q "$dir"
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   git -C "$dir" commit -q --allow-empty -m init
   : > "$dir/AGENTS.md"
   install_guard_scripts "$dir"
@@ -819,6 +821,8 @@ test_codex_hook_ignores_nested_git_root_guard() {
   nested="$dir/projects/other"
   mkdir -p "$nested"
   git init -q "$nested"
+  git -C "$nested" config --local commit.gpgsign false
+  git -C "$nested" config --local tag.gpgsign false
   git -C "$nested" commit -q --allow-empty -m init
   mkdir -p "$nested/bin" "$nested/.codex"
   : > "$nested/AGENTS.md"
@@ -851,6 +855,8 @@ test_opencode_plugin_anchors_guard_to_worktree() {
   [ -f "$plugin" ] || fail "tracked OpenCode primary plugin is missing"
   parent="$TMP_ROOT/opencode-plugin-parent"
   git init -q "$parent"
+  git -C "$parent" config --local commit.gpgsign false
+  git -C "$parent" config --local tag.gpgsign false
   worktree_dir="$parent/nested/opencode-plugin-worktree"
   wrong_dir="$TMP_ROOT/opencode-plugin-cwd/subdir"
   mkdir -p "$worktree_dir/bin" "$wrong_dir"

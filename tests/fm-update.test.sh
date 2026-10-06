@@ -41,8 +41,12 @@ new_world() {
   touch "$w/home/state/.last-watcher-beat"
 
   git init -q --bare "$w/origin.git"
+  git -C "$w/origin.git" config --local commit.gpgsign false
+  git -C "$w/origin.git" config --local tag.gpgsign false
   git -C "$w/origin.git" symbolic-ref HEAD refs/heads/main
   git clone -q "$w/origin.git" "$w/seed" 2>/dev/null
+  git -C "$w/seed" config --local commit.gpgsign false
+  git -C "$w/seed" config --local tag.gpgsign false
 
   printf 'v1\n' > "$w/seed/CLAUDE.md"
   ln -s CLAUDE.md "$w/seed/AGENTS.md"
@@ -55,6 +59,8 @@ new_world() {
   git -C "$w/seed" push -q origin main
 
   git clone -q "$w/origin.git" "$w/main"
+  git -C "$w/main" config --local commit.gpgsign false
+  git -C "$w/main" config --local tag.gpgsign false
   git -C "$w/main" remote set-head origin main >/dev/null 2>&1 || true
 
   printf '%s\n' "$w"
@@ -277,6 +283,8 @@ test_unsafe_secondmate_home_skipped_before_git_update() {
   bad="$w/home/projects/bad"
   mkdir -p "$w/home/projects"
   git clone -q "$w/origin.git" "$bad"
+  git -C "$bad" config --local commit.gpgsign false
+  git -C "$bad" config --local tag.gpgsign false
   printf 'bad\n' > "$bad/.fm-secondmate-home"
   before=$(git -C "$bad" rev-parse HEAD)
   printf -- '- bad - bad home (home: %s; scope: x; projects: p; added 2026-06-23)\n' \

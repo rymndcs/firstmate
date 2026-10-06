@@ -111,6 +111,8 @@ test_local_links_and_no_keyword_heuristic() {
   local repo="$TMP_ROOT/fixture"
   mkdir -p "$repo/docs"
   git -C "$repo" init -q
+  git -C "$repo" config --local commit.gpgsign false
+  git -C "$repo" config --local tag.gpgsign false
   printf '%s\n' '[Setup](docs/setup.md) [Policy](docs/policy.md)' > "$repo/README.md"
   printf '%s\n' '# Setup' > "$repo/docs/setup.md"
   printf '%s\n' '# Policy' > "$repo/docs/policy.md"

@@ -42,6 +42,8 @@ mkdir -p "$LAB"
 # git clone of this worktree carries only committed state, so copy the
 # working-tree surfaces under test (same pattern as the continuity live E2E).
 git clone -q "$ROOT" "$PROJECT"
+git -C "$PROJECT" config --local commit.gpgsign false
+git -C "$PROJECT" config --local tag.gpgsign false
 cp -R "$ROOT/bin/." "$PROJECT/bin/"
 cp "$ROOT/.claude/settings.json" "$PROJECT/.claude/settings.json"
 # The lab keeps the real tracked .claude/settings.json SessionStart nudge,

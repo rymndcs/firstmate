@@ -68,6 +68,8 @@ trap cleanup EXIT
 
 mkdir -p "$LAB"
 git clone -q "$ROOT" "$PROJECT"
+git -C "$PROJECT" config --local commit.gpgsign false
+git -C "$PROJECT" config --local tag.gpgsign false
 cp "$ROOT/bin/fm-watch-arm.sh" "$PROJECT/bin/fm-watch-arm.sh"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/config"
 printf 'project=fixture\n' > "$HOME_DIR/state/grok-e2e.meta"
