@@ -22,9 +22,9 @@
 # writes that text, placeholders filled for this task, to data/<task-id>/ship-review.md
 # and the printed ship instructions tell the crewmate to follow it before reporting
 # done, exactly as a ship brief would carry it (bin/fm-ship-review-lib.sh owns the
-# substitution; docs/configuration.md "Ship review step" owns the file). An
-# unreadable file refuses before the meta changes. Without the file the output is
-# unchanged.
+# substitution and shared round-boundary text; docs/configuration.md "Ship
+# review step" owns the file). Every promotion writes the round boundaries even
+# without a configured step. An unreadable config refuses before the meta changes.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch <name>]
 set -eu
 
@@ -117,11 +117,17 @@ case "$REVIEW_STATUS" in
   *) exit 1 ;;
 esac
 REVIEW_FILE="$DATA/$ID/ship-review.md"
-REVIEW_STEP=
+mkdir -p "$DATA/$ID"
+{
+  fm_ship_review_round_boundaries
+  if [ "$REVIEW_STATUS" -eq 0 ]; then
+    printf '\n%s\n' "$REVIEW_TEXT"
+  fi
+} > "$REVIEW_FILE"
 if [ "$REVIEW_STATUS" -eq 0 ]; then
-  mkdir -p "$DATA/$ID"
-  printf '%s\n' "$REVIEW_TEXT" > "$REVIEW_FILE"
   REVIEW_STEP="; then follow the review step in $REVIEW_FILE before reporting done"
+else
+  REVIEW_STEP="; then follow the review round boundaries in $REVIEW_FILE before reporting done"
 fi
 
 TMP="$META.tmp"

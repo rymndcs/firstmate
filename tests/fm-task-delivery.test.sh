@@ -288,7 +288,7 @@ test_promote_requires_and_records_the_delivery_contract() {
 
 # A promoted scout ships like any other ship task, so a home's configured review
 # step reaches it too: written beside the task and named in the ship instructions.
-# A home without it promotes exactly as before.
+# An unconfigured home still delivers the independent round-boundary contract.
 test_promote_carries_the_configured_review_step() {
   local home bare out review
   home="$TMP_ROOT/promote-review/home"
@@ -308,9 +308,40 @@ test_promote_carries_the_configured_review_step() {
 
   out=$(FM_HOME="$bare" FM_STATE_OVERRIDE="$bare/state" "$PROMOTE" promote-r1 --mode local-only --yolo off 2>&1) \
     || fail "promotion without a review step failed: $out"
-  assert_absent "$bare/data/promote-r1/ship-review.md" "a home with no review config still got a review step"
+  assert_grep '# Review round boundaries' "$bare/data/promote-r1/ship-review.md" "an unconfigured promotion omitted the boundary contract"
+  assert_no_grep 'Review fm/promote-r1' "$bare/data/promote-r1/ship-review.md" "an unconfigured promotion included a configured review step"
   assert_not_contains "$out" "review step" "a home with no review config still named a review step"
   pass "fm-promote: a promoted scout carries the home's configured review step"
+}
+
+test_promote_shares_review_boundaries_with_brief() {
+  local home mode review id out file brief promoted_boundary brief_boundary
+  home="$TMP_ROOT/promote-boundary/home"
+  mkdir -p "$home/state" "$home/config"
+  for mode in local-only direct-PR no-mistakes; do
+    for review in claude codex unconfigured; do
+      id="promote-boundary-$mode-$review"
+      if [ "$review" = unconfigured ]; then
+        rm -f "$home/config/ship-review.md"
+      else
+        printf '# Review step\nRun the %s review loop.\n' "$review" > "$home/config/ship-review.md"
+      fi
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" --checks targeted >/dev/null 2>&1 \
+        || fail "ship boundary scaffold failed for $mode/$review"
+      printf 'kind=scout\nworktree=/tmp/wt\n' > "$home/state/$id.meta"
+      out=$(FM_HOME="$home" "$PROMOTE" "$id" --mode "$mode" --yolo off 2>&1) \
+        || fail "boundary promotion failed for $mode/$review: $out"
+      file="$home/data/$id/ship-review.md"
+      brief="$home/data/$id/brief.md"
+      assert_grep '# Review round boundaries' "$file" "promotion omitted round boundaries for $mode/$review"
+      assert_grep 'Stop at every review round boundary that leaves a P1/P2 open' "$file" "promotion omitted the stop rule"
+      assert_contains "$out" "$file before reporting done" "promotion did not route the worker to its boundary contract"
+      promoted_boundary=$(awk '/^# Review round boundaries$/{copy=1} copy && /^# Review step$/{exit} copy {print}' "$file")
+      brief_boundary=$(awk '/^# Review round boundaries$/{copy=1} copy && /^# Review step$/{exit} copy {print}' "$brief")
+      [ "$promoted_boundary" = "$brief_boundary" ] || fail "promotion and briefing delivered different round boundary contracts"
+    done
+  done
+  pass "fm-promote: configured and unconfigured ships share the brief's round boundary contract"
 }
 
 # A review config that exists but cannot be read must stop the promotion with the
@@ -445,6 +476,7 @@ test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
 test_promote_carries_the_configured_review_step
+test_promote_shares_review_boundaries_with_brief
 test_promote_refuses_an_unreadable_review_step
 test_spawn_records_only_a_supplied_branch
 test_promote_records_only_a_supplied_branch

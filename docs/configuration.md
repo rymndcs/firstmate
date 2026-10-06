@@ -321,7 +321,8 @@ Both files are optional, local, and gitignored, and each works on its own.
 When it exists, `bin/fm-brief.sh` appends its text to the end of every ship brief it scaffolds, and `bin/fm-promote.sh` writes it to `data/<id>/ship-review.md` and names that file in the printed ship instructions, so a promoted scout carries the same step.
 The placeholders `{TASK_ID}`, `{BRANCH}`, and `{STATUS_FILE}` are filled for each task at scaffold time.
 Scout briefs and secondmate charters never carry it.
-An absent file leaves every scaffold unchanged; a path that exists but cannot be read stops the scaffold or promotion before anything is written.
+The independent review-round boundary text owned by `bin/fm-ship-review-lib.sh` reaches both ship paths even when this file is absent.
+A configured path that exists but cannot be read stops the scaffold or promotion before anything is written.
 
 `config/ship-review-gate` makes landing depend on the review having run.
 When its first line is `required`, both landing paths, `bin/fm-merge-local.sh` and `bin/fm-pr-merge.sh`, refuse a task unless the latest `review:` line in its status log reads `review: passed <reviewed commit> <absolute report path>`, the reviewed commit's full sha is still the head being landed, and that report is a non-empty file, and the refusal says exactly which of those is missing.

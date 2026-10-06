@@ -9,7 +9,9 @@
 # Review text: when <config>/ship-review.md exists, its contents are appended to
 # every ship brief and written beside a promoted scout's instructions. Three
 # placeholders are replaced at scaffold time: {TASK_ID}, {BRANCH}, and
-# {STATUS_FILE} (the task's absolute status-file path). No file, no change.
+# {STATUS_FILE} (the task's absolute status-file path). Absent config omits that step.
+# fm_ship_review_round_boundaries owns the independent round-boundary text that
+# both callers deliver to every ship, with or without a configured review step.
 #
 # Landing gate: when the first line of <config>/ship-review-gate is `required`,
 # landing a task refuses unless the LAST line of state/<id>.status whose verb is
@@ -35,6 +37,20 @@
 # that fails leaves no entry. The recorded line is echoed on stderr as
 # `SHIP REVIEW OVERRIDE:`; a write that still fails after landing is reported
 # loudly on stderr rather than undoing the landing.
+
+fm_ship_review_round_boundaries() {
+  cat <<'ROUNDS'
+# Review round boundaries
+Stop at every review round boundary that leaves a P1/P2 open, instead of starting the fix round.
+This applies to both Claude and Codex review paths and overrides any automatic fix-round instruction in the configured review step below.
+Commit everything on the task branch, then write a plain-language round summary in a file on that branch: what the task is for; each round's findings and fixes; each open finding's likelihood, who it hurts and how badly, and what fixing it costs; the next round's cost; and an honest view on continuing.
+Explain each problem so the captain understands it at a glance, using screenshots of the real screen for UI issues (before and after where applicable), otherwise a concrete example of input and wrong result or a small diagram.
+Save images next to the summary and link them by path.
+Commit the summary too, append `needs-decision: [key=review-round-<N>] summary at <path>` to the status file, and stop.
+Use the actual round number and absolute summary path.
+Never start the next fix round until firstmate returns the decision; the worker never decides continuation itself.
+ROUNDS
+}
 
 fm_ship_review_config_dir() {
   printf '%s\n' "${FM_CONFIG_OVERRIDE:-${FM_HOME:?FM_HOME must be set}/config}"
