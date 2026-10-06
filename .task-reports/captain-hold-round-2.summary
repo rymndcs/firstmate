@@ -1,0 +1,73 @@
+Captain hold: review round 2 - decision required
+
+Purpose
+Keep the context-size reminder visible by stopping automatic Claude turns until the captain explicitly dismisses the hold or starts a new session.
+An ordinary reply keeps the hold active; queued events must remain available after release.
+
+Work preserved and decisions followed
+The initial implementation is committed as 4adbf41; its round-1 summary is committed as 0561492.
+Firstmate authorized both round-1 fixes, red tests first, every valid continuation branch covered, and no stronger shared coordination without a decision.
+The fixer made those bounded changes, committed as 23840ad: canonical operational-message classification and final hold checks after output preparation and cleanup.
+No new coordinating state or locks were added.
+Six affected suites pass, and all eight mutations were caught.
+No remote push, PR, merge, delivery pipeline, global configuration change or third review round was performed.
+The branch is not ready to land.
+
+Round history
+Round 1 found two problems: automated routed messages received captain reminders, and holds appearing during response preparation could still allow automatic turns.
+The authorized fix round added nineteen regression cases, including eighteen controlled timing cases, with failing-before-fix and passing-after-fix evidence.
+Round 2 independently reviewed the full branch, reran all six suites, confirmed all nineteen cases fail against pre-fix production, and caught all eight deliberately broken variants.
+It confirmed the routed-message correction, reopened the delivery-race finding, and found a separate warning-consumption defect.
+No fixes were made during round 2.
+
+Closed finding - automated routed messages
+The original routed-message example now produces no captain-only reminder.
+Ordinary captain replies still receive the reminder and retain the hold.
+Reviewer result: R1-1 held, P2 closed.
+
+Open finding 1 - a hold during final cleanup can still allow an automatic turn
+Concrete sequence: the hook prepares its response and checks that no hold exists; while it finishes normal cleanup, the context reminder sets the hold; the hook still returns the result that starts another automatic turn.
+Expected: silent success while held, leaving the reminder visible.
+Actual reproduced result: the hold exists, the wake banner has been emitted, and the hook returns exit 2 rather than 0.
+Likelihood: a narrow timing overlap, not every reminder; reproduced deterministically at a real cleanup command boundary without waits.
+Who it hurts: the captain, because an automatic turn can bury the reminder despite the hold being active before the hook finishes.
+Severity: moderate; it defeats the core requested behavior, but does not lose queued events.
+Reviewer result: R1-2 reopened, P2.
+The final checks fixed the original preparation windows, but cannot guarantee that the hold and the automatic-turn decision remain synchronized through completion.
+Simply moving cleanup or adding another isolated check is not proven sufficient and could let two handlers overlap.
+Fix cost: a coordination design and proof are estimated at 30-60 minutes before implementation; implementation and review cost cannot be responsibly fixed until a mechanism is selected.
+This is the exact stronger-coordination boundary firstmate told the fixer not to cross without a decision.
+Options: explicitly accept the remaining narrow race and the weaker guarantee, or authorize a bounded coordination proposal and reproduction proof before more implementation.
+No broader design has been attempted.
+
+Open finding 2 - a hidden terminal warning is marked as already delivered
+Concrete sequence: automatic supervision reaches its terminal failure warning; the warning's suppression marker is written; a hold arrives during cleanup and hides the warning; the captain dismisses the hold; later worker events still do not produce actionable wake messages because the marker says the warning was already delivered.
+Expected: suppressing an undelivered warning must not consume it or leave later actionable delivery suppressed after dismissal.
+Actual reproduced result: the held turn prints nothing but retains the alarm; after dismissal, three events accumulate in the queue with no actionable auto-arm output, while the guard repeatedly prints repair messages.
+A positively verified healthy watcher eventually clears the alarm.
+The same probe against pre-fix code delivers the terminal warning, confirming that this is a regression in the new suppression path.
+Likelihood: only when a verified supervision failure overlaps a late hold; reproducible every time under that controlled sequence, not an ordinary healthy-home hold.
+Who it hurts: the captain and unattended work, through a hidden failure warning and delayed actionable notifications until recovery or intervention.
+Severity: moderate; queued event data survives, but automatic delivery is suppressed.
+Reviewer result: R2-1 new, P2; bin/fm-turnend-guard.sh:381.
+Fix cost: likely 15-30 minutes for existing failure-state handling plus a release-sequence regression, followed by roughly 8-15 minutes of independent review.
+The correction should avoid consuming an undelivered warning; if it needs stronger shared coordination, that tradeoff must be raised before implementation.
+
+Next round and recommendation
+Do not land the branch as satisfying the original strict hold guarantee while these two findings remain open.
+Recommend authorizing the warning-consumption correction and separately deciding whether to accept the narrow delivery race or request a bounded coordination proposal.
+Repeating isolated final-check patches without deciding the delivery guarantee would not resolve the reopened class.
+A warning-fix-and-review round is estimated at 25-45 minutes; a stronger coordination proposal would add its separate 30-60 minute design/proof estimate, with implementation still to be scoped.
+These are estimates, not guarantees.
+No fixer or third reviewer has been launched.
+
+Verification and evidence for resuming
+PASS: auto-arm, turn-end guard, operational-input, session-start, sessionstart-nudge and durable wake-queue suites; independent run total=6 failed=0 skipped_gate=0.
+PASS: nineteen independent pre-fix red checks, eight killed mutations with zero survivors, restored-file hashes, pinned ShellCheck, Bash syntax, whitespace and documentation-audience checks.
+NOT RUN: full suite, live Claude integration, delivery pipeline, remote operations or another round, under the targeted local-only contract.
+Current reviewed implementation: 23840ad1fc799f6daad31b59a5cec207ff4e6882.
+Detailed report: adv-review-loop/captain-hold-round-2-result.md under this worktree's git directory.
+Reproduction scripts retained there: captain-hold-round-2-evidence/exit-cleanup-repro.sh and captain-hold-round-2-evidence/alarm-release-repro.sh.
+The first uses a new fixture-only rm that sets the hold when normal EXIT cleanup releases the auto-arm owner; expected 0, actual 2 with hold=yes and banner=yes.
+The second seeds a verified exhausted failure, sets the hold during terminal cleanup, clears it through the public command, then runs three actionable auto-arm/guard cycles; queue counts grow 1, 2, 3 with alarm=yes and no actionable output.
+Neither reproduction modifies production files or waits for time.
