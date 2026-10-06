@@ -346,6 +346,15 @@ worker_read_text() { # <job-dir> <field> <max>
 }
 
 worker_publish_result() { # <job-dir> <exit>
+  local rc
+  worker_directories_exist || exit 0
+  worker_write_result "$@" && return 0
+  rc=$?
+  worker_directories_exist || exit 0
+  return "$rc"
+}
+
+worker_write_result() { # <job-dir> <exit>
   local job=$1 exit_status=$2 tmp
   case "$exit_status" in ''|*[!0-9]*) exit_status=125 ;; esac
   [ "$exit_status" -le 255 ] || exit_status=125
@@ -542,10 +551,21 @@ worker_run_job() { # <account-home> <job-dir>
     worker_publish_result "$job" 124
     return
   }
+  if ! worker_directories_exist; then
+    worker_cleanup_output_capture "$job" "$stdout_reader" "$stderr_reader"
+    exit 0
+  fi
   set +e
   worker_run_with_timeout "$job" "$remaining" "${child_env[@]}" \
     "$command_path" "${argv[@]:1}" < "$job/stdin" > "$stdout_pipe" 2> "$stderr_pipe"
   rc=$?
+  while worker_process_or_group_alive process "$stdout_reader" || worker_process_or_group_alive process "$stderr_reader"; do
+    if ! worker_directories_exist; then
+      worker_cleanup_output_capture "$job" "$stdout_reader" "$stderr_reader"
+      exit 0
+    fi
+    sleep "$FM_REMOTE_JOB_POLL_SECONDS"
+  done
   wait "$stdout_reader"
   wait "$stderr_reader"
   rm -f -- "$stdout_pipe" "$stderr_pipe"
