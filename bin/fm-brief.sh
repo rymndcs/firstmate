@@ -94,7 +94,8 @@
 # brief ends with that file's text, placeholders filled for this task
 # (bin/fm-ship-review-lib.sh owns the substitution; docs/configuration.md "Ship
 # review step" owns the file). Scout and secondmate scaffolds never carry it, and
-# without the file a ship brief is unchanged.
+# every ship carries the generated review-round boundary contract, even without
+# that file.
 #
 # Standing knowledge at the intake moment: scaffolding a ship or scout brief is
 # where a task is defined, tiered and scoped, so before the scaffold is written
@@ -569,6 +570,21 @@ CHECKS_SECTION=${CHECKS_SECTION%$'\n'}
 # briefs stay byte-identical to the historical Bash 5 output.
 DOD=${DOD%$'\n'}
 
+IFS= read -r -d '' REVIEW_BOUNDARY <<'ROUNDS' || true
+
+
+# Review round boundaries
+Stop at every review round boundary that leaves a P1/P2 open, instead of starting the fix round.
+This applies to both Claude and Codex review paths and overrides any automatic fix-round instruction in the configured review step below.
+Commit everything on the task branch, then write a plain-language round summary in a file on that branch: what the task is for; each round's findings and fixes; each open finding's likelihood, who it hurts and how badly, and what fixing it costs; the next round's cost; and an honest view on continuing.
+Explain each problem so the captain understands it at a glance, using screenshots of the real screen for UI issues (before and after where applicable), otherwise a concrete example of input and wrong result or a small diagram.
+Save images next to the summary and link them by path.
+Commit the summary too, append `needs-decision: [key=review-round-<N>] summary at <path>` to the status file, and stop.
+Use the actual round number and absolute summary path.
+Never start the next fix round until firstmate returns the decision; the worker never decides continuation itself.
+ROUNDS
+REVIEW_BOUNDARY=${REVIEW_BOUNDARY%$'\n'}
+
 # The home's configured review step closes every ship brief. Read it before the
 # brief is written so an unreadable file stops the scaffold with nothing on disk.
 REVIEW_STATUS=0
@@ -630,6 +646,6 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $CHECKS_SECTION
 
-$DOD$REVIEW_SECTION
+$DOD$REVIEW_BOUNDARY$REVIEW_SECTION
 EOF
 echo "scaffolded: $BRIEF (ship, mode=$MODE, checks=$CHECKS; replace {TASK})"

@@ -1005,8 +1005,39 @@ test_ship_review_step_is_appended_only_when_configured() {
   pass "fm-brief.sh: the configured ship review step closes every ship brief and nothing else"
 }
 
+test_ship_review_round_boundaries() {
+  local home mode path review
+  home="$TMP_ROOT/round-home"
+  mkdir -p "$home/data" "$home/config"
+  for review in claude codex unconfigured; do
+    if [ "$review" != unconfigured ]; then
+      printf '# Review step\nRun the %s review loop.\n' "$review" > "$home/config/ship-review.md"
+    else
+      rm -f "$home/config/ship-review.md"
+    fi
+    for mode in local-only direct-PR no-mistakes; do
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "round-$review-$mode" some-proj --mode "$mode" --checks targeted >/dev/null 2>&1 \
+        || fail "round scaffold failed for $review/$mode"
+      path="$home/data/round-$review-$mode/brief.md"
+      assert_grep 'Stop at every review round boundary that leaves a P1/P2 open' "$path" "missing round stop for $review/$mode"
+      assert_grep 'Commit everything on the task branch' "$path" "missing committed boundary"
+      assert_grep "each open finding's likelihood, who it hurts and how badly, and what fixing it costs" "$path" "missing finding consequence summary"
+      assert_grep 'needs-decision: [key=review-round-<N>] summary at <path>' "$path" "missing keyed review-round decision"
+      assert_grep 'screenshots of the real screen for UI issues (before and after where applicable)' "$path" "missing UI evidence aid"
+      assert_grep 'concrete example of input and wrong result or a small diagram' "$path" "missing non-UI evidence aid"
+      assert_grep 'Save images next to the summary and link them by path' "$path" "missing local image links"
+      assert_grep 'Claude and Codex' "$path" "boundary does not cover both review paths"
+      assert_grep 'Never start the next fix round until firstmate returns the decision' "$path" "missing continuation authority"
+    done
+  done
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" round-scout some-proj --scout >/dev/null 2>&1 || fail "round scout failed"
+  assert_no_grep '# Review round boundaries' "$home/data/round-scout/brief.md" "scout got ship review boundary"
+  pass "fm-brief.sh: every ship path stops for a decision at open review boundaries"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
+test_ship_review_round_boundaries
 test_ship_review_step_is_appended_only_when_configured
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
