@@ -14,6 +14,8 @@
 # record is marked done only after its bounded outputs and numeric exit status
 # have been committed. The library header owns the exact record fields and
 # lifecycle.
+# After startup, missing code or state directories end the worker and its Linux
+# supervisor without recreating state, including while a command is active.
 set -u
 
 SCRIPT_DIR=$(CDPATH='' cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -29,6 +31,10 @@ WORKER_RELEASE_OWNERSHIP=1
 WORKER_SUPERVISED_PID=
 
 worker_error() { printf 'remote-job-worker: %s\n' "$1" >&2; }
+
+worker_directories_exist() {
+  [ -d "$FM_ROOT" ] && [ -d "$FM_REMOTE_JOB_STATE" ]
+}
 
 worker_account_home() {
   local home=${HOME:-}
@@ -408,6 +414,12 @@ worker_run_with_timeout() { # <job-dir> <seconds> <command> [args...]
   deadline=$((SECONDS + timeout))
   next_heartbeat=$((SECONDS + 1))
   while worker_process_or_group_alive group "$group_pid"; do
+    if ! worker_directories_exist; then
+      worker_signal_process_or_group group TERM "$group_pid"
+      worker_signal_process_or_group group KILL "$group_pid"
+      heartbeat_failed=1
+      break
+    fi
     if [ "$SECONDS" -ge "$deadline" ]; then
       worker_signal_process_or_group group TERM "$group_pid"
       worker_signal_process_or_group group KILL "$group_pid"
@@ -538,6 +550,7 @@ worker_run_job() { # <account-home> <job-dir>
   wait "$stderr_reader"
   rm -f -- "$stdout_pipe" "$stderr_pipe"
   set -e
+  worker_directories_exist || exit 0
   worker_publish_result "$job" "$rc" || worker_error "could not publish result for ${job##*/}"
 }
 
@@ -592,6 +605,7 @@ main() {
   FM_ROOT=$(fm_remote_job_canonical_existing_dir "$FM_ROOT") || { worker_error "configured FM_ROOT is unsafe"; exit 1; }
   [ -f "$FM_ROOT/CLAUDE.md" ] && [ ! -L "$FM_ROOT/CLAUDE.md" ] || { worker_error "FM_ROOT is not a Firstmate checkout"; exit 1; }
   fm_remote_job_prepare_state "$account_home" || { worker_error "$FM_REMOTE_JOB_ERROR"; exit 1; }
+  FM_REMOTE_JOB_CREATE_STATE=0
   WORKER_LOCK=$(fm_remote_job_worker_lock_path)
   trap worker_exit_cleanup EXIT
   worker_acquire_lock "$account_home"
@@ -606,7 +620,12 @@ main() {
   worker_publish_identity "$account_home" || { worker_error "cannot publish worker code identity"; exit 1; }
   worker_publish_pid || { worker_error "cannot publish worker pid"; exit 1; }
   while :; do
-    worker_write_heartbeat || { worker_error "cannot update worker heartbeat"; exit 1; }
+    worker_directories_exist || exit 0
+    worker_write_heartbeat || {
+      worker_directories_exist || exit 0
+      worker_error "cannot update worker heartbeat"
+      exit 1
+    }
     worker_reap=0
     if [ "$worker_reap" -eq 0 ]; then
       fm_remote_job_reap_stale "$account_home" || true
@@ -652,12 +671,18 @@ worker_supervise_linux() {
   FM_ROOT=$(fm_remote_job_canonical_existing_dir "$FM_ROOT") || { worker_error "configured FM_ROOT is unsafe"; return 1; }
   [ -f "$FM_ROOT/CLAUDE.md" ] && [ ! -L "$FM_ROOT/CLAUDE.md" ] || { worker_error "FM_ROOT is not a Firstmate checkout"; return 1; }
   fm_remote_job_prepare_state "$account_home" || { worker_error "$FM_REMOTE_JOB_ERROR"; return 1; }
+  FM_REMOTE_JOB_CREATE_STATE=0
   trap worker_supervisor_shutdown HUP INT TERM
   while :; do
+    worker_directories_exist || return 0
     "$SCRIPT_DIR/fm-remote-job-worker.sh" --serve &
     WORKER_SUPERVISED_PID=$!
     wait "$WORKER_SUPERVISED_PID" 2>/dev/null
     child_status=$?
+    if ! worker_directories_exist; then
+      WORKER_SUPERVISED_PID=
+      return 0
+    fi
     if [ "$child_status" -eq 0 ]; then
       WORKER_SUPERVISED_PID=
       return 0
@@ -675,6 +700,7 @@ worker_supervise_linux() {
 case "${1:-}" in
   --serve)
     [ "$#" -eq 1 ] || { worker_error "unexpected worker arguments"; exit 2; }
+    FM_REMOTE_JOB_CREATE_STATE=0
     main
     ;;
   '')

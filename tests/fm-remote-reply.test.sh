@@ -12,12 +12,15 @@ mkdir -p "$TMP_ROOT"
 # the current directory and the EXIT trap below would rm -rf this checkout.
 [ -n "$TMP_ROOT" ] || exit 1
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
+# shellcheck source=tests/remote-job-helpers.sh
+. "$ROOT/tests/remote-job-helpers.sh"
+fm_test_remote_job_init "$TMP_ROOT" || exit 1
 PARENT="$TMP_ROOT/parent"
 REMOTE="$TMP_ROOT/remote"
 FAKEBIN=$(fm_fakebin "$TMP_ROOT/fake")
 CLAIMS="$TMP_ROOT/claims"
 mkdir -p "$PARENT/data" "$PARENT/state" "$REMOTE/state" "$REMOTE/data/reply" "$CLAIMS"
-trap 'FM_HOME="$PARENT" FM_PROCEVENT_CLAIM_ROOT="$CLAIMS" "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true; if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+trap 'FM_HOME="$PARENT" FM_PROCEVENT_CLAIM_ROOT="$CLAIMS" "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true; fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"' EXIT
 
 cat > "$PARENT/data/secondmates.md" <<EOF
 - ios - iOS delivery (host: remote-mac; root: $ROOT; home: $REMOTE; scope: iOS work; projects: alpha; added 2026-08-02)

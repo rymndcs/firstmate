@@ -20,10 +20,13 @@ mkdir -p "$TMP_ROOT"
 # the current directory and the EXIT trap below would rm -rf this checkout.
 [ -n "$TMP_ROOT" ] || exit 1
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
+# shellcheck source=tests/remote-job-helpers.sh
+. "$ROOT/tests/remote-job-helpers.sh"
+fm_test_remote_job_init "$TMP_ROOT" || exit 1
 JOB_LABEL=dev.firstmate.remote-job
 CASE_N=0
 DOCTOR_WORKER_PID=
-trap 'if [ -n "$DOCTOR_WORKER_PID" ]; then kill "$DOCTOR_WORKER_PID" 2>/dev/null || true; fi; fm_test_cleanup || true' EXIT
+trap 'fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"' EXIT
 
 # A fixture must be able to present a host with NO herdr, so the doctor never
 # sees the runner's own PATH. Only the two required tools are re-exposed, by
@@ -32,7 +35,7 @@ TOOLS="$TMP_ROOT/tools"
 mkdir -p "$TOOLS"
 ln -sf "$(command -v git)" "$TOOLS/git"
 ln -sf "$(command -v jq)" "$TOOLS/jq"
-BASE_PATH="$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin"
+BASE_PATH="$FM_TEST_REMOTE_JOB_BIN:$TOOLS:/usr/bin:/bin:/usr/sbin:/sbin"
 
 # new_case <Darwin|Linux> [with-herdr] [gui]
 # Builds one isolated account fixture and points the module-level CASE_*
@@ -571,7 +574,7 @@ for tool in herdr tasks-axi treehouse claude; do
   ln -s "$CASE_BIN/$tool" "$CASE_HOME/.local/bin/$tool"
 done
 HOME="$CASE_HOME" FM_ROOT_OVERRIDE="$ROOT" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
-  "$ROOT/bin/fm-remote-job-worker.sh" > "$CASE_STATE/worker.out" 2> "$CASE_STATE/worker.err" &
+  "$FM_TEST_REMOTE_JOB_LAUNCH" "$ROOT/bin/fm-remote-job-worker.sh" > "$CASE_STATE/worker.out" 2> "$CASE_STATE/worker.err" &
 DOCTOR_WORKER_PID=$!
 for _ in $(seq 1 100); do
   [ -f "$CASE_HOME/.firstmate/remote-job/worker.ready" ] && break

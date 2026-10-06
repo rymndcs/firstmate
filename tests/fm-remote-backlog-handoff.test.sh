@@ -13,6 +13,9 @@ mkdir -p "$TMP_ROOT"
 # the current directory and the EXIT trap below would rm -rf this checkout.
 [ -n "$TMP_ROOT" ] || exit 1
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
+# shellcheck source=tests/remote-job-helpers.sh
+. "$ROOT/tests/remote-job-helpers.sh"
+fm_test_remote_job_init "$TMP_ROOT" || exit 1
 PARENT="$TMP_ROOT/parent"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE="$TMP_ROOT/remote"
@@ -24,16 +27,8 @@ mkdir -p "$PARENT/data" "$PARENT/state" "$REMOTE_ROOT/bin" \
 # for it to actually exit before removing the tree: otherwise rm races the worker
 # and fails with "Directory not empty", failing a run whose assertions all passed.
 cleanup() {
-  local worker_pid='' wait_attempt=0
   touch "$TMP_ROOT/put.release" "$TMP_ROOT/route.release" 2>/dev/null || true
-  if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then
-    worker_pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid")
-    kill "$worker_pid" 2>/dev/null || true
-    while kill -0 "$worker_pid" 2>/dev/null && [ "$wait_attempt" -lt 100 ]; do
-      wait_attempt=$((wait_attempt + 1))
-      sleep 0.05
-    done
-  fi
+  fm_test_remote_job_cleanup || exit 1
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup EXIT

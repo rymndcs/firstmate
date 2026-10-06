@@ -25,6 +25,9 @@ mkdir -p "$TMP_ROOT"
 # the current directory and the EXIT trap below would rm -rf this checkout.
 [ -n "$TMP_ROOT" ] || exit 1
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
+# shellcheck source=tests/remote-job-helpers.sh
+. "$ROOT/tests/remote-job-helpers.sh"
+fm_test_remote_job_init "$TMP_ROOT" || exit 1
 PARENT="$TMP_ROOT/parent"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
@@ -36,7 +39,7 @@ TMUX_LOG="$TMP_ROOT/remote-tmux.log"
 TMUX_STATE="$TMP_ROOT/remote-tmux.state"
 CLAIMS="$TMP_ROOT/claims"
 mkdir -p "$PARENT/data" "$PARENT/state" "$PARENT/config" "$PARENT/projects" "$REMOTE_ROOT" "$CLAIMS"
-trap 'FM_HOME="$PARENT" FM_PROCEVENT_CLAIM_ROOT="$CLAIMS" "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true; if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+trap 'FM_HOME="$PARENT" FM_PROCEVENT_CLAIM_ROOT="$CLAIMS" "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true; fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"' EXIT
 
 # The remote host's tracked code root is this branch, as a real git repository:
 # fm-on and the remote entrypoint both require the dispatched command to be
