@@ -155,6 +155,7 @@ test_no_profile_keeps_claude_profile_defaults() {
   launch=$(cat "$LAUNCH_LOG")
   expected="CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false claude --dangerously-skip-permissions \"\$('${ROOT}/bin/fm-operational-input.sh' encode launch-brief < '$HOME_DIR/data/$id/brief.md')\""
   [ "$launch" = "$expected" ] || fail "no-profile claude launch did not use the canonical launch kind"$'\n'"expected: $expected"$'\n'"actual:   $launch"
+  assert_not_contains "$launch" "notice." "non-Codex launch must not receive Codex notice overrides"
   pass "no --model/--effort records defaults and types the claude launch instructions"
 }
 
@@ -419,7 +420,9 @@ test_codex_threads_model_and_effort() {
   launch=$(cat "$LAUNCH_LOG")
   assert_contains "$launch" "codex --model 'gpt-5' -c 'model_reasoning_effort=\"high\"' --dangerously-bypass-approvals-and-sandbox" \
     "codex launch did not thread model and reasoning effort config"
-  pass "codex receives --model and model_reasoning_effort profile flags"
+  assert_contains "$launch" "-c notice.hide_rate_limit_model_nudge=true" \
+    "Codex crewmate launch must suppress the rate-limit model switch reminder"
+  pass "codex receives model, effort, and rate-limit reminder config"
 }
 
 test_codex_omits_invalid_max_effort() {
@@ -680,7 +683,7 @@ test_non_claude_harness_ignores_config_dir() {
 }
 
 test_active_dispatch_profile_does_not_block_secondmate_launch() {
-  local rec id sm out status
+  local rec id sm out status launch
   id=profile-secondmate-z16
   rec=$(make_spawn_case profile-secondmate codex "$id")
   read_case_record "$rec"
@@ -694,7 +697,10 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
   assert_contains "$out" "spawned $id harness=codex kind=secondmate" "secondmate launch did not use secondmate harness resolution"
   assert_grep "kind=secondmate" "$HOME_DIR/state/$id.meta" "secondmate meta missing kind=secondmate"
   assert_meta_profile "$HOME_DIR/state/$id.meta" codex default default
-  pass "active crew-dispatch profile does not block secondmate launches"
+  launch=$(cat "$LAUNCH_LOG")
+  assert_contains "$launch" "-c notice.hide_rate_limit_model_nudge=true" \
+    "Codex secondmate launch must suppress the rate-limit model switch reminder"
+  pass "active crew-dispatch profile does not block secondmate launches or their rate-limit reminder config"
 }
 
 test_no_profile_keeps_claude_profile_defaults

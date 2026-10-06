@@ -229,6 +229,9 @@ Claude Code's primary watcher protocol is Stop-owned: the auto-arm hook fires on
 | Interrupt | single Escape |
 | Skill invocation | `$<skill>` (e.g. `$no-mistakes`); `/<skill>` is claude-only and codex rejects it as "Unrecognized command" |
 
+The built-in Codex crewmate and secondmate launch templates suppress only the rate-limit model switch reminder with `-c notice.hide_rate_limit_model_nudge=true`, preventing it from capturing an automated steer and changing the chosen model.
+Other notices remain enabled, and the captain's global Codex config is untouched; `bin/fm-spawn.sh --help` owns the launch flags.
+
 A `$<skill>` invocation opens a `$`-autocomplete (skill) popup, the same hazard as the `/` slash popup: submitting too fast lets the popup swallow the Enter, so the invocation never lands.
 `fm-send` handles it the same way it handles `/` - it gives the popup a longer settle (1.2s) between typing and the first Enter, with the target backend's submit retry as the safety net - but the `$` settle is scoped to `harness=codex`, read from the target metadata for exact task ids or legacy `fm-<id>` labels.
 That scope matters because, unlike `/`, a leading `$` commonly starts ordinary text (`$5/month`, `$HOME`), so a universal `$` rule would needlessly slow plain steers to claude/opencode/pi; only a codex target receiving a `$...` message gets the popup-settle.
