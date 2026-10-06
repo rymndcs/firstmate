@@ -11,8 +11,10 @@
 # never reuse another task's directory. No previous files are removed.
 # --in must be a readable regular file in a subdirectory of that review root.
 # Symlink inputs are refused. --out must be a NEW file next to the input;
-# default: round-<N>-<role>.out. Both runtime streams go there, including errors.
-# A role failure or empty output returns nonzero and names the output file.
+# default: round-<N>-<role>.out, containing only the actual role reply.
+# Runtime diagnostics go to <out>.diagnostics; Claude JSON to <out>.runtime.json.
+# All evidence files must be NEW. A failed or blank reply returns nonzero and
+# names the preserved output and diagnostics.
 #
 # Compose ~/.claude/agents/adv-<role>.md, two newlines, "# This round", and the
 # input. Round input supplies target, local merge-base, round, final-round flag,
@@ -48,7 +50,9 @@ mkdir -p "$REVIEW_ROOT"
 REVIEW_ROOT=$(cd "$REVIEW_ROOT" && pwd -P)
 
 if [ -z "$ROLE" ]; then
-  case "$TASK_ID" in ''|*[!a-zA-Z0-9_-]*) die 'task id must contain only letters, digits, dash, or underscore' ;; esac
+  # shellcheck source=bin/fm-pr-lib.sh
+  . "$(dirname "${BASH_SOURCE[0]}")/fm-pr-lib.sh"
+  fm_task_id_creation_valid "$TASK_ID" || die 'task id must be a supported path-safe task id (at most 64 characters)'
   mktemp -d "$REVIEW_ROOT/$TASK_ID.XXXXXX"
   exit 0
 fi
@@ -82,18 +86,39 @@ TODAY=$(date +%F) || die 'could not read local date'
 [[ "$TODAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "invalid local date: $TODAY"
 if [[ "$TODAY" > "$CAPTAIN_REVIEW_CODEX_THROUGH" ]]; then
   RUNTIME=claude
-  COMMAND=(claude -p --model "$CAPTAIN_REVIEW_CLAUDE_MODEL" --dangerously-skip-permissions -- "$PROMPT")
+  command -v jq >/dev/null 2>&1 || die 'jq is required to extract the Claude role reply'
+  COMMAND=(claude -p --output-format json --model "$CAPTAIN_REVIEW_CLAUDE_MODEL" --dangerously-skip-permissions -- "$PROMPT")
 else
   RUNTIME=codex
-  COMMAND=(codex exec --model "$CAPTAIN_REVIEW_CODEX_MODEL" -c "model_reasoning_effort=\"$CAPTAIN_REVIEW_CODEX_REASONING\"" --dangerously-bypass-approvals-and-sandbox -- "$PROMPT")
+  COMMAND=(codex exec --output-last-message "$OUTPUT" --model "$CAPTAIN_REVIEW_CODEX_MODEL" -c "model_reasoning_effort=\"$CAPTAIN_REVIEW_CODEX_REASONING\"" --dangerously-bypass-approvals-and-sandbox -- "$PROMPT")
 fi
 command -v "$RUNTIME" >/dev/null 2>&1 || die "required runtime is unavailable: $RUNTIME"
-(set -o noclobber; : > "$OUTPUT") || die "cannot create fresh output: $OUTPUT"
+DIAGNOSTICS="$OUTPUT.diagnostics"
+EVIDENCE=("$OUTPUT" "$DIAGNOSTICS")
+if [ "$RUNTIME" = claude ]; then
+  RAW_OUTPUT="$OUTPUT.runtime.json"
+  EVIDENCE+=("$RAW_OUTPUT")
+fi
+for file in "${EVIDENCE[@]}"; do
+  [ ! -e "$file" ] && [ ! -L "$file" ] || die "evidence must be a new file: $file"
+done
+for file in "${EVIDENCE[@]}"; do
+  (set -o noclobber; : > "$file") || die "cannot create fresh evidence: $file"
+done
 RC=0
-"${COMMAND[@]}" > "$OUTPUT" 2>&1 || RC=$?
+if [ "$RUNTIME" = codex ]; then
+  "${COMMAND[@]}" > "$DIAGNOSTICS" 2>&1 || RC=$?
+else
+  "${COMMAND[@]}" > "$RAW_OUTPUT" 2> "$DIAGNOSTICS" || RC=$?
+fi
 if [ "$RC" -ne 0 ]; then
-  printf 'fm-review-round.sh: %s round %s failed (%s exit %s); read %s\n' "$ROLE" "$ROUND" "$RUNTIME" "$RC" "$OUTPUT" >&2
+  printf 'fm-review-round.sh: %s round %s failed (%s exit %s); reply %s; diagnostics %s\n' "$ROLE" "$ROUND" "$RUNTIME" "$RC" "$OUTPUT" "$DIAGNOSTICS" >&2
   exit "$RC"
 fi
-[ -s "$OUTPUT" ] || die "$ROLE round $ROUND produced empty output; read $OUTPUT"
+if [ "$RUNTIME" = claude ]; then
+  jq -er 'select(.type == "result" and .is_error == false) | .result | select(type == "string")' \
+    "$RAW_OUTPUT" > "$OUTPUT" 2>> "$DIAGNOSTICS" \
+    || die "$ROLE round $ROUND produced no valid role reply; raw response $RAW_OUTPUT; diagnostics $DIAGNOSTICS"
+fi
+grep -q '[^[:space:]]' "$OUTPUT" || die "$ROLE round $ROUND produced an empty or whitespace-only role reply; reply $OUTPUT; diagnostics $DIAGNOSTICS"
 printf '%s\n' "$OUTPUT"

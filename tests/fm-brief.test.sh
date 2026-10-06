@@ -964,6 +964,9 @@ test_ship_review_step_is_appended_only_when_configured() {
   printf '%s\n' '# Review step' \
     'Review {BRANCH} for {TASK_ID}; then append `review: passed <report>` to {STATUS_FILE}.' \
     '   `claude -p --model opus --dangerously-skip-permissions "/adv-review-loop {BRANCH} firstmate"`' \
+    "Before launching \`claude -p /adv-review-loop\`, run the required unit tests." \
+    'Before launching claude -p /adv-review-loop, ask for approval and run all required tests.' \
+    'claude -p "/adv-review-loop main firstmate"; then run the required tests and ask for approval.' \
     'Literal & and \\ survive.' > "$home/config/ship-review.md"
 
   id="brief-review-r1"
@@ -975,11 +978,19 @@ test_ship_review_step_is_appended_only_when_configured() {
   assert_grep 'Literal & and \\ survive.' "$brief" "the review text's literal characters were altered"
   assert_grep 'fm-review-round.sh' "$brief" 'the brief did not carry the bundled launcher'
   assert_grep '--init brief-review-r1' "$brief" 'the brief did not initialize fresh task files'
+  assert_grep "HANDOFF_OUT=\"\$REVIEW_DIR/round-\$N-handoff.md\"" "$brief" 'missing task-specific new handoff destination'
+  assert_grep 'Write the new handoff ONLY to that path; this overrides shared-root handoff paths in the role definition.' "$brief" 'missing binding handoff path override'
+  assert_grep 'Include that absolute destination in every fixer input' "$brief" 'missing fixer-input handoff destination requirement'
+  assert_grep "it must be a NEW file in this task's review directory." "$brief" 'handoff destination could reuse another round or task file'
+
   assert_grep "reviewer --round \"\$N\" --in \"\$ROUND_IN\"" "$brief" 'missing reviewer invocation'
   assert_grep "fixer --round \"\$N\" --in \"\$ROUND_IN\"" "$brief" 'missing fixer invocation'
   assert_grep 'full ledger' "$brief" 'missing round-input contract'
   assert_grep 'final round' "$brief" 'missing final-round contract'
-  assert_no_grep 'claude -p' "$brief" 'the brief still contains a raw Claude review launch'
+  assert_no_grep '   `claude -p --model opus --dangerously-skip-permissions' "$brief" 'the standalone legacy command was retained'
+  assert_grep "Before launching \`claude -p /adv-review-loop\`, run the required unit tests." "$brief" 'mixed policy prose with unit-test requirement was deleted'
+  assert_grep 'Before launching claude -p /adv-review-loop, ask for approval and run all required tests.' "$brief" 'mixed policy approval/test rules were deleted'
+  assert_grep 'claude -p "/adv-review-loop main firstmate"; then run the required tests and ask for approval.' "$brief" 'command-leading policy/test prose was deleted'
   [ "$(tail -1 "$brief")" = 'Literal & and \\ survive.' ] \
     || fail "the review step does not close the ship brief"
 

@@ -297,6 +297,9 @@ test_promote_carries_the_configured_review_step() {
   printf 'window=fm-promote-r1\nkind=scout\nworktree=/tmp/wt\n' > "$home/state/promote-r1.meta"
   printf 'window=fm-promote-r1\nkind=scout\nworktree=/tmp/wt\n' > "$bare/state/promote-r1.meta"
   printf '%s\n' 'Review {BRANCH} for {TASK_ID}, then log to {STATUS_FILE}.' \
+    "Before launching \`claude -p /adv-review-loop\`, run the required unit tests." \
+    'Before launching claude -p /adv-review-loop, ask for approval and run all required tests.' \
+    'claude -p "/adv-review-loop main firstmate"; then run the required tests and ask for approval.' \
     'claude -p --model opus "/adv-review-loop {BRANCH} firstmate"' > "$home/config/ship-review.md"
 
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-r1 --mode local-only --yolo off 2>&1) \
@@ -308,7 +311,15 @@ test_promote_carries_the_configured_review_step() {
     "the promoted ship instructions did not name the review step"
   assert_grep 'fm-review-round.sh' "$review" 'promotion omitted the role launcher'
   assert_grep '--init promote-r1' "$review" 'promotion omitted fresh task files'
-  assert_no_grep 'claude -p' "$review" 'promotion retained the legacy raw launch'
+  assert_grep "HANDOFF_OUT=\"\$REVIEW_DIR/round-\$N-handoff.md\"" "$review" 'missing task-specific new handoff destination'
+  assert_grep 'Write the new handoff ONLY to that path; this overrides shared-root handoff paths in the role definition.' "$review" 'missing binding handoff path override'
+  assert_grep 'Include that absolute destination in every fixer input' "$review" 'missing fixer-input handoff destination requirement'
+  assert_grep "it must be a NEW file in this task's review directory." "$review" 'handoff destination could reuse another round or task file'
+
+  assert_no_grep 'claude -p --model opus' "$review" 'promotion retained the standalone legacy command'
+  assert_grep "Before launching \`claude -p /adv-review-loop\`, run the required unit tests." "$review" 'promotion deleted mixed policy prose with unit-test requirement'
+  assert_grep 'Before launching claude -p /adv-review-loop, ask for approval and run all required tests.' "$review" 'promotion deleted mixed policy approval/test rules'
+  assert_grep 'claude -p "/adv-review-loop main firstmate"; then run the required tests and ask for approval.' "$review" 'command-leading policy/test prose was deleted'
 
   out=$(FM_HOME="$bare" FM_STATE_OVERRIDE="$bare/state" "$PROMOTE" promote-r1 --mode local-only --yolo off 2>&1) \
     || fail "promotion without a review step failed: $out"

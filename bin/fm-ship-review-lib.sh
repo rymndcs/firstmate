@@ -11,7 +11,7 @@
 # placeholders are replaced at scaffold time: {TASK_ID}, {BRANCH}, and
 # {STATUS_FILE} (the task's absolute status-file path). Absent config omits that step.
 # Configured review text includes the bundled role-launch instructions; legacy
-# single-line `claude -p ... /adv-review-loop` commands become launcher pointers.
+# standalone legacy `claude -p ... /adv-review-loop` commands become launcher pointers.
 # Review policy and outcome instructions in the configured text are preserved.
 # fm_ship_review_round_boundaries owns the independent round-boundary text that
 # both callers deliver to every ship, with or without a configured review step.
@@ -70,6 +70,8 @@ Keep the ledger and final report at \`REPORT="\$REVIEW_DIR/report.md"\`; do not 
 Write a new round input in \`\$REVIEW_DIR\` for each role: target branch, local merge-base, round number, final-round flag, full ledger, approved findings to fix (fixer only), and previous handoff note path.
 Set \`N\` and \`ROUND_IN\` to that round number and input path, then run \`"\$REVIEW_LAUNCHER" reviewer --round "\$N" --in "\$ROUND_IN"\` and wait for it to exit.
 Read the output path it prints; a nonzero exit is a failed review, so report the failure and stop.
+For each approved fixer round, set \`HANDOFF_OUT="\$REVIEW_DIR/round-\$N-handoff.md"\`; it must be a NEW file in this task's review directory.
+Include that absolute destination in every fixer input with the instruction: Write the new handoff ONLY to that path; this overrides shared-root handoff paths in the role definition.
 After firstmate approves a fix round, use a fresh fixer input and run \`"\$REVIEW_LAUNCHER" fixer --round "\$N" --in "\$ROUND_IN"\`, then re-review the complete diff with a fresh reviewer.
 The launcher owns the dated runtime/model selection and safe prompt passing; \`"\$REVIEW_LAUNCHER" --help\` owns its exact interface.
 A Claude worker may run \`/adv-review-loop\` itself when the selected review runtime is Claude, while preserving these task-directory and round-boundary rules.
@@ -86,7 +88,7 @@ fm_ship_review_config_dir() {
 # Print the substituted review text for a ship task. Returns 1 when the home has
 # no review text configured, 2 when the file exists but cannot be read.
 fm_ship_review_text() {  # <task-id> <branch> <status-file>
-  local id=$1 branch=$2 status_file=$3 file text line
+  local id=$1 branch=$2 status_file=$3 file text line command_line legacy_command
   file="$(fm_ship_review_config_dir)/ship-review.md"
   [ -e "$file" ] || [ -L "$file" ] || return 1
   if [ ! -f "$file" ] || [ ! -r "$file" ]; then
@@ -100,8 +102,14 @@ fm_ship_review_text() {  # <task-id> <branch> <status-file>
   text=${text//"{STATUS_FILE}"/"$status_file"}
   fm_ship_review_launcher_text "$id" "$branch" "$status_file"
   printf '\n'
+  legacy_command="^claude[[:space:]]+-p([[:space:]]+(--model[[:space:]]+[A-Za-z0-9._/-]+|--dangerously-skip-permissions))*[[:space:]]+(\"/adv-review-loop([[:space:]]+[A-Za-z0-9._/-]+){0,2}\"|'/adv-review-loop([[:space:]]+[A-Za-z0-9._/-]+){0,2}'|/adv-review-loop)$"
   while IFS= read -r line; do
-    if [[ "$line" == *'claude -p'* && "$line" == *'/adv-review-loop'* ]]; then
+    command_line=${line#"${line%%[![:space:]]*}"}
+    command_line=${command_line%"${command_line##*[![:space:]]}"}
+    case "$command_line" in
+      \`*\`) command_line=${command_line#\`}; command_line=${command_line%\`} ;;
+    esac
+    if [[ "$command_line" =~ $legacy_command ]]; then
       printf '%s\n' 'Use the bundled review role launcher above for this invocation.'
     else
       printf '%s\n' "$line"
