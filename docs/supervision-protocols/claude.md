@@ -35,4 +35,5 @@ Only an explicit dismissal authorizes `bin/fm-captain-hold.sh clear`; `bin/fm-se
 Do not manually arm supervision or take automatic wake turns while held.
 Events continue to accumulate in the durable wake queue; neither setting the hold nor suppressing a rewake consumes them, and the normal drain delivers them after release.
 `bin/fm-captain-hold.sh --help` owns the marker-management commands and its script header owns the one-line reason and timestamp format.
+For the terminal failure warning contract, see [`turnend-guard.md`](../turnend-guard.md).
 The global context reminder hook is wired separately by the operator.

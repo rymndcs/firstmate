@@ -68,9 +68,12 @@ In Claude mode, positive watcher recovery clears the block budget, failure notic
 The one loud attended fail-open is available only when the auto-arm has recorded an exhausted failure, its one notice is already consumed, the block budget is exhausted, and a final check finds neither a healthy watcher nor an automatic continuation.
 Each epoch identity is accounted at most once under the budget lock.
 Whenever both coordination locks are needed, positive auto-arm recovery and the terminal check acquire the auto-arm owner lock before the budget lock.
-After successful alarm output, the Stop auto-arm suppresses further exit-2 continuations until positive watcher recovery, so the final fail-open remains reachable.
-An alarm suppressed by a captain hold or rejected by stdout is not consumed, so dismissal or a successful output retry can still deliver it and queued actionable wakes remain eligible for continuation.
-The alarm cannot repeat during that failure episode, and a later unhealthy stop blocks again.
+The terminal check exclusively claims the once-only alarm under the existing owner and budget locks before writing its warning.
+The Stop auto-arm then suppresses further exit-2 continuations until positive watcher recovery, so the final fail-open remains reachable.
+A captain hold suppresses automatic turns, but an eligible terminal supervision-failure warning still uses this same once-only path.
+A held Stop reads the existing block budget without advancing it and never emits a warning for an unverified failure or a budget that has not already been exhausted.
+The alarm remains claimed even if stdout rejects the warning, preserving the original once-only ownership and allow semantics without exit cleanup removing a later episode's alarm.
+The alarm cannot repeat during that failure episode; a later unhealthy stop blocks again unless a captain hold allows it.
 A positively verified healthy watcher clears the failure notice, alarm, and block budget for a future independent episode.
 A Claude failure notice describes the automatic mechanism as broken and does not direct a routine manual background arm.
 

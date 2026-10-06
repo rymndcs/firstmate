@@ -123,7 +123,6 @@ fi
 # checkout has the two equal. Child worktrees never carry the gitignored marker,
 # so this exempts them while guarding every real secondmate home.
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
-[ "$CLAUDE_MODE" -eq 0 ] || [ ! -e "$STATE/.captain-hold" ] || exit 0
 
 # --- the actual predicate ----------------------------------------------------
 # shellcheck source=bin/fm-wake-lib.sh
@@ -150,11 +149,13 @@ continue_stop() {
 
 fm_supervision_status "$STATE" "$GRACE"
 if [ "$FM_SUP_NEEDED" = false ]; then
+  [ "$CLAUDE_MODE" -eq 0 ] || [ ! -e "$STATE/.captain-hold" ] || exit 0
   [ -e "$FAILURE_NOTICE" ] || budget_reset
   exit 0
 fi
 if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
   [ "$CLAUDE_MODE" -eq 1 ] || exit 0
+  [ ! -e "$STATE/.captain-hold" ] || exit 0
   fm_failure_episode_reset "$STATE" && exit 0
   continue_stop
 fi
@@ -330,7 +331,6 @@ terminal_fail_open() {
     fm_lock_release "$OWNER_LOCK"
     return 1
   fi
-  trap 'rm -f "$FAILURE_ALARM" 2>/dev/null || true' EXIT
   fm_lock_release "$BUDGET_LOCK"
   fm_lock_release "$OWNER_LOCK"
   return 0
@@ -349,7 +349,7 @@ failure_episode_verified() {
 
 i=0
 while [ "$i" -lt $((SYNC_WAIT_MS / 100)) ]; do
-  [ ! -e "$STATE/.captain-hold" ] || exit 0
+  [ ! -e "$STATE/.captain-hold" ] || break
   if autoarm_owns_recovery; then
     if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
       fm_failure_episode_reset "$STATE" || continue_stop
@@ -359,7 +359,7 @@ while [ "$i" -lt $((SYNC_WAIT_MS / 100)) ]; do
   sleep 0.1
   i=$((i + 1))
 done
-if autoarm_owns_recovery; then
+if [ ! -e "$STATE/.captain-hold" ] && autoarm_owns_recovery; then
   if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
     fm_failure_episode_reset "$STATE" || continue_stop
   fi
@@ -368,7 +368,12 @@ fi
 
 # The auto-arm genuinely failed to establish: consume the bounded re-block
 # budget before considering the verified one-time attended fail-open.
-budget_account_current_epoch || block_stop
+if [ -e "$STATE/.captain-hold" ]; then
+  COUNT=$(sed -n '2s/^count=//p' "$BUDGET_FILE" 2>/dev/null || true)
+  case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
+else
+  budget_account_current_epoch || block_stop
+fi
 terminal_fail_open
 terminal_status=$?
 if [ "$terminal_status" -eq 0 ]; then
@@ -379,9 +384,7 @@ if [ "$terminal_status" -eq 0 ]; then
   else
     NEED_DESC="X-mode relay polling active"
   fi
-  [ ! -e "$STATE/.captain-hold" ] || exit 0
-  printf '{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: %s, the Stop-owned auto-arm exhausted its bounded retries and one failure notice, no watcher or automatic continuation exists, and the block budget is exhausted. Keep this session attended and diagnose the automatic Stop-hook and watcher startup before relying on unattended supervision."}\n' "$NEED_DESC" || exit "$?"
-  trap - EXIT
+  printf '{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: %s, the Stop-owned auto-arm exhausted its bounded retries and one failure notice, no watcher or automatic continuation exists, and the block budget is exhausted. Keep this session attended and diagnose the automatic Stop-hook and watcher startup before relying on unattended supervision."}\n' "$NEED_DESC"
   exit 0
 fi
 [ "$terminal_status" -eq 2 ] && exit 0

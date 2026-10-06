@@ -1,0 +1,60 @@
+Captain hold terminal warning decision - 2026-10-06
+
+Binding captain decision
+Hold suppresses automatic wake turns only.
+Do not hide the terminal supervision-failure warning during hold.
+Restore the existing once-only terminal warning ownership and stdout behavior; remove the R2-1 suppression/rollback machinery instead of adding coordination.
+The runtime contract is owned by docs/turnend-guard.md; docs/supervision-protocols/claude.md points there.
+
+Current ledger
+R1-1: held; canonical routed operational classification retained.
+R1-2: accepted by captain on 2026-10-06; narrow final EXIT cleanup-window race remains accepted, no coordination authorized, do not re-raise.
+R2-1: dissolved under the revised warning contract; warning suppression and compensating rollback removed.
+R3-1: dissolved by removal of that rollback; no ownership-token patch or new coordination.
+The round-2, R2-1 fix and round-3 summaries are historical evidence and explicitly point to this decision.
+
+Cause and structural correction
+Applying hold to diagnostic stdout created a consumed-but-hidden warning; invocation-local rollback of the shared alarm pathname then allowed an old handler to remove a newer episode's alarm.
+The fix removes both the suppression and rollback, so no handler cleans up an alarm pathname after releasing ownership.
+Held entry reads the existing budget without incrementing it and uses the same verified terminal check as unheld entry.
+The original notice, failed epoch, matching session, exhausted budget, owner-before-budget locks, live-owner exclusion, final watcher recheck and exclusive alarm claim remain intact.
+No state, ownership tokens or coordination are added.
+Removed state: terminal EXIT rollback and successful-output disarm.
+Local main and pre-rollback 77190d9 retain an alarm claim if stdout fails and return 0 after the attempted output; the revised implementation restores that exact behavior.
+
+Red before production edit
+Starting production HEAD: 206ac23; branch fm/fm-captain-hold-marker; local-main merge-base 25dee3c5f94ed13f6e563a54f58da547135d6d84.
+Held-at-entry test failed: held-at-entry terminal warning was hidden.
+Late-hold test failed: late hold hid terminal warning.
+Closed-stdout test failed: stdout failure rolled back the original once-only claim.
+Both replacement-episode tests failed: old terminal cleanup deleted the replacement alarm.
+All five failures were intended behavioral assertions, not setup failures.
+
+Green and regression evidence
+Held-at-entry warning delivered once; subsequent held Stops silent 0; budget, marker and queue unchanged; no arm or exit-2 continuation; dismissal does not repeat the warning.
+Eligibility matrix passes: exact budget boundary, missing or malformed budget, mismatched session, missing notice/epoch, rewake epoch, away ownership, live auto-arm owner, budget contention, no supervision need and healthy watcher.
+Late hold delivers its warning once; positive recovery clears the failure episode.
+Closed stdout retains the original claim and allow semantics.
+Both original reviewer replacement-alarm reproductions retain the newer alarm and report duplicate_warning=no; the held outer output is delivered, and closed stdout is reported without rollback.
+Six selected suites run together: FM_TEST_SUMMARY total=6 failed=0 skipped_gate=0 duration_ms=185791.
+Command: bin/fm-test-run.sh tests/fm-claude-stop-autoarm.test.sh tests/fm-turnend-guard.test.sh tests/fm-operational-input.test.sh tests/fm-session-start.test.sh tests/fm-sessionstart-nudge.test.sh tests/fm-wake-queue.test.sh
+
+Mutation evidence
+Six meaningful fixture-copy mutations killed: entry suppression, terminal-output suppression, restored rollback/disarm/error machinery, held budget accounting, unsanitized held budget, post-output alarm deletion.
+No productive mutation survived; every copied mutant was restored, production was never mutated.
+An exploratory forged preliminary COUNT survived because the unchanged locked persisted-count verification independently rejects missing/malformed budgets; it is equivalent on that scenario and was replaced with an unsanitized-count mutation that the regression kills.
+An initial overly broad rollback mutation broke the nested reproduction setup and was not counted; the final mutation restores the full prior rollback/disarm behavior and fails specifically on replacement alarm deletion.
+
+Scope and artifacts
+All fakes and operational state used new temporary fixture homes; no real home mutation or real-time waits were added.
+No property/model suite exists for this behavior; existing deterministic sequences were extended.
+Full suite, pipeline, live-harness integration, startup, fleet mutations, status append, nested agents, branch changes, commit, remote operations and review were not run.
+Result and settled-decision handoff: captain-hold-fix-3-result.md and captain-hold-fix-3-handoff.md in the branch directory.
+Detailed red/green, original reproduction, mutation and check receipts: adv-review-loop/captain-hold-fix-3-evidence under this worktree's git directory.
+
+Final checks
+PASS: pinned ShellCheck 0.11.0 with zero diagnostics on all eight branch-changed shell/test roots.
+Command: bin/fm-lint.sh bin/fm-captain-hold-prompt.sh bin/fm-captain-hold.sh bin/fm-claude-stop-autoarm.sh bin/fm-session-start.sh bin/fm-turnend-guard.sh tests/fm-claude-stop-autoarm.test.sh tests/fm-session-start.test.sh tests/fm-turnend-guard.test.sh
+PASS: Bash syntax on those roots and local-main merge-base diff whitespace.
+PASS: bin/fm-doc-audience-check.sh - ok surfaces=71 local_links=211.
+Strip-comments applied; no Ruby changed, no new nonfunctional production comments.
