@@ -1619,3 +1619,110 @@ test_claude_captain_hold_allows_stop() {
   pass 'captain hold: Claude Stop allowed; other harnesses still guarded'
 }
 test_claude_captain_hold_allows_stop
+
+
+test_claude_captain_hold_late_repair() {
+  local mode=$1 dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/guard-hold-late-repair-$mode")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$dir/bin/"
+  : > "$dir/state/task.meta"
+  case "$mode" in
+    contention)
+      mkdir "$dir/state/.turnend-claude-blocks.lock"
+      printf '%s\n' "$$" > "$dir/state/.turnend-claude-blocks.lock/pid"
+      ;;
+    suppressed) seed_claude_failure "$dir" ;;
+    terminal)
+      seed_claude_failure "$dir"
+      seed_claude_budget "$dir" 3
+      : > "$dir/state/.claude-autoarm-failure-alarmed"
+      ;;
+  esac
+  cat > "$dir/bin/fm-supervision-instructions.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+"$FM_HOME/bin/fm-captain-hold.sh" set 'late hold during repair preparation'
+printf 'repair supervision\n'
+FIXTURE
+  chmod +x "$dir/bin/fm-supervision-instructions.sh"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  assert_present "$dir/state/.captain-hold" 'repair did not inject late hold'
+  expect_code 0 "$status" "$mode repair late hold must allow Stop"
+  [ -z "$out" ] || fail "$mode repair late hold leaked banner: $out"
+  pass "captain hold: Claude $mode repair preparation allows silent Stop"
+}
+
+test_claude_captain_hold_late_recovery() {
+  local mode=$1 dir identity out status
+  dir=$(make_primary_dir "$TMP_ROOT/guard-hold-late-recovery-$mode")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$dir/bin/"
+  : > "$dir/state/task.meta"
+  identity=$(watcher_identity "$dir" "$$") || fail 'could not identify test parent'
+  record_watcher_lock "$dir" "$$" "$identity"
+  touch "$dir/state/.last-watcher-beat"
+  if [ "$mode" != initial ]; then
+    mv "$dir/state/.watch.lock" "$dir/state/watcher-candidate"
+    mkdir "$dir/state/.claude-autoarm.lock"
+    printf '%s\n' "$$" > "$dir/state/.claude-autoarm.lock/pid"
+    printf 'autoarm\n' > "$dir/state/.claude-autoarm.lock/role"
+  fi
+  mkdir "$dir/latebin"
+  cat > "$dir/latebin/cat" <<'FIXTURE'
+#!/usr/bin/env bash
+if [ "${1:-}" = "$FM_HOME/state/.claude-autoarm.lock/pid" ] && [ -d "$FM_HOME/state/watcher-candidate" ]; then
+  mv "$FM_HOME/state/watcher-candidate" "$FM_HOME/state/.watch.lock"
+fi
+exec /bin/cat "$@"
+FIXTURE
+  cat > "$dir/latebin/rm" <<'FIXTURE'
+#!/usr/bin/env bash
+if [ "${1:-}" = -f ] && [ "${2:-}" = "$FM_HOME/state/.turnend-claude-blocks" ]; then
+  "$FM_HOME/bin/fm-captain-hold.sh" set 'late hold during failed recovery'
+  exit 1
+fi
+exec /bin/rm "$@"
+FIXTURE
+  chmod +x "$dir/latebin/"*
+  case "$mode" in
+    loop) out=$(PATH="$dir/latebin:$PATH" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$? ;;
+    *) out=$(PATH="$dir/latebin:$PATH" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$? ;;
+  esac
+  assert_present "$dir/state/.captain-hold" "$mode reset did not inject late hold"
+  expect_code 0 "$status" "$mode recovery late hold must allow Stop"
+  [ -z "$out" ] || fail "$mode recovery late hold leaked output: $out"
+  pass "captain hold: Claude $mode recovery failure allows silent Stop"
+}
+
+test_claude_captain_hold_late_terminal_output() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/guard-hold-late-terminal-output")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$dir/bin/"
+  : > "$dir/state/task.meta"
+  seed_claude_failure "$dir"
+  seed_claude_budget "$dir" 3
+  mkdir "$dir/latebin"
+  cat > "$dir/latebin/rm" <<'FIXTURE'
+#!/usr/bin/env bash
+if [ -e "$FM_HOME/state/.claude-autoarm-failure-alarmed" ] && [ ! -e "$FM_HOME/state/.captain-hold" ]; then
+  "$FM_HOME/bin/fm-captain-hold.sh" set 'late hold during final terminal repair'
+fi
+exec /bin/rm "$@"
+FIXTURE
+  chmod +x "$dir/latebin/rm"
+  out=$(PATH="$dir/latebin:$PATH" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  assert_present "$dir/state/.captain-hold" 'terminal cleanup did not inject late hold'
+  expect_code 0 "$status" 'terminal late hold must allow Stop'
+  [ -z "$out" ] || fail "terminal late hold leaked alarm: $out"
+  pass 'captain hold: final terminal cleanup suppresses alarm output'
+}
+
+test_claude_captain_hold_late_handoffs() {
+  local late_mode
+  for late_mode in ordinary contention suppressed terminal; do
+    test_claude_captain_hold_late_repair "$late_mode"
+  done
+  for late_mode in initial loop final; do
+    test_claude_captain_hold_late_recovery "$late_mode"
+  done
+  test_claude_captain_hold_late_terminal_output
+}
+test_claude_captain_hold_late_handoffs

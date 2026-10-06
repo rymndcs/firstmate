@@ -142,6 +142,12 @@ budget_reset() {
   fm_lock_release "$BUDGET_LOCK"
 }
 
+continue_stop() {
+  [ "$CLAUDE_MODE" -eq 0 ] || [ ! -e "$STATE/.captain-hold" ] || exit 0
+  [ -z "${1:-}" ] || printf '%s\n' "$1" >&2
+  exit 2
+}
+
 fm_supervision_status "$STATE" "$GRACE"
 if [ "$FM_SUP_NEEDED" = false ]; then
   [ -e "$FAILURE_NOTICE" ] || budget_reset
@@ -150,12 +156,12 @@ fi
 if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
   [ "$CLAUDE_MODE" -eq 1 ] || exit 0
   fm_failure_episode_reset "$STATE" && exit 0
-  exit 2
+  continue_stop
 fi
 
 block_stop() {
   [ "$CLAUDE_MODE" -eq 0 ] || [ ! -e "$STATE/.captain-hold" ] || exit 0
-  local afk x_mode reason rule
+  local afk x_mode reason rule banner
   afk=0
   [ -e "$STATE/.afk" ] && afk=1
   x_mode=0
@@ -163,7 +169,7 @@ block_stop() {
   reason=$("$SCRIPT_DIR/fm-supervision-instructions.sh" --afk "$afk" --x-mode "$x_mode" --repair-line 2>/dev/null \
     || printf '%s\n' 'tasks in flight, no live watcher - repair missing watcher supervision according to the session-start operating block before ending the turn')
   rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
-  {
+  banner=$(
     printf '●%s\n' "$rule"
     printf '●  TURN WOULD END BLIND - SUPERVISION IS OFF\n'
     if [ "$FM_SUP_IN_FLIGHT" -gt 0 ]; then
@@ -178,8 +184,8 @@ block_stop() {
     fi
     printf '●  %s\n' "$reason"
     printf '●%s\n' "$rule"
-  } >&2
-  exit 2
+  )
+  continue_stop "$banner"
 }
 
 if [ "$CLAUDE_MODE" -eq 0 ]; then
@@ -345,7 +351,7 @@ while [ "$i" -lt $((SYNC_WAIT_MS / 100)) ]; do
   [ ! -e "$STATE/.captain-hold" ] || exit 0
   if autoarm_owns_recovery; then
     if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
-      fm_failure_episode_reset "$STATE" || exit 2
+      fm_failure_episode_reset "$STATE" || continue_stop
     fi
     exit 0
   fi
@@ -354,7 +360,7 @@ while [ "$i" -lt $((SYNC_WAIT_MS / 100)) ]; do
 done
 if autoarm_owns_recovery; then
   if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
-    fm_failure_episode_reset "$STATE" || exit 2
+    fm_failure_episode_reset "$STATE" || continue_stop
   fi
   exit 0
 fi
@@ -372,6 +378,7 @@ if [ "$terminal_status" -eq 0 ]; then
   else
     NEED_DESC="X-mode relay polling active"
   fi
+  [ ! -e "$STATE/.captain-hold" ] || exit 0
   printf '{"systemMessage":"FIRSTMATE SUPERVISION IS GENUINELY DOWN: %s, the Stop-owned auto-arm exhausted its bounded retries and one failure notice, no watcher or automatic continuation exists, and the block budget is exhausted. Keep this session attended and diagnose the automatic Stop-hook and watcher startup before relying on unattended supervision."}\n' "$NEED_DESC"
   exit 0
 fi

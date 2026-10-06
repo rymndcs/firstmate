@@ -14,6 +14,7 @@ payload=$(cat 2>/dev/null) || exit 0
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 [ -e "$STATE/.captain-hold" ] || exit 0
 prompt=$(printf '%s' "$payload" | jq -er '.prompt | select(type == "string")' 2>/dev/null) || exit 0
+fm_operational_input_classify "$prompt" operational_kind && exit 0
 case "$prompt" in
   "$FM_OPERATIONAL_PREFIX"*|"$FM_INJECT_MARK"*) exit 0 ;;
 esac

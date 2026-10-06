@@ -222,6 +222,14 @@ if [ -e "$STATE/.captain-hold" ]; then
   exit 0
 fi
 
+handoff_rewake() {
+  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+  [ ! -e "$STATE/.captain-hold" ] || exit 0
+  [ "${2:-}" != notify ] || : > "$FAILURE_NOTICE" 2>/dev/null || true
+  [ -z "${1:-}" ] || printf '%s\n' "$1" >&2
+  exit 2
+}
+
 if [ "$HEALTHY" -eq 1 ]; then
   if fm_failure_episode_reset "$STATE"; then
     write_epoch clean
@@ -229,9 +237,11 @@ if [ "$HEALTHY" -eq 1 ]; then
     exit 0
   fi
   write_epoch failed-suppressed
-  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-  [ -e "$FAILURE_ALARM" ] && exit 0
-  exit 2
+  if [ -e "$FAILURE_ALARM" ]; then
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    exit 0
+  fi
+  handoff_rewake
 fi
 
 # After the synchronous guard has consumed the episode's attended fail-open,
@@ -244,13 +254,12 @@ fi
 
 if [ "$ACTIONABLE" -eq 1 ]; then
   write_epoch rewake
-  {
+  BANNER=$(
     printf 'firstmate watcher wake - one supervision event needs a handling turn now.\n'
     [ -n "$OUT" ] && grep -E '^(signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | head -8
     printf 'Run bin/fm-wake-drain.sh first and handle the wake. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.\n'
-  } >&2
-  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-  exit 2
+  )
+  handoff_rewake "$BANNER"
 fi
 
 # Notify only once for this continuous failure episode; every later invocation
@@ -258,15 +267,12 @@ fi
 # creating a repeated operator notice or manual-arm loop.
 if [ ! -e "$FAILURE_NOTICE" ]; then
   write_epoch failed
-  {
+  BANNER=$(
     printf 'firstmate watcher auto-arm FAILED - the Stop-owned automatic supervision mechanism is broken after %s bounded attempts, and no live watcher with a fresh beacon was verified.\n' "$attempt"
     [ -n "$OUT" ] && grep -E '^(watcher:|signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | head -8
     printf 'Do not launch a manual background arm from this notice; investigate the automatic Stop hook and watcher startup before ending blind.\n'
-  } >&2
-  : > "$FAILURE_NOTICE" 2>/dev/null || true
-  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-  exit 2
+  )
+  handoff_rewake "$BANNER" notify
 fi
 write_epoch failed-suppressed
-[ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-exit 2
+handoff_rewake
