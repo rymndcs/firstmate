@@ -296,7 +296,8 @@ test_promote_carries_the_configured_review_step() {
   mkdir -p "$home/state" "$home/config" "$bare/state"
   printf 'window=fm-promote-r1\nkind=scout\nworktree=/tmp/wt\n' > "$home/state/promote-r1.meta"
   printf 'window=fm-promote-r1\nkind=scout\nworktree=/tmp/wt\n' > "$bare/state/promote-r1.meta"
-  printf 'Review {BRANCH} for {TASK_ID}, then log to {STATUS_FILE}.\n' > "$home/config/ship-review.md"
+  printf '%s\n' 'Review {BRANCH} for {TASK_ID}, then log to {STATUS_FILE}.' \
+    'claude -p --model opus "/adv-review-loop {BRANCH} firstmate"' > "$home/config/ship-review.md"
 
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-r1 --mode local-only --yolo off 2>&1) \
     || fail "promotion with a review step configured failed: $out"
@@ -305,6 +306,9 @@ test_promote_carries_the_configured_review_step() {
     "promotion did not write the review step with its placeholders filled"
   assert_contains "$out" "follow the review step in $review before reporting done" \
     "the promoted ship instructions did not name the review step"
+  assert_grep 'fm-review-round.sh' "$review" 'promotion omitted the role launcher'
+  assert_grep '--init promote-r1' "$review" 'promotion omitted fresh task files'
+  assert_no_grep 'claude -p' "$review" 'promotion retained the legacy raw launch'
 
   out=$(FM_HOME="$bare" FM_STATE_OVERRIDE="$bare/state" "$PROMOTE" promote-r1 --mode local-only --yolo off 2>&1) \
     || fail "promotion without a review step failed: $out"
@@ -334,7 +338,7 @@ test_promote_shares_review_boundaries_with_brief() {
       file="$home/data/$id/ship-review.md"
       brief="$home/data/$id/brief.md"
       assert_grep '# Review round boundaries' "$file" "promotion omitted round boundaries for $mode/$review"
-      assert_grep 'Stop at every review round boundary that leaves a P1/P2 open' "$file" "promotion omitted the stop rule"
+      assert_grep 'Stop after every review with any finding, of any severity' "$file" "promotion omitted the stop rule"
       assert_contains "$out" "$file before reporting done" "promotion did not route the worker to its boundary contract"
       promoted_boundary=$(awk '/^# Review round boundaries$/{copy=1} copy && /^# Review step$/{exit} copy {print}' "$file")
       brief_boundary=$(awk '/^# Review round boundaries$/{copy=1} copy && /^# Review step$/{exit} copy {print}' "$brief")

@@ -318,7 +318,9 @@ Both files are optional, local, and gitignored, and each works on its own.
 [`bin/fm-ship-review-lib.sh`](../bin/fm-ship-review-lib.sh) is the single owner of the mechanics: placeholder substitution, the review-completion line format, the override, and its log.
 
 `config/ship-review.md` holds the review step as Markdown written to the worker.
-When it exists, `bin/fm-brief.sh` appends its text to the end of every ship brief it scaffolds, and `bin/fm-promote.sh` writes it to `data/<id>/ship-review.md` and names that file in the printed ship instructions, so a promoted scout carries the same step.
+When it exists, `bin/fm-brief.sh` appends its review policy with bundled role-launch instructions to every ship brief, and `bin/fm-promote.sh` writes the same instructions to `data/<id>/ship-review.md` and names that file in the printed ship instructions.
+[`bin/fm-review-round.sh`](../bin/fm-review-round.sh) owns fresh task review directories, one-process role launches, safe prompt passing, the dated captain runtime rule, and failure reporting; its header and `--help` own the interface.
+Legacy single-line `claude -p ... /adv-review-loop` launch commands in the private review configuration become pointers to that launcher in the generated instructions.
 The placeholders `{TASK_ID}`, `{BRANCH}`, and `{STATUS_FILE}` are filled for each task at scaffold time.
 Scout briefs and secondmate charters never carry it.
 The independent review-round boundary text owned by `bin/fm-ship-review-lib.sh` reaches both ship paths even when this file is absent.

@@ -91,7 +91,8 @@
 # Refuses to overwrite an existing brief.
 #
 # Ship review step: when this home configures config/ship-review.md, every ship
-# brief ends with that file's text, placeholders filled for this task
+# brief includes the bundled role launcher and that file's review policy,
+# placeholders filled for this task
 # (bin/fm-ship-review-lib.sh owns the substitution; docs/configuration.md "Ship
 # review step" owns the file). Scout and secondmate scaffolds never carry it, and
 # every ship carries the generated review-round boundary contract, even without

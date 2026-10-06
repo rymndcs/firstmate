@@ -10,6 +10,9 @@
 # every ship brief and written beside a promoted scout's instructions. Three
 # placeholders are replaced at scaffold time: {TASK_ID}, {BRANCH}, and
 # {STATUS_FILE} (the task's absolute status-file path). Absent config omits that step.
+# Configured review text includes the bundled role-launch instructions; legacy
+# single-line `claude -p ... /adv-review-loop` commands become launcher pointers.
+# Review policy and outcome instructions in the configured text are preserved.
 # fm_ship_review_round_boundaries owns the independent round-boundary text that
 # both callers deliver to every ship, with or without a configured review step.
 #
@@ -41,7 +44,7 @@
 fm_ship_review_round_boundaries() {
   cat <<'ROUNDS'
 # Review round boundaries
-Stop at every review round boundary that leaves a P1/P2 open, instead of starting the fix round.
+Stop after every review with any finding, of any severity, instead of starting the fix round.
 This applies to both Claude and Codex review paths and overrides any automatic fix-round instruction in the configured review step below.
 Commit everything on the task branch, then write a plain-language round summary in a file on that branch: what the task is for; each round's findings and fixes; each open finding's likelihood, who it hurts and how badly, and what fixing it costs; the next round's cost; and an honest view on continuing.
 Explain each problem so the captain understands it at a glance, using screenshots of the real screen for UI issues (before and after where applicable), otherwise a concrete example of input and wrong result or a small diagram.
@@ -52,6 +55,30 @@ Never start the next fix round until firstmate returns the decision; the worker 
 ROUNDS
 }
 
+fm_ship_review_launcher_text() {  # <task-id> <branch> <status-file>
+  local launcher
+  launcher=$(printf '%q' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-review-round.sh")
+  cat <<EOF
+# Review role launcher
+Use the bundled launcher for each fresh reviewer or fixer process; do not hand-build runtime commands or follow a legacy Claude launch instruction.
+These launcher and task-directory instructions override conflicting runtime commands and report paths in the configured text below.
+Read \`~/.claude/skills/adv-review-loop/SKILL.md\` for the severity table, ledger, root-cause rules, final round and red gate, and report format.
+You orchestrate the loop; the fresh role processes review and fix.
+After the implementation commit, review \`$2\` against its merge-base with local \`main\` (or \`master\`), never \`origin/*\`.
+Set \`REVIEW_LAUNCHER=$launcher\`, then \`REVIEW_DIR="\$("\$REVIEW_LAUNCHER" --init $1)"\` once for this task; retain that directory across rounds and resumptions.
+Keep the ledger and final report at \`REPORT="\$REVIEW_DIR/report.md"\`; do not reuse the review root's old report or another task's files.
+Write a new round input in \`\$REVIEW_DIR\` for each role: target branch, local merge-base, round number, final-round flag, full ledger, approved findings to fix (fixer only), and previous handoff note path.
+Set \`N\` and \`ROUND_IN\` to that round number and input path, then run \`"\$REVIEW_LAUNCHER" reviewer --round "\$N" --in "\$ROUND_IN"\` and wait for it to exit.
+Read the output path it prints; a nonzero exit is a failed review, so report the failure and stop.
+After firstmate approves a fix round, use a fresh fixer input and run \`"\$REVIEW_LAUNCHER" fixer --round "\$N" --in "\$ROUND_IN"\`, then re-review the complete diff with a fresh reviewer.
+The launcher owns the dated runtime/model selection and safe prompt passing; \`"\$REVIEW_LAUNCHER" --help\` owns its exact interface.
+A Claude worker may run \`/adv-review-loop\` itself when the selected review runtime is Claude, while preserving these task-directory and round-boundary rules.
+Minor findings and open questions go to firstmate; never fix or answer them without approval.
+When no findings remain, run one more fresh reviewer as the final round with the red gate, then complete the task's authorized validation.
+After all fixes are committed and the final head is validated, append \`review: passed <full head sha> <absolute report path>\` to \`$3\` before reporting done; a later commit requires a fresh review.
+EOF
+}
+
 fm_ship_review_config_dir() {
   printf '%s\n' "${FM_CONFIG_OVERRIDE:-${FM_HOME:?FM_HOME must be set}/config}"
 }
@@ -59,7 +86,7 @@ fm_ship_review_config_dir() {
 # Print the substituted review text for a ship task. Returns 1 when the home has
 # no review text configured, 2 when the file exists but cannot be read.
 fm_ship_review_text() {  # <task-id> <branch> <status-file>
-  local id=$1 branch=$2 status_file=$3 file text
+  local id=$1 branch=$2 status_file=$3 file text line
   file="$(fm_ship_review_config_dir)/ship-review.md"
   [ -e "$file" ] || [ -L "$file" ] || return 1
   if [ ! -f "$file" ] || [ ! -r "$file" ]; then
@@ -71,7 +98,15 @@ fm_ship_review_text() {  # <task-id> <branch> <status-file>
   text=${text//"{TASK_ID}"/"$id"}
   text=${text//"{BRANCH}"/"$branch"}
   text=${text//"{STATUS_FILE}"/"$status_file"}
-  printf '%s\n' "$text"
+  fm_ship_review_launcher_text "$id" "$branch" "$status_file"
+  printf '\n'
+  while IFS= read -r line; do
+    if [[ "$line" == *'claude -p'* && "$line" == *'/adv-review-loop'* ]]; then
+      printf '%s\n' 'Use the bundled review role launcher above for this invocation.'
+    else
+      printf '%s\n' "$line"
+    fi
+  done <<< "$text"
 }
 
 # 0 when the gate is required, 1 when it is off or unconfigured, 2 (with a

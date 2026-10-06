@@ -963,6 +963,7 @@ test_ship_review_step_is_appended_only_when_configured() {
   # shellcheck disable=SC2016 # The backticks are literal Markdown in the review text.
   printf '%s\n' '# Review step' \
     'Review {BRANCH} for {TASK_ID}; then append `review: passed <report>` to {STATUS_FILE}.' \
+    '   `claude -p --model opus --dangerously-skip-permissions "/adv-review-loop {BRANCH} firstmate"`' \
     'Literal & and \\ survive.' > "$home/config/ship-review.md"
 
   id="brief-review-r1"
@@ -972,6 +973,13 @@ test_ship_review_step_is_appended_only_when_configured() {
   assert_grep "Review rcs/r1-hotfix for $id; then append \`review: passed <report>\` to $home/state/$id.status." "$brief" \
     "the ship brief did not carry the configured review step with its placeholders filled"
   assert_grep 'Literal & and \\ survive.' "$brief" "the review text's literal characters were altered"
+  assert_grep 'fm-review-round.sh' "$brief" 'the brief did not carry the bundled launcher'
+  assert_grep '--init brief-review-r1' "$brief" 'the brief did not initialize fresh task files'
+  assert_grep "reviewer --round \"\$N\" --in \"\$ROUND_IN\"" "$brief" 'missing reviewer invocation'
+  assert_grep "fixer --round \"\$N\" --in \"\$ROUND_IN\"" "$brief" 'missing fixer invocation'
+  assert_grep 'full ledger' "$brief" 'missing round-input contract'
+  assert_grep 'final round' "$brief" 'missing final-round contract'
+  assert_no_grep 'claude -p' "$brief" 'the brief still contains a raw Claude review launch'
   [ "$(tail -1 "$brief")" = 'Literal & and \\ survive.' ] \
     || fail "the review step does not close the ship brief"
 
@@ -1019,7 +1027,7 @@ test_ship_review_round_boundaries() {
       FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "round-$review-$mode" some-proj --mode "$mode" --checks targeted >/dev/null 2>&1 \
         || fail "round scaffold failed for $review/$mode"
       path="$home/data/round-$review-$mode/brief.md"
-      assert_grep 'Stop at every review round boundary that leaves a P1/P2 open' "$path" "missing round stop for $review/$mode"
+      assert_grep 'Stop after every review with any finding, of any severity' "$path" "missing round stop for $review/$mode"
       assert_grep 'Commit everything on the task branch' "$path" "missing committed boundary"
       assert_grep "each open finding's likelihood, who it hurts and how badly, and what fixing it costs" "$path" "missing finding consequence summary"
       assert_grep 'needs-decision: [key=review-round-<N>] summary at <path>' "$path" "missing keyed review-round decision"

@@ -19,7 +19,8 @@
 # own branch name matters). Omitted, the promoted task uses fm/<task-id> and no
 # branch= is recorded, leaving the meta byte-identical to the historical form.
 # Ship review step: when this home configures config/ship-review.md, promotion
-# writes that text, placeholders filled for this task, to data/<task-id>/ship-review.md
+# writes its policy and bundled role-launch instructions, placeholders filled
+# for this task, to data/<task-id>/ship-review.md
 # and the printed ship instructions tell the crewmate to follow it before reporting
 # done, exactly as a ship brief would carry it (bin/fm-ship-review-lib.sh owns the
 # substitution and shared round-boundary text; docs/configuration.md "Ship
