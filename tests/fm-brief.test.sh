@@ -17,6 +17,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/review-policy-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/review-policy-helpers.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
@@ -987,12 +989,11 @@ test_ship_review_step_is_appended_only_when_configured() {
   assert_grep "fixer --round \"\$N\" --in \"\$ROUND_IN\"" "$brief" 'missing fixer invocation'
   assert_grep 'full ledger' "$brief" 'missing round-input contract'
   assert_grep 'final round' "$brief" 'missing final-round contract'
-  assert_no_grep '   `claude -p --model opus --dangerously-skip-permissions' "$brief" 'the standalone legacy command was retained'
+  assert_grep '   `claude -p --model opus --dangerously-skip-permissions' "$brief" 'legacy policy data was dropped'
   assert_grep "Before launching \`claude -p /adv-review-loop\`, run the required unit tests." "$brief" 'mixed policy prose with unit-test requirement was deleted'
   assert_grep 'Before launching claude -p /adv-review-loop, ask for approval and run all required tests.' "$brief" 'mixed policy approval/test rules were deleted'
   assert_grep 'claude -p "/adv-review-loop main firstmate"; then run the required tests and ask for approval.' "$brief" 'command-leading policy/test prose was deleted'
-  [ "$(tail -1 "$brief")" = 'Literal & and \\ survive.' ] \
-    || fail "the review step does not close the ship brief"
+  assert_grep 'fm-review-policy' "$brief" 'legacy policy is not structurally separated'
 
   FM_HOME="$bare" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --checks targeted --branch rcs/r1-hotfix >/dev/null 2>&1 \
     || fail "a ship scaffold without a review step exited non-zero"
@@ -1022,6 +1023,29 @@ test_ship_review_step_is_appended_only_when_configured() {
   assert_contains "$out" "$home/config/ship-review.md" "the refusal did not name the unreadable review config"
   assert_absent "$home/data/brief-review-broken/brief.md" "a refused scaffold still wrote a brief"
   pass "fm-brief.sh: the configured ship review step closes every ship brief and nothing else"
+}
+
+test_ship_review_launch_slot() {
+  local home style id branch brief out rc
+  home="$TMP_ROOT/review-slot-home&\\{BRANCH}"
+  mkdir -p "$home/config" "$home/data"
+  branch='fm/release&{STATUS_FILE}'
+  for style in legacy slotted slotted-first slotted-last; do
+    id="brief-slot-$style"
+    write_review_policy_fixture "$home/config/ship-review.md" "$style"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --checks targeted --branch "$branch" >/dev/null 2>&1 \
+      || fail "could not scaffold $style review policy"
+    brief="$home/data/$id/brief.md"
+    assert_review_policy_rendering "$brief" "$home/config/ship-review.md" "$id" "$branch" "$home/state/$id.status" \
+      || fail "$style brief did not preserve policy inside authoritative launch boundaries"
+  done
+  printf '%s\n' '<!-- FM_REVIEW_LAUNCH_SLOT -->' '<!-- FM_REVIEW_LAUNCH_SLOT -->' > "$home/config/ship-review.md"
+  rc=0
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-slot-duplicate some-proj --mode local-only --checks targeted 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'duplicate launch slots were accepted'
+  assert_contains "$out" 'at most one review launch slot' 'duplicate slot refusal lacks a reason'
+  assert_absent "$home/data/brief-slot-duplicate/brief.md" 'duplicate slots still wrote a brief'
+  pass 'fm-brief: legacy and explicit slots preserve all policy with one launch authority'
 }
 
 test_ship_review_round_boundaries() {
@@ -1057,6 +1081,7 @@ test_ship_review_round_boundaries() {
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_ship_review_round_boundaries
+test_ship_review_launch_slot
 test_ship_review_step_is_appended_only_when_configured
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs

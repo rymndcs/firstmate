@@ -42,7 +42,23 @@ elif '--output-format' in args:
         result['type'] = 'assistant'
     if mode == 'nonstring-result':
         result['result'] = {'text': reply}
-    print(json.dumps(result))
+    encoded = json.dumps(result)
+    extra = json.dumps({'type': 'result', 'is_error': True, 'result': 'failed'})
+    outputs = {
+        'success-error': encoded + '\n' + extra,
+        'error-success': extra + '\n' + encoded,
+        'duplicate-success': encoded + '\n' + encoded,
+        'extra-object': encoded + '\n' + '{}',
+        'object-first': '{}' + '\n' + encoded,
+        'array': '[' + encoded + ']',
+        'malformed': '{broken',
+        'trailing': encoded + 'invalid trailing bytes',
+        'missing-error-flag': json.dumps({'type': 'result', 'result': reply}),
+        'scalar': json.dumps(reply),
+        'null': 'null',
+        'json-padding': '  \n' + encoded + '\n  \t',
+    }
+    print(outputs.get(mode, encoded))
 else:
     print(reply)
 print('runtime diagnostic, separate from final reply', file=sys.stderr)
@@ -120,6 +136,41 @@ done
 [ "$bad_reply_failures" -eq 0 ] || fail "$bad_reply_failures diagnostic-only/whitespace roles passed"
 pass 'review-round: both runtimes and roles reject diagnostics, events, and whitespace as replies'
 
+invalid_results=0
+for role in reviewer fixer; do
+  for mode in success-error error-success duplicate-success extra-object object-first array malformed trailing missing-error-flag scalar null; do
+    output="$TASK_DIR/claude-$role-$mode.out"
+    before=$(call_count)
+    rc=0
+    out=$(FAKE_REVIEW_DATE=2026-10-12 FAKE_REVIEW_MODE="$mode" launch "$role" --round 2 --in "$INPUT" --out "$output" 2>&1) || rc=$?
+    assert_one_call "$before"
+    if [ "$rc" -eq 0 ]; then
+      printf 'not ok - Claude %s accepted %s as a single valid result\n' "$role" "$mode" >&2
+      invalid_results=$((invalid_results + 1))
+    else
+      assert_contains "$out" 'no valid role reply' 'invalid complete result lacks a reason'
+      assert_contains "$out" "$output.runtime.json" 'invalid result lacks raw evidence path'
+      assert_contains "$out" "$output.diagnostics" 'invalid result lacks diagnostics path'
+      assert_grep 'runtime diagnostic' "$output.diagnostics" 'raw failure lost stderr'
+      [ -s "$output.runtime.json" ] || fail 'invalid result lost raw bytes'
+    fi
+  done
+done
+[ "$invalid_results" -eq 0 ] || fail "$invalid_results invalid complete Claude results accepted"
+for role in reviewer fixer; do
+  output="$TASK_DIR/claude-$role-success-error.out"
+  raw_before=$(cksum < "$output.runtime.json")
+  diagnostics_before=$(cksum < "$output.diagnostics")
+  before=$(call_count)
+  rc=0
+  out=$(FAKE_REVIEW_DATE=2026-10-12 launch "$role" --round 2 --in "$INPUT" --out "$output" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'invalid-result retry reused evidence'
+  [ "$(call_count)" -eq "$before" ] || fail 'invalid-result retry launched over prior evidence'
+  [ "$(cksum < "$output.runtime.json")" = "$raw_before" ] || fail 'retry changed raw invalid result'
+  [ "$(cksum < "$output.diagnostics")" = "$diagnostics_before" ] || fail 'retry changed invalid-result diagnostics'
+done
+pass 'review-round: both Claude roles require exactly one valid result object'
+
 assert_capture() {
   python3 - "$1" "$2" "$3" "$FIXTURE_HOME" "$INPUT" "$TMP_ROOT/calls.jsonl" <<'PY'
 import json, pathlib, sys
@@ -158,6 +209,14 @@ for day in 2026-10-04 2026-10-11 2026-10-12; do
     FAKE_REVIEW_DATE="$day" launch "$role" --round 1 --in "$INPUT" --out "$output" >/dev/null
     assert_capture "$output" "$runtime" "$role" || fail "$day/$role prompt or runtime differs"
   done
+done
+for role in reviewer fixer; do
+  printf 'Target: task\nRequested: padded-json/%s\n' "$role" > "$INPUT"
+  output="$TASK_DIR/claude-$role-padded-json.out"
+  before=$(call_count)
+  FAKE_REVIEW_DATE=2026-10-12 FAKE_REVIEW_MODE=json-padding launch "$role" --round 2 --in "$INPUT" --out "$output" >/dev/null
+  assert_one_call "$before"
+  assert_capture "$output" claude "$role" || fail 'valid single JSON object with surrounding whitespace was refused'
 done
 pass 'review-round: both roles preserve frontmatter after -- and honor the inclusive dated runtime rule'
 

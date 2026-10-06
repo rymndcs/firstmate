@@ -16,6 +16,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/review-policy-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/review-policy-helpers.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 PROMOTE="$ROOT/bin/fm-promote.sh"
@@ -316,7 +318,7 @@ test_promote_carries_the_configured_review_step() {
   assert_grep 'Include that absolute destination in every fixer input' "$review" 'missing fixer-input handoff destination requirement'
   assert_grep "it must be a NEW file in this task's review directory." "$review" 'handoff destination could reuse another round or task file'
 
-  assert_no_grep 'claude -p --model opus' "$review" 'promotion retained the standalone legacy command'
+  assert_grep 'claude -p --model opus' "$review" 'promotion dropped legacy policy data'
   assert_grep "Before launching \`claude -p /adv-review-loop\`, run the required unit tests." "$review" 'promotion deleted mixed policy prose with unit-test requirement'
   assert_grep 'Before launching claude -p /adv-review-loop, ask for approval and run all required tests.' "$review" 'promotion deleted mixed policy approval/test rules'
   assert_grep 'claude -p "/adv-review-loop main firstmate"; then run the required tests and ask for approval.' "$review" 'command-leading policy/test prose was deleted'
@@ -327,6 +329,35 @@ test_promote_carries_the_configured_review_step() {
   assert_no_grep 'Review fm/promote-r1' "$bare/data/promote-r1/ship-review.md" "an unconfigured promotion included a configured review step"
   assert_not_contains "$out" "review step" "a home with no review config still named a review step"
   pass "fm-promote: a promoted scout carries the home's configured review step"
+}
+
+test_promote_review_launch_slot() {
+  local home style id branch out rc meta
+  home="$TMP_ROOT/promote-slot/home&\\{BRANCH}"
+  mkdir -p "$home/config" "$home/state"
+  branch='fm/release&{STATUS_FILE}'
+  for style in legacy slotted slotted-first slotted-last; do
+    id="promote-slot-$style"
+    printf 'window=fm-slot\nkind=scout\nworktree=/tmp/wt\n' > "$home/state/$id.meta"
+    write_review_policy_fixture "$home/config/ship-review.md" "$style"
+    out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode local-only --yolo off --branch "$branch" 2>&1) \
+      || fail "could not promote $style policy: $out"
+    assert_review_policy_rendering "$home/data/$id/ship-review.md" "$home/config/ship-review.md" "$id" "$branch" "$home/state/$id.status" \
+      || fail "$style promotion did not preserve policy inside authoritative launch boundaries"
+  done
+  id=promote-slot-duplicate
+  meta='window=fm-slot
+kind=scout
+worktree=/tmp/wt'
+  printf '%s\n' "$meta" > "$home/state/$id.meta"
+  printf '%s\n' '<!-- FM_REVIEW_LAUNCH_SLOT -->' '<!-- FM_REVIEW_LAUNCH_SLOT -->' > "$home/config/ship-review.md"
+  rc=0
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode local-only --yolo off 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'promotion accepted duplicate launch slots'
+  assert_contains "$out" 'at most one review launch slot' 'promotion slot refusal lacks a reason'
+  [ "$(cat "$home/state/$id.meta")" = "$meta" ] || fail 'invalid slots changed scout metadata'
+  assert_absent "$home/data/$id/ship-review.md" 'invalid slots wrote promotion instructions'
+  pass 'fm-promote: legacy and explicit slots preserve all policy with one launch authority'
 }
 
 test_promote_shares_review_boundaries_with_brief() {
@@ -490,6 +521,7 @@ test_spawn_refuses_a_brief_mode_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
+test_promote_review_launch_slot
 test_promote_carries_the_configured_review_step
 test_promote_shares_review_boundaries_with_brief
 test_promote_refuses_an_unreadable_review_step

@@ -13,6 +13,8 @@
 # Symlink inputs are refused. --out must be a NEW file next to the input;
 # default: round-<N>-<role>.out, containing only the actual role reply.
 # Runtime diagnostics go to <out>.diagnostics; Claude JSON to <out>.runtime.json.
+# Claude must emit exactly one JSON result object, is_error=false and a string
+# result. Extra objects, malformed bytes and blank replies cannot pass.
 # All evidence files must be NEW. A failed or blank reply returns nonzero and
 # names the preserved output and diagnostics.
 #
@@ -116,7 +118,9 @@ if [ "$RC" -ne 0 ]; then
   exit "$RC"
 fi
 if [ "$RUNTIME" = claude ]; then
-  jq -er 'select(.type == "result" and .is_error == false) | .result | select(type == "string")' \
+  jq -ser 'if length == 1 and (.[0] | type == "object")
+    then .[0] | select(.type == "result" and .is_error == false) | .result | select(type == "string")
+    else empty end' \
     "$RAW_OUTPUT" > "$OUTPUT" 2>> "$DIAGNOSTICS" \
     || die "$ROLE round $ROUND produced no valid role reply; raw response $RAW_OUTPUT; diagnostics $DIAGNOSTICS"
 fi

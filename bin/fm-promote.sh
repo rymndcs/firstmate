@@ -23,7 +23,7 @@
 # for this task, to data/<task-id>/ship-review.md
 # and the printed ship instructions tell the crewmate to follow it before reporting
 # done, exactly as a ship brief would carry it (bin/fm-ship-review-lib.sh owns the
-# substitution and shared round-boundary text; docs/configuration.md "Ship
+# launch-slot contract and shared round-boundary text; docs/configuration.md "Ship
 # review step" owns the file). Every promotion writes the round boundaries even
 # without a configured step. An unreadable config refuses before the meta changes.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch <name>]
