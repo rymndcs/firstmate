@@ -313,7 +313,11 @@ test_promote_carries_the_configured_review_step() {
     "the promoted ship instructions did not name the review step"
   assert_grep 'fm-review-round.sh' "$review" 'promotion omitted the role launcher'
   assert_grep '--init promote-r1' "$review" 'promotion omitted fresh task files'
-  assert_grep "HANDOFF_OUT=\"\$REVIEW_DIR/round-\$N-handoff.md\"" "$review" 'missing task-specific new handoff destination'
+  assert_grep '--path input' "$review" 'input destination was not queried'
+  assert_grep '--path report' "$review" 'report destination was not queried'
+  assert_no_grep '--in ' "$review" 'removed caller input flag remains active'
+  assert_no_grep '--out ' "$review" 'removed caller output flag remains active'
+  assert_grep '--path handoff' "$review" 'missing task-specific new handoff destination'
   assert_grep 'Write the new handoff ONLY to that path; this overrides shared-root handoff paths in the role definition.' "$review" 'missing binding handoff path override'
   assert_grep 'Include that absolute destination in every fixer input' "$review" 'missing fixer-input handoff destination requirement'
   assert_grep "it must be a NEW file in this task's review directory." "$review" 'handoff destination could reuse another round or task file'

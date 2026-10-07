@@ -3,16 +3,24 @@
 #
 # Usage (from the task worktree):
 #   fm-review-round.sh --init <task-id>
-#   fm-review-round.sh reviewer|fixer --round <N> --in <file> [--out <file>]
+#   fm-review-round.sh reviewer|fixer --task <token> --round <N>
+#   fm-review-round.sh reviewer|fixer --task <token> --round <N> --path <kind>
 #   fm-review-round.sh --help
 #
-# --init prints a new, unique task directory under the worktree's absolute Git
-# directory/adv-review-loop. Keep that directory for all rounds and the report;
-# never reuse another task's directory. No previous files are removed.
-# --in must be a readable regular file in a subdirectory of that review root.
-# Symlink inputs are refused. --out must be a NEW file next to the input;
-# default: round-<N>-<role>.out, containing only the actual role reply.
-# Runtime diagnostics go to <out>.diagnostics; Claude JSON to <out>.runtime.json.
+# --init creates a unique task directory under the worktree's absolute Git
+# directory/adv-review-loop and prints its opaque, non-path token. Retain that
+# token across rounds and resumptions; never reuse another task's token.
+# --path queries input, reply, report, handoff or summary without launching or
+# reserving files. All destinations are derived inside that task directory:
+#   input: round-<N>-<role>.md     reply: round-<N>-<role>.out
+#   report: report.md             handoff: round-<N>-handoff.md
+#   summary: round-<N>-summary.report
+# Write input only to its queried path, then launch with the same role/token/round.
+# Input must be a readable regular file, not a symlink. Caller paths (--in/--out)
+# are not accepted. Queries do not authorize overwriting earlier evidence.
+# Replies contain only the role response; diagnostics go to <reply>.diagnostics
+# and Claude JSON to <reply>.runtime.json. Keep all review evidence private here;
+# never commit summaries or reports into the project tree.
 # Claude must emit exactly one JSON result object, is_error=false and a string
 # result. Extra objects, malformed bytes and blank replies cannot pass.
 # All evidence files must be NEW. A failed or blank reply returns nonzero and
@@ -52,35 +60,46 @@ REVIEW_ROOT="$GIT_DIR/adv-review-loop"
 mkdir -p "$REVIEW_ROOT"
 REVIEW_ROOT=$(cd "$REVIEW_ROOT" && pwd -P)
 
+# shellcheck source=bin/fm-pr-lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/fm-pr-lib.sh"
 if [ -z "$ROLE" ]; then
-  # shellcheck source=bin/fm-pr-lib.sh
-  . "$(dirname "${BASH_SOURCE[0]}")/fm-pr-lib.sh"
   fm_task_id_creation_valid "$TASK_ID" || die 'task id must be a supported path-safe task id (at most 64 characters)'
-  mktemp -d "$REVIEW_ROOT/$TASK_ID.XXXXXX"
+  TASK_DIR=$(mktemp -d "$REVIEW_ROOT/$TASK_ID.XXXXXX")
+  printf '%s\n' "${TASK_DIR##*/}"
   exit 0
 fi
 
-ROUND='' INPUT='' OUTPUT=''
+ROUND='' TASK_TOKEN='' PATH_KIND=''
 while [ "$#" -gt 0 ]; do
   [ "$#" -ge 2 ] || die "missing value for $1"
   case "$1" in
     --round) ROUND=$2 ;;
-    --in) INPUT=$2 ;;
-    --out) OUTPUT=$2 ;;
+    --task) TASK_TOKEN=$2 ;;
+    --path) PATH_KIND=$2 ;;
     *) die "unknown option: $1" ;;
   esac
   shift 2
 done
 case "$ROUND" in ''|*[!0-9]*|0*) die '--round must be a positive integer without leading zeros' ;; esac
+TASK_ID=${TASK_TOKEN%.*}
+TASK_SUFFIX=${TASK_TOKEN##*.}
+fm_task_id_creation_valid "$TASK_ID" || die 'invalid task token; use --init'
+case "$TASK_SUFFIX" in ''|*[!A-Za-z0-9]*) die 'invalid task token; use --init' ;; esac
+[ "${#TASK_SUFFIX}" -eq 6 ] && [ "$TASK_TOKEN" != "$TASK_ID" ] || die 'invalid task token; use --init'
+TASK_DIR="$REVIEW_ROOT/$TASK_TOKEN"
+[ -d "$TASK_DIR" ] && [ ! -L "$TASK_DIR" ] || die 'task token must identify an initialized non-symlink task directory'
+INPUT="$TASK_DIR/round-$ROUND-$ROLE.md"
+OUTPUT="$TASK_DIR/round-$ROUND-$ROLE.out"
+case "$PATH_KIND" in
+  '') ;;
+  input) printf '%s\n' "$INPUT"; exit 0 ;;
+  reply) printf '%s\n' "$OUTPUT"; exit 0 ;;
+  report) printf '%s\n' "$TASK_DIR/report.md"; exit 0 ;;
+  handoff) printf '%s\n' "$TASK_DIR/round-$ROUND-handoff.md"; exit 0 ;;
+  summary) printf '%s\n' "$TASK_DIR/round-$ROUND-summary.report"; exit 0 ;;
+  *) die 'unknown path query; expected input, reply, report, handoff or summary' ;;
+esac
 [ -f "$INPUT" ] && [ -r "$INPUT" ] && [ ! -L "$INPUT" ] || die "input must be a readable regular file, not a symlink: $INPUT"
-INPUT_DIR=$(cd "$(dirname "$INPUT")" && pwd -P) || die "cannot resolve input: $INPUT"
-case "$INPUT_DIR" in "$REVIEW_ROOT"/*) ;; *) die "input must be inside a task directory under $REVIEW_ROOT: $INPUT" ;; esac
-INPUT="$INPUT_DIR/$(basename "$INPUT")"
-[ -n "$OUTPUT" ] || OUTPUT="$INPUT_DIR/round-$ROUND-$ROLE.out"
-OUTPUT_DIR=$(cd "$(dirname "$OUTPUT")" && pwd -P) || die "cannot resolve output: $OUTPUT"
-[ "$OUTPUT_DIR" = "$INPUT_DIR" ] || die 'output must be next to the round input'
-OUTPUT="$OUTPUT_DIR/$(basename "$OUTPUT")"
-[ ! -e "$OUTPUT" ] && [ ! -L "$OUTPUT" ] || die "output must be a new file: $OUTPUT"
 
 AGENT_FILE="$HOME/.claude/agents/adv-$ROLE.md"
 [ -f "$AGENT_FILE" ] && [ -r "$AGENT_FILE" ] || die "missing readable role definition: $AGENT_FILE"

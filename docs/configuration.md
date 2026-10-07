@@ -319,7 +319,7 @@ Both files are optional, local, and gitignored, and each works on its own.
 
 `config/ship-review.md` holds the review step as Markdown written to the worker.
 When it exists, `bin/fm-brief.sh` appends its review policy with bundled role-launch instructions to every ship brief, and `bin/fm-promote.sh` writes the same instructions to `data/<id>/ship-review.md` and names that file in the printed ship instructions.
-[`bin/fm-review-round.sh`](../bin/fm-review-round.sh) owns fresh task review directories, one-process role launches, safe prompt passing, the dated captain runtime rule, and failure reporting; its header and `--help` own the interface.
+[`bin/fm-review-round.sh`](../bin/fm-review-round.sh) owns fresh task review directories identified by non-path tokens, derived private artifact destinations, one-process role launches, safe prompt passing, the dated captain runtime rule, and failure reporting; its header and `--help` own the interface.
 The fixed launch-slot contract and automatic compatibility for existing policy are owned by the header of [`bin/fm-ship-review-lib.sh`](../bin/fm-ship-review-lib.sh).
 Scout briefs and secondmate charters never carry it.
 The independent review-round boundary text owned by `bin/fm-ship-review-lib.sh` reaches both ship paths even when this file is absent.

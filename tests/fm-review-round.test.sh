@@ -86,94 +86,116 @@ launch() {
 out=$(launch --help)
 assert_contains "$out" 'Codex gpt-6.1-sol (high reasoning) through 2026-10-11 inclusive; then Claude opus.' 'help omitted the current runtime rule'
 
-TASK_DIR=$(launch --init first-task)
-OTHER_DIR=$(launch --init first-task)
-[ "$TASK_DIR" != "$OTHER_DIR" ] || fail '--init reused old task files'
-REVIEW_ROOT=$(git -C "$TASK_REPO" rev-parse --absolute-git-dir)/adv-review-loop
-printf 'old evidence\n' > "$REVIEW_ROOT/report.md"
-printf 'previous task\n' > "$OTHER_DIR/round3.out"
-INPUT="$TASK_DIR/round-1-reviewer.md"
-printf 'Target: task\nLedger: empty\n' > "$INPUT"
-pass 'review-round: each initialization gives the task fresh files'
 
-DOTTED_DIR=$(launch --init release.v2) || fail 'valid dotted task id release.v2 was refused'
-DOTTED_OTHER=$(launch --init release.v2) || fail 'second dotted task initialization failed'
-[ "$DOTTED_DIR" != "$DOTTED_OTHER" ] || fail 'dotted task id reused its directory'
+legacy=$(launch --init caller-path-regression)
+REVIEW_ROOT=$(git -C "$TASK_REPO" rev-parse --absolute-git-dir)/adv-review-loop
+case "$legacy" in /*) legacy_dir=$legacy ;; *) legacy_dir="$REVIEW_ROOT/$legacy" ;; esac
+printf 'Target: task\n' > "$legacy_dir/old-input.md"
+cp "$legacy_dir/old-input.md" "$legacy_dir/-round.md"
+legacy_launch() {
+  (cd "$legacy_dir" && env HOME="$FIXTURE_HOME" PATH="$FAKEBIN:$PATH" \
+    FAKE_REVIEW_CALLS="$TMP_ROOT/calls.jsonl" FAKE_REVIEW_DATE="$FAKE_REVIEW_DATE" "$ROOT/bin/fm-review-round.sh" "$@")
+}
+path_failures=0
+for day in 2026-10-06 2026-10-12; do
+  for role in reviewer fixer; do
+    for value in "$legacy_dir/old-input.md" -round.md ./-round.md; do
+      before=$(call_count)
+      rc=0
+      out=$(FAKE_REVIEW_DATE="$day" legacy_launch "$role" --round 1 --in "$value" --out "$legacy_dir/$day-$role-${#value}.out" 2>&1) || rc=$?
+      if [ "$rc" -eq 0 ] || [[ "$out" != *'unknown option: --in'* ]] || [ "$(call_count)" -ne "$before" ]; then
+        printf 'not ok - %s/%s caller --in path was not rejected at the interface: exit=%s %s\n' "$day" "$role" "$rc" "$out" >&2
+        path_failures=$((path_failures + 1))
+      fi
+    done
+    rc=0
+    out=$(FAKE_REVIEW_DATE="$day" legacy_launch "$role" --round 1 --out -round.out --in "$legacy_dir/old-input.md" 2>&1) || rc=$?
+    if [ "$rc" -eq 0 ] || [[ "$out" != *'unknown option: --out'* ]]; then
+      printf 'not ok - %s/%s caller --out path was not rejected at the interface: %s\n' "$day" "$role" "$out" >&2
+      path_failures=$((path_failures + 1))
+    fi
+  done
+done
+[ "$path_failures" -eq 0 ] || fail "$path_failures caller-path interfaces remain live"
+pass 'review-round: removed caller paths are refused for both roles and runtimes, including leading-dash operands'
+
+TOKEN=$(launch --init first-task)
+OTHER_TOKEN=$(launch --init first-task)
+[ "$TOKEN" != "$OTHER_TOKEN" ] || fail '--init reused old task files'
+case "$TOKEN" in *'/'*) fail '--init returned a path instead of a token' ;; esac
+TASK_DIR="$REVIEW_ROOT/$TOKEN"
+OTHER_DIR="$REVIEW_ROOT/$OTHER_TOKEN"
+[ -d "$TASK_DIR" ] && [ -d "$OTHER_DIR" ] || fail 'token does not identify an initialized task'
+printf 'old evidence\n' > "$REVIEW_ROOT/report.md"
+printf 'previous task\n' > "$OTHER_DIR/report.md"
+DOTTED=$(launch --init release.v2)
+[ "$DOTTED" != "$(launch --init release.v2)" ] || fail 'dotted task id reused its directory'
 for id in '' . .. .hidden '../escape' 'path/task' 'task with spaces' 'task;command' "$(printf '%065d' 1)"; do
   rc=0
   out=$(launch --init "$id" 2>&1) || rc=$?
   [ "$rc" -ne 0 ] || fail "unsafe task id accepted: $id"
 done
-pass 'review-round: supported dotted IDs create unique directories; unsafe IDs are refused'
+for size in 63 64; do launch --init "$(printf "%0${size}d" 1)" >/dev/null; done
+DASH_TOKEN=$(launch --init -release.v2)
+[ "$(launch reviewer --task "$DASH_TOKEN" --round 1 --path input)" = "$REVIEW_ROOT/$DASH_TOKEN/round-1-reviewer.md" ] || fail 'leading-dash task token broke derivation'
+pass 'review-round: path-free unique tokens support dotted and boundary task IDs'
 
-bad_reply_failures=0
-for day in 2026-10-06 2026-10-12; do
-  for role in reviewer fixer; do
-    for mode in stderr whitespace events; do
-      output="$TASK_DIR/$day-$role-$mode.out"
-      before=$(call_count)
-      rc=0
-      out=$(FAKE_REVIEW_DATE="$day" FAKE_REVIEW_MODE="$mode" launch "$role" --round 1 --in "$INPUT" --out "$output" 2>&1) || rc=$?
-      assert_one_call "$before"
-      if [ "$rc" -eq 0 ]; then
-        printf 'not ok - %s/%s accepted %s without a meaningful role reply\n' "$day" "$role" "$mode" >&2
-        bad_reply_failures=$((bad_reply_failures + 1))
-      else
-        assert_contains "$out" 'role reply' 'missing reply refusal lacked a clear reason'
-        assert_contains "$out" "$output.diagnostics" 'missing reply refusal did not name preserved diagnostics'
-        case "$mode" in
-          stderr) assert_grep 'runtime ready; no assistant reply' "$output.diagnostics" 'failure discarded stderr evidence' ;;
-          events)
-            evidence="$output.diagnostics"
-            [ "$day" != 2026-10-12 ] || evidence="$output.runtime.json"
-            assert_grep 'tool/event log; no assistant reply' "$evidence" 'failure discarded stdout evidence'
-            ;;
-          whitespace) [ -s "$output" ] || fail 'whitespace reply evidence was discarded' ;;
-        esac
-      fi
-    done
+ROUND=0
+prepare() {
+  ROLE=$1
+  ROUND=$((ROUND + 1))
+  INPUT=$(launch "$ROLE" --task "$TOKEN" --round "$ROUND" --path input)
+  OUTPUT=$(launch "$ROLE" --task "$TOKEN" --round "$ROUND" --path reply)
+  [ "$INPUT" = "$TASK_DIR/round-$ROUND-$ROLE.md" ] || fail 'input query chose an unexpected destination'
+  [ "$OUTPUT" = "$TASK_DIR/round-$ROUND-$ROLE.out" ] || fail 'reply query chose an unexpected destination'
+  printf 'Target: task\nLedger: empty\nRequested: %s/%s\n' "$ROUND" "$ROLE" > "$INPUT"
+}
+run_role() { launch "$ROLE" --task "$TOKEN" --round "$ROUND"; }
+
+before=$(call_count)
+for role in reviewer fixer; do
+  for kind in input reply report handoff summary; do
+    out=$(launch "$role" --task "$TOKEN" --round 1 --path "$kind")
+    case "$kind" in
+      input) expected="$TASK_DIR/round-1-$role.md" ;;
+      reply) expected="$TASK_DIR/round-1-$role.out" ;;
+      report) expected="$TASK_DIR/report.md" ;;
+      handoff) expected="$TASK_DIR/round-1-handoff.md" ;;
+      summary) expected="$TASK_DIR/round-1-summary.report" ;;
+    esac
+    [ "$out" = "$expected" ] || fail "$kind query changed destination"
+    assert_absent "$out" 'query reserved or wrote an artifact'
   done
 done
-[ "$bad_reply_failures" -eq 0 ] || fail "$bad_reply_failures diagnostic-only/whitespace roles passed"
-pass 'review-round: both runtimes and roles reject diagnostics, events, and whitespace as replies'
+[ "$(call_count)" -eq "$before" ] || fail 'query launched a role'
+pass 'review-round: all artifact destinations are derived without writing or launching'
 
-invalid_results=0
-for role in reviewer fixer; do
-  for mode in success-error error-success duplicate-success extra-object object-first array malformed trailing missing-error-flag scalar null; do
-    output="$TASK_DIR/claude-$role-$mode.out"
-    before=$(call_count)
-    rc=0
-    out=$(FAKE_REVIEW_DATE=2026-10-12 FAKE_REVIEW_MODE="$mode" launch "$role" --round 2 --in "$INPUT" --out "$output" 2>&1) || rc=$?
-    assert_one_call "$before"
-    if [ "$rc" -eq 0 ]; then
-      printf 'not ok - Claude %s accepted %s as a single valid result\n' "$role" "$mode" >&2
-      invalid_results=$((invalid_results + 1))
-    else
-      assert_contains "$out" 'no valid role reply' 'invalid complete result lacks a reason'
-      assert_contains "$out" "$output.runtime.json" 'invalid result lacks raw evidence path'
-      assert_contains "$out" "$output.diagnostics" 'invalid result lacks diagnostics path'
-      assert_grep 'runtime diagnostic' "$output.diagnostics" 'raw failure lost stderr'
-      [ -s "$output.runtime.json" ] || fail 'invalid result lost raw bytes'
-    fi
-  done
-done
-[ "$invalid_results" -eq 0 ] || fail "$invalid_results invalid complete Claude results accepted"
-for role in reviewer fixer; do
-  output="$TASK_DIR/claude-$role-success-error.out"
-  raw_before=$(cksum < "$output.runtime.json")
-  diagnostics_before=$(cksum < "$output.diagnostics")
+ln -s "$OTHER_DIR" "$REVIEW_ROOT/linked.abcdef"
+mkdir -p "$REVIEW_ROOT/../escape.abcdef" "$REVIEW_ROOT/bad.abcde" "$REVIEW_ROOT/bad.abcdefg" "$REVIEW_ROOT/bad.a!cdef" "$REVIEW_ROOT/abcdef"
+LONG_TOKEN="$(printf '%065d' 1).abcdef"
+mkdir "$REVIEW_ROOT/$LONG_TOKEN"
+for token in '' . .. ../escape.abcdef abcdef "$LONG_TOKEN" "$TASK_DIR" first-task bad.abcde bad.abcdefg 'bad.a!cdef' 'bad;cmd.abcdef' linked.abcdef missing.abcdef; do
   before=$(call_count)
   rc=0
-  out=$(FAKE_REVIEW_DATE=2026-10-12 launch "$role" --round 2 --in "$INPUT" --out "$output" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || fail 'invalid-result retry reused evidence'
-  [ "$(call_count)" -eq "$before" ] || fail 'invalid-result retry launched over prior evidence'
-  [ "$(cksum < "$output.runtime.json")" = "$raw_before" ] || fail 'retry changed raw invalid result'
-  [ "$(cksum < "$output.diagnostics")" = "$diagnostics_before" ] || fail 'retry changed invalid-result diagnostics'
+  out=$(launch reviewer --task "$token" --round 1 --path input 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "invalid or unowned task token accepted: $token"
+  [ "$(call_count)" -eq "$before" ] || fail 'invalid token launched a role'
 done
-pass 'review-round: both Claude roles require exactly one valid result object'
+for round in '' 0 01 -1 ../1 abc; do
+  rc=0
+  out=$(launch reviewer --task "$TOKEN" --round "$round" --path input 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "unsafe round accepted: $round"
+done
+rc=0
+out=$(launch reviewer --task "$TOKEN" --round 1 --path elsewhere 2>&1) || rc=$?
+[ "$rc" -ne 0 ] || fail 'unknown destination was accepted'
+rc=0
+out=$(launch reviewer --task "$TOKEN" --round 1 --task 2>&1) || rc=$?
+[ "$rc" -ne 0 ] || fail 'missing option value was accepted'
+pass 'review-round: invalid tokens, symlink tasks, rounds and queries are refused'
 
 assert_capture() {
-  python3 - "$1" "$2" "$3" "$FIXTURE_HOME" "$INPUT" "$TMP_ROOT/calls.jsonl" <<'PY'
+  python3 - "$OUTPUT" "$1" "$ROLE" "$FIXTURE_HOME" "$INPUT" "$TMP_ROOT/calls.jsonl" <<'PY'
 import json, pathlib, sys
 output, runtime, role, home, input_file, calls_file = sys.argv[1:]
 data = json.loads(pathlib.Path(output).read_text())
@@ -196,200 +218,158 @@ else:
     raw = json.loads(pathlib.Path(output + '.runtime.json').read_text())
     assert raw['result'] == pathlib.Path(output).read_text().rstrip('\n')
 calls = [json.loads(line) for line in pathlib.Path(calls_file).read_text().splitlines()]
-matching = [call for call in calls if call == data]
-assert len(matching) == 1, f'expected exactly one fresh {runtime}/{role} invocation, got {len(matching)}'
+assert sum(call == data for call in calls) == 1, 'expected exactly one fresh role invocation'
 PY
 }
 
-export CDPATH="$TASK_REPO"
-cdpath_failures=0
-for day in 2026-10-11 2026-10-12; do
-  runtime=codex
-  round=7
-  if [ "$day" = 2026-10-12 ]; then runtime=claude; round=8; fi
-  for role in reviewer fixer; do
-    for paths in relative-input relative-output relative-both default-output; do
-      printf 'Target: task\nRequested: CDPATH/%s/%s/%s\n' "$day" "$role" "$paths" > "$INPUT"
-      input="$INPUT"
-      output="$TASK_DIR/cdpath-$day-$role-$paths.out"
-      case "$paths" in
-        relative-input|relative-both|default-output)
-          input=${INPUT#"$TASK_REPO/"}
-          case "$input" in /*) fail 'CDPATH test requires a relative input' ;; esac
-          ;;
-      esac
-      output_arg="$output"
-      case "$paths" in
-        relative-output|relative-both)
-          output_arg=${output#"$TASK_REPO/"}
-          case "$output_arg" in /*) fail 'CDPATH test requires a relative output' ;; esac
-          ;;
-        default-output) output="$TASK_DIR/round-$round-$role.out" ;;
-      esac
-      before=$(call_count)
-      rc=0
-      if [ "$paths" = default-output ]; then
-        out=$(FAKE_REVIEW_DATE="$day" launch "$role" --round "$round" --in "$input" 2>&1) || rc=$?
-      else
-        out=$(FAKE_REVIEW_DATE="$day" launch "$role" --round "$round" --in "$input" --out "$output_arg" 2>&1) || rc=$?
-      fi
-      if [ "$rc" -ne 0 ]; then
-        printf 'not ok - CDPATH %s/%s/%s exit %s: %s\n' "$day" "$role" "$paths" "$rc" "$out" >&2
-        cdpath_failures=$((cdpath_failures + 1))
-        continue
-      fi
-      assert_one_call "$before"
-      [ "$out" = "$output" ] || fail 'CDPATH polluted the printed output path'
-      assert_capture "$output" "$runtime" "$role" || fail "CDPATH $day/$role/$paths changed the prompt or runtime"
-    done
-  done
-done
-[ "$cdpath_failures" -eq 0 ] || fail "$cdpath_failures valid CDPATH directory combinations refused"
-pass 'review-round: exported CDPATH preserves relative input, output, and default paths for both runtimes and roles'
-
-SHADOW_ROOT="$TMP_ROOT/cdpath-shadow"
-relative_input=${INPUT#"$TASK_REPO/"}
-mkdir -p "$SHADOW_ROOT/$(dirname "$relative_input")"
-printf 'wrong directory\n' > "$SHADOW_ROOT/$relative_input"
-for day in 2026-10-11 2026-10-12; do
-  runtime=codex
-  [ "$day" != 2026-10-12 ] || runtime=claude
-  for role in reviewer fixer; do
-    printf 'Target: task\nRequested: CDPATH shadow/%s/%s\n' "$day" "$role" > "$INPUT"
-    output="$TASK_DIR/cdpath-shadow-$day-$role.out"
-    before=$(call_count)
-    out=$(CDPATH="$SHADOW_ROOT:$TASK_REPO" FAKE_REVIEW_DATE="$day" launch "$role" --round 9 --in "$relative_input" --out "$output") \
-      || fail "CDPATH shadow redirected $day/$role input"
-    assert_one_call "$before"
-    [ "$out" = "$output" ] || fail 'CDPATH shadow changed the output path'
-    assert_capture "$output" "$runtime" "$role" || fail 'CDPATH shadow changed the exact prompt'
-  done
-done
-[ "$(cat "$SHADOW_ROOT/$relative_input")" = 'wrong directory' ] || fail 'CDPATH shadow input changed'
-pass 'review-round: CDPATH cannot select a shadow directory ahead of the caller directory'
-
+export CDPATH="$TMP_ROOT:$TASK_REPO"
 for day in 2026-10-04 2026-10-11 2026-10-12; do
   runtime=codex
   [ "$day" != 2026-10-12 ] || runtime=claude
   for role in reviewer fixer; do
-    printf 'Target: task\nLedger: empty\nRequested: %s/%s\n' "$day" "$role" > "$INPUT"
-    output="$TASK_DIR/$day-$role.out"
-    FAKE_REVIEW_DATE="$day" launch "$role" --round 1 --in "$INPUT" --out "$output" >/dev/null
-    assert_capture "$output" "$runtime" "$role" || fail "$day/$role prompt or runtime differs"
+    prepare "$role"
+    before=$(call_count)
+    out=$(FAKE_REVIEW_DATE="$day" run_role)
+    assert_one_call "$before"
+    [ "$out" = "$OUTPUT" ] || fail 'CDPATH polluted reply path'
+    assert_capture "$runtime" || fail "$day/$role prompt or runtime differs"
   done
 done
 for role in reviewer fixer; do
-  printf 'Target: task\nRequested: padded-json/%s\n' "$role" > "$INPUT"
-  output="$TASK_DIR/claude-$role-padded-json.out"
+  prepare "$role"
   before=$(call_count)
-  FAKE_REVIEW_DATE=2026-10-12 FAKE_REVIEW_MODE=json-padding launch "$role" --round 2 --in "$INPUT" --out "$output" >/dev/null
+  FAKE_REVIEW_DATE=2026-10-12 FAKE_REVIEW_MODE=json-padding run_role >/dev/null
   assert_one_call "$before"
-  assert_capture "$output" claude "$role" || fail 'valid single JSON object with surrounding whitespace was refused'
+  assert_capture claude || fail 'valid padded JSON refused'
 done
-pass 'review-round: both roles preserve frontmatter after -- and honor the inclusive dated runtime rule'
-
-printf 'Target: task\nLedger: empty\n' > "$INPUT"
-output=$(launch reviewer --round 2 --in "$INPUT")
-[ "$output" = "$TASK_DIR/round-2-reviewer.out" ] || fail 'default output is not next to the input'
-assert_capture "$output" codex reviewer || fail 'default output lost the prompt'
-pass 'review-round: default output is a fresh role/round file next to the input'
-
-rc=0
-out=$(FAKE_REVIEW_FAIL=1 launch fixer --round 3 --in "$INPUT" 2>&1) || rc=$?
-expect_code 23 "$rc" 'role failure must propagate'
-assert_contains "$out" 'fixer round 3 failed (codex exit 23)' 'failure lacked role and exit code'
-assert_contains "$out" "$TASK_DIR/round-3-fixer.out" 'failure lacked output path'
-assert_grep 'deliberate role failure' "$TASK_DIR/round-3-fixer.out.diagnostics" 'role stderr was lost'
-rc=0
-out=$(FAKE_REVIEW_EMPTY=1 launch reviewer --round 4 --in "$INPUT" 2>&1) || rc=$?
-[ "$rc" -ne 0 ] || fail 'empty successful response passed'
-assert_contains "$out" 'role reply' 'empty output lacked diagnostic'
-pass 'review-round: failed and empty roles cannot pass as empty reviews'
-
-for role in reviewer fixer; do
-  for day in 2026-10-06 2026-10-12; do
-    output="$TASK_DIR/$day-$role-failed.out"
-    before=$(call_count)
-    rc=0
-    out=$(FAKE_REVIEW_DATE="$day" FAKE_REVIEW_FAIL=1 launch "$role" --round 3 --in "$INPUT" --out "$output" 2>&1) || rc=$?
-    assert_one_call "$before"
-    expect_code 23 "$rc" 'both runtimes must propagate the role failure'
-    assert_grep 'deliberate role failure' "$output.diagnostics" 'failed role lost its stderr'
-    before=$(call_count)
-    rc=0
-    out=$(FAKE_REVIEW_DATE="$day" launch "$role" --round 3 --in "$INPUT" --out "$output" 2>&1) || rc=$?
-    [ "$rc" -ne 0 ] || fail 'retry overwrote failed evidence'
-    [ "$(call_count)" -eq "$before" ] || fail 'retry launched over old evidence'
-    [ "$(cat "$output.diagnostics")" = 'deliberate role failure' ] || fail 'retry altered preserved diagnostics'
-  done
-  for mode in error-result tool-result nonstring-result; do
-    output="$TASK_DIR/claude-$role-$mode.out"
-    before=$(call_count)
-    rc=0
-    out=$(FAKE_REVIEW_DATE=2026-10-12 FAKE_REVIEW_MODE="$mode" launch "$role" --round 4 --in "$INPUT" --out "$output" 2>&1) || rc=$?
-    assert_one_call "$before"
-    [ "$rc" -ne 0 ] || fail "Claude $role accepted $mode as the role reply"
-    assert_contains "$out" 'no valid role reply' 'malformed result lacked a clear failure reason'
-    [ -s "$output.runtime.json" ] || fail 'invalid Claude result evidence was discarded'
-  done
-  for day in 2026-10-06 2026-10-12; do
-    output="$TASK_DIR/$day-$role-empty.out"
-    before=$(call_count)
-    rc=0
-    out=$(FAKE_REVIEW_DATE="$day" FAKE_REVIEW_EMPTY=1 launch "$role" --round 4 --in "$INPUT" --out "$output" 2>&1) || rc=$?
-    assert_one_call "$before"
-    [ "$rc" -ne 0 ] || fail "$day/$role accepted an absent reply"
-    assert_contains "$out" 'role reply' 'missing reply lacked a clear failure reason'
-  done
-done
-pass 'review-round: failures preserve evidence; absent, erroneous, and non-reply results are refused'
+pass 'review-round: inclusive dated models, exact prompts and one invocation survive CDPATH'
 
 for day in 2026-10-06 2026-10-12; do
-  sidecars=(diagnostics)
-  [ "$day" != 2026-10-12 ] || sidecars+=(runtime.json)
-  for suffix in "${sidecars[@]}"; do
-    for kind in existing symlink; do
-      output="$TASK_DIR/$day-$suffix-$kind.out"
-      sentinel="$TMP_ROOT/$day-$suffix-$kind.sentinel"
-      printf 'previous diagnostics\n' > "$sentinel"
-      if [ "$kind" = existing ]; then
-        cp "$sentinel" "$output.$suffix"
-      else
-        ln -s "$sentinel" "$output.$suffix"
-      fi
+  for role in reviewer fixer; do
+    for mode in stderr whitespace events; do
+      prepare "$role"
       before=$(call_count)
       rc=0
-      out=$(FAKE_REVIEW_DATE="$day" launch reviewer --round 6 --in "$INPUT" --out "$output" 2>&1) || rc=$?
-      [ "$rc" -ne 0 ] || fail "existing $suffix $kind was overwritten"
-      assert_contains "$out" 'evidence must be a new file' 'existing evidence refusal lacked a reason'
-      [ "$(call_count)" -eq "$before" ] || fail 'existing diagnostics allowed a role launch'
-      assert_absent "$output" 'evidence preflight created output before refusing'
-      [ "$(cat "$output.$suffix")" = 'previous diagnostics' ] || fail 'sidecar evidence changed'
-      [ "$(cat "$sentinel")" = 'previous diagnostics' ] || fail 'sidecar symlink target changed'
+      out=$(FAKE_REVIEW_DATE="$day" FAKE_REVIEW_MODE="$mode" run_role 2>&1) || rc=$?
+      assert_one_call "$before"
+      [ "$rc" -ne 0 ] || fail "$day/$role accepted $mode without meaningful role reply"
+      assert_contains "$out" 'role reply' 'missing reply refusal lacked reason'
+      assert_contains "$out" "$OUTPUT.diagnostics" 'missing preserved diagnostics path'
+      case "$mode" in
+        stderr) assert_grep 'runtime ready; no assistant reply' "$OUTPUT.diagnostics" 'stderr lost' ;;
+        events)
+          evidence="$OUTPUT.diagnostics"
+          [ "$day" != 2026-10-12 ] || evidence="$OUTPUT.runtime.json"
+          assert_grep 'tool/event log; no assistant reply' "$evidence" 'stdout lost'
+          ;;
+        whitespace) [ -s "$OUTPUT" ] || fail 'whitespace evidence lost' ;;
+      esac
     done
   done
 done
-pass 'review-round: existing diagnostics and raw responses, including symlinks, survive without launching'
+pass 'review-round: both runtimes and roles refuse diagnostics, events and whitespace as replies'
 
+for role in reviewer fixer; do
+  for mode in success-error error-success duplicate-success extra-object object-first array malformed trailing missing-error-flag scalar null error-result tool-result nonstring-result; do
+    prepare "$role"
+    before=$(call_count)
+    rc=0
+    out=$(FAKE_REVIEW_DATE=2026-10-12 FAKE_REVIEW_MODE="$mode" run_role 2>&1) || rc=$?
+    assert_one_call "$before"
+    [ "$rc" -ne 0 ] || fail "Claude $role accepted $mode as one valid result"
+    assert_contains "$out" 'no valid role reply' 'invalid result lacks reason'
+    assert_contains "$out" "$OUTPUT.runtime.json" 'invalid result lacks raw evidence path'
+    assert_contains "$out" "$OUTPUT.diagnostics" 'invalid result lacks diagnostics path'
+    assert_grep 'runtime diagnostic' "$OUTPUT.diagnostics" 'stderr lost'
+    [ -s "$OUTPUT.runtime.json" ] || fail 'invalid result lost raw bytes'
+    raw_before=$(cksum < "$OUTPUT.runtime.json")
+    diagnostics_before=$(cksum < "$OUTPUT.diagnostics")
+    before=$(call_count)
+    rc=0
+    out=$(FAKE_REVIEW_DATE=2026-10-12 run_role 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail 'invalid-result retry reused evidence'
+    [ "$(call_count)" -eq "$before" ] || fail 'invalid-result retry launched'
+    [ "$(cksum < "$OUTPUT.runtime.json")" = "$raw_before" ] || fail 'retry changed raw result'
+    [ "$(cksum < "$OUTPUT.diagnostics")" = "$diagnostics_before" ] || fail 'retry changed diagnostics'
+  done
+done
+pass 'review-round: Claude requires exactly one valid result; retry preserves invalid evidence'
 
+for day in 2026-10-06 2026-10-12; do
+  for role in reviewer fixer; do
+    prepare "$role"
+    before=$(call_count)
+    rc=0
+    out=$(FAKE_REVIEW_DATE="$day" FAKE_REVIEW_FAIL=1 run_role 2>&1) || rc=$?
+    assert_one_call "$before"
+    expect_code 23 "$rc" 'role failure must propagate'
+    assert_contains "$out" "$OUTPUT" 'failure omitted reply path'
+    assert_grep 'deliberate role failure' "$OUTPUT.diagnostics" 'failure lost stderr'
+    before=$(call_count)
+    rc=0
+    out=$(FAKE_REVIEW_DATE="$day" run_role 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail 'retry overwrote failed evidence'
+    [ "$(call_count)" -eq "$before" ] || fail 'retry launched over old evidence'
+    [ "$(cat "$OUTPUT.diagnostics")" = 'deliberate role failure' ] || fail 'retry changed diagnostics'
+    prepare "$role"
+    before=$(call_count)
+    rc=0
+    out=$(FAKE_REVIEW_DATE="$day" FAKE_REVIEW_EMPTY=1 run_role 2>&1) || rc=$?
+    assert_one_call "$before"
+    [ "$rc" -ne 0 ] || fail 'absent reply passed'
+    assert_contains "$out" 'role reply' 'missing reply lacks reason'
+  done
+done
+pass 'review-round: failure codes propagate and failed or absent replies preserve evidence'
+
+for day in 2026-10-06 2026-10-12; do
+  suffixes=('' .diagnostics)
+  [ "$day" != 2026-10-12 ] || suffixes+=(.runtime.json)
+  for suffix in "${suffixes[@]}"; do
+    for kind in existing symlink; do
+      prepare reviewer
+      sentinel="$TMP_ROOT/sentinel-$ROUND"
+      printf 'previous evidence\n' > "$sentinel"
+      if [ "$kind" = existing ]; then cp "$sentinel" "$OUTPUT$suffix"; else ln -s "$sentinel" "$OUTPUT$suffix"; fi
+      before=$(call_count)
+      rc=0
+      out=$(FAKE_REVIEW_DATE="$day" run_role 2>&1) || rc=$?
+      [ "$rc" -ne 0 ] || fail 'existing evidence overwritten'
+      [ "$(call_count)" -eq "$before" ] || fail 'existing evidence allowed launch'
+      [ "$(cat "$OUTPUT$suffix")" = 'previous evidence' ] || fail 'evidence changed'
+      [ "$(cat "$sentinel")" = 'previous evidence' ] || fail 'symlink target changed'
+      [ -z "$suffix" ] || assert_absent "$OUTPUT" 'preflight wrote reply before refusal'
+    done
+  done
+done
+pass 'review-round: existing reply and sidecars, including symlinks, survive without launching'
+
+prepare reviewer
 printf 'outside\n' > "$TMP_ROOT/outside.md"
-ln -s "$TMP_ROOT/outside.md" "$TASK_DIR/linked-input.md"
-ln -s "$TMP_ROOT" "$REVIEW_ROOT/outside-dir"
-for input in "$TMP_ROOT/outside.md" "$REVIEW_ROOT/report.md" "$TASK_DIR/linked-input.md" "$REVIEW_ROOT/outside-dir/outside.md"; do
-  rc=0
-  out=$(launch reviewer --round 5 --in "$input" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || fail "unsafe input accepted: $input"
-  assert_contains "$out" 'input must be' 'input refusal lacked diagnostic'
-done
-pass 'review-round: outside inputs, root-level leftovers, and symlink escapes are refused'
-
-ln -s "$TMP_ROOT/new-output" "$TASK_DIR/linked-output"
-for output in "$INPUT" "$TASK_DIR/round-2-reviewer.out" "$TASK_DIR/linked-output" "$OTHER_DIR/new.out" "$TMP_ROOT/new.out"; do
-  rc=0
-  out=$(launch reviewer --round 6 --in "$INPUT" --out "$output" 2>&1) || rc=$?
-  [ "$rc" -ne 0 ] || fail "unsafe output accepted: $output"
-done
+ln -s "$TMP_ROOT/outside.md" "$INPUT.link"
+mv "$INPUT.link" "$INPUT"
+before=$(call_count)
+rc=0
+out=$(run_role 2>&1) || rc=$?
+[ "$rc" -ne 0 ] || fail 'derived symlink input accepted'
+[ "$(call_count)" -eq "$before" ] || fail 'symlink input launched'
+assert_absent "$OUTPUT" 'symlink input wrote output'
 [ "$(cat "$REVIEW_ROOT/report.md")" = 'old evidence' ] || fail 'old root report changed'
-[ "$(cat "$OTHER_DIR/round3.out")" = 'previous task' ] || fail 'previous task evidence changed'
-[ "$(cat "$INPUT")" = $'Target: task\nLedger: empty' ] || fail 'input was overwritten'
-pass 'review-round: outputs cannot overwrite input, past output, or another task; prior evidence survives'
+[ "$(cat "$OTHER_DIR/report.md")" = 'previous task' ] || fail 'previous task changed'
+prepare fixer
+before=$(call_count)
+saved_input=$(cksum < "$INPUT")
+out=$(run_role)
+assert_one_call "$before"
+[ "$out" = "$OUTPUT" ] || fail 'fresh round after prior failures changed destination'
+[ "$(cksum < "$INPUT")" = "$saved_input" ] || fail 'role overwrote input'
+for file in "$OUTPUT" "$OUTPUT.diagnostics"; do
+  saved=$(cksum < "$file")
+  before=$(call_count)
+  rc=0
+  out=$(run_role 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'successful reply was reused'
+  [ "$(call_count)" -eq "$before" ] || fail 'successful retry relaunched'
+  [ "$(cksum < "$file")" = "$saved" ] || fail 'successful evidence changed'
+done
+pass 'review-round: derived inputs remain regular files; other tasks and root leftovers survive'

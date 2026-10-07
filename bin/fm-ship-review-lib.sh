@@ -49,14 +49,19 @@
 # loudly on stderr rather than undoing the landing.
 
 fm_ship_review_round_boundaries() {
-  cat <<'ROUNDS'
+  local launcher
+  launcher=$(printf '%q' "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fm-review-round.sh")
+  cat <<ROUNDS
 # Review round boundaries
 Stop after every review with any finding, of any severity, instead of starting the fix round.
 This applies to both Claude and Codex review paths and overrides any automatic fix-round instruction in the configured review step below.
-Commit everything on the task branch, then write a plain-language round summary in a file on that branch: what the task is for; each round's findings and fixes; each open finding's likelihood, who it hurts and how badly, and what fixing it costs; the next round's cost; and an honest view on continuing.
+Commit implementation changes on the task branch, then write a plain-language round summary at the private destination reported by the launcher: what the task is for; each round's findings and fixes; each open finding's likelihood, who it hurts and how badly, and what fixing it costs; the next round's cost; and an honest view on continuing.
 Explain each problem so the captain understands it at a glance, using screenshots of the real screen for UI issues (before and after where applicable), otherwise a concrete example of input and wrong result or a small diagram.
 Save images next to the summary and link them by path.
-Commit the summary too, append `needs-decision: [key=review-round-<N>] summary at <path>` to the status file, and stop.
+Set \`REVIEW_LAUNCHER=$launcher\` and use its \`--help\` for the task-token interface; initialize this task once if no token exists, then retain it across rounds and resumptions.
+Query the summary destination with \`"\$REVIEW_LAUNCHER" reviewer --task "\$REVIEW_TASK" --round "\$N" --path summary\`; the launcher derives it under the task's private Git review directory.
+Never commit summaries, reports or review evidence into the project tree.
+Append \`needs-decision: [key=review-round-<N>] summary at <path>\` to the status file, and stop.
 Use the actual round number and absolute summary path.
 Never start the next fix round until firstmate returns the decision; the worker never decides continuation itself.
 ROUNDS
@@ -72,14 +77,14 @@ These launcher and task-directory instructions override conflicting runtime comm
 Read \`~/.claude/skills/adv-review-loop/SKILL.md\` for the severity table, ledger, root-cause rules, final round and red gate, and report format.
 You orchestrate the loop; the fresh role processes review and fix.
 After the implementation commit, review \`$2\` against its merge-base with local \`main\` (or \`master\`), never \`origin/*\`.
-Set \`REVIEW_LAUNCHER=$launcher\`, then \`REVIEW_DIR="\$("\$REVIEW_LAUNCHER" --init $1)"\` once for this task; retain that directory across rounds and resumptions.
-Keep the ledger and final report at \`REPORT="\$REVIEW_DIR/report.md"\`; do not reuse the review root's old report or another task's files.
-Write a new round input in \`\$REVIEW_DIR\` for each role: target branch, local merge-base, round number, final-round flag, full ledger, approved findings to fix (fixer only), and previous handoff note path.
-Set \`N\` and \`ROUND_IN\` to that round number and input path, then run \`"\$REVIEW_LAUNCHER" reviewer --round "\$N" --in "\$ROUND_IN"\` and wait for it to exit.
-Read the output path it prints; a nonzero exit is a failed review, so report the failure and stop.
-For each approved fixer round, set \`HANDOFF_OUT="\$REVIEW_DIR/round-\$N-handoff.md"\`; it must be a NEW file in this task's review directory.
+Set \`REVIEW_LAUNCHER=$launcher\`, then \`REVIEW_TASK="\$("\$REVIEW_LAUNCHER" --init $1)"\` once for this task; retain that non-path token across rounds and resumptions.
+Set \`N\` to the round number, then query \`REPORT="\$("\$REVIEW_LAUNCHER" reviewer --task "\$REVIEW_TASK" --round "\$N" --path report)"\` for the ledger and final report; do not reuse old root evidence or another task's files.
+Query \`ROUND_IN="\$("\$REVIEW_LAUNCHER" reviewer --task "\$REVIEW_TASK" --round "\$N" --path input)"\` and write a new input ONLY at that destination: target branch, local merge-base, round number, final-round flag, full ledger, approved findings to fix (fixer only), and previous handoff note path.
+Run \`"\$REVIEW_LAUNCHER" reviewer --task "\$REVIEW_TASK" --round "\$N"\` and wait for it to exit.
+Read the output path it prints (also available via \`--path reply\`); a nonzero exit is a failed review, so report the failure and stop.
+For each approved fixer round, query \`HANDOFF_OUT="\$("\$REVIEW_LAUNCHER" fixer --task "\$REVIEW_TASK" --round "\$N" --path handoff)"\`; it must be a NEW file in this task's review directory.
 Include that absolute destination in every fixer input with the instruction: Write the new handoff ONLY to that path; this overrides shared-root handoff paths in the role definition.
-After firstmate approves a fix round, use a fresh fixer input and run \`"\$REVIEW_LAUNCHER" fixer --round "\$N" --in "\$ROUND_IN"\`, then re-review the complete diff with a fresh reviewer.
+After firstmate approves a fix round, query its \`--path input\` with role \`fixer\`, write the fresh fixer input ONLY there, and run \`"\$REVIEW_LAUNCHER" fixer --task "\$REVIEW_TASK" --round "\$N"\`, then re-review the complete diff with a fresh reviewer using a new round number.
 The launcher owns the dated runtime/model selection and safe prompt passing; \`"\$REVIEW_LAUNCHER" --help\` owns its exact interface.
 Minor findings and open questions go to firstmate; never fix or answer them without approval.
 When no findings remain, run one more fresh reviewer as the final round with the red gate, then complete the task's authorized validation.

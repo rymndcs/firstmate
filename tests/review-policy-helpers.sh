@@ -69,6 +69,10 @@ assert slot not in active, 'launch slot was not filled'
 assert 'claude -p --model opus' not in active, 'original full legacy command retains launch authority'
 assert 'claude --arbitrary' not in active, 'multiline command retains launch authority'
 assert 'fm-review-round.sh' in active, 'fixed launch slot lacks launcher pointer'
+assert '--in ' not in active and '--out ' not in active, 'caller paths retain launch authority'
+for destination in ('input', 'reply', 'report', 'handoff'):
+    assert '--path ' + destination in active, 'missing derived ' + destination
+assert 'REVIEW_TASK=' in active and '--task "$REVIEW_TASK"' in active, 'missing retained task token'
 if slot in raw.splitlines():
     before, after = raw.split(slot + '\n')
     launch = text.index('# Review role launcher\n')

@@ -52,7 +52,7 @@ When the flag is `no` or the helper fails, ask the captain for confirmation befo
 A `yes` flag permits only decisions already authorized by the captain's request and standing authority; it never overrides a required captain approval.
 For worker model selection, use the helper's model-ranking mode with caller-supplied candidates and present the returned ranking and probabilities to the captain, then wait for their selection.
 Never select a model automatically; candidates marked as requiring explicit permission need that permission before dispatch.
-At an open review-round boundary, read the worker's committed summary before judging continuation; the worker stops and firstmate owns the decision under this procedure.
+At an open review-round boundary, read the worker's private summary named in its decision request before judging continuation; the worker stops and firstmate owns the decision under this procedure.
 
 ## Briefs
 
