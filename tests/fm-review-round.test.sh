@@ -170,6 +170,72 @@ done
 [ "$(call_count)" -eq "$before" ] || fail 'query launched a role'
 pass 'review-round: all artifact destinations are derived without writing or launching'
 
+artifact_inventory() {
+  python3 - "$1" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+entries = []
+for path in sorted(root.rglob('*')):
+    kind = 'symlink' if path.is_symlink() else 'directory' if path.is_dir() else 'file'
+    content = str(path.readlink()) if kind == 'symlink' else path.read_bytes().hex() if kind == 'file' else ''
+    entries.append([str(path.relative_to(root)), kind, content])
+print(json.dumps(entries))
+PY
+}
+
+query_failures=0
+for day in 2026-10-06 2026-10-12; do
+  for role in reviewer fixer; do
+    for value in '' elsewhere; do
+      for trailing in none valid; do
+        for evidence in fresh existing; do
+          query_token=$(launch --init query-regression)
+          query_dir="$REVIEW_ROOT/$query_token"
+          query_input=$(launch "$role" --task "$query_token" --round 1 --path input)
+          query_reply=$(launch "$role" --task "$query_token" --round 1 --path reply)
+          printf 'Target: query-only request\n' > "$query_input"
+          if [ "$evidence" = existing ]; then
+            for file in "$query_reply" "$query_reply.diagnostics" "$query_reply.runtime.json" \
+              "$query_dir/report.md" "$query_dir/round-1-handoff.md" "$query_dir/round-1-summary.report"; do
+              printf 'Previous evidence: %s\n\000\377' "$file" > "$file"
+            done
+          fi
+          inventory_before=$(artifact_inventory "$query_dir")
+          before=$(call_count)
+          query_args=("$role" --task "$query_token" --round 1 --path "$value")
+          [ "$trailing" != valid ] || query_args+=(--path input)
+          rc=0
+          out=$(FAKE_REVIEW_DATE="$day" launch "${query_args[@]}" 2>&1) || rc=$?
+          inventory_after=$(artifact_inventory "$query_dir")
+          if [ "$rc" -eq 0 ] || [[ "$out" != *'unknown path query'* ]] || \
+            [ "$(call_count)" -ne "$before" ] || [ "$inventory_after" != "$inventory_before" ]; then
+            printf 'not ok - %s/%s query=%q trailing=%s evidence=%s exit=%s calls=%s inventory_unchanged=%s: %s\n' \
+              "$day" "$role" "$value" "$trailing" "$evidence" "$rc" "$(( $(call_count) - before ))" \
+              "$([ "$inventory_after" = "$inventory_before" ] && echo yes || echo no)" "$out" >&2
+            query_failures=$((query_failures + 1))
+          elif [ "$evidence" = fresh ]; then
+            before=$(call_count)
+            out=$(FAKE_REVIEW_DATE="$day" launch "$role" --task "$query_token" --round 1)
+            assert_one_call "$before"
+            [ "$out" = "$query_reply" ] || fail 'malformed query consumed the intended launch slot'
+            [ "$(cat "$query_input")" = 'Target: query-only request' ] || fail 'intended launch changed input'
+          fi
+        done
+      done
+    done
+    rc=0
+    before=$(call_count)
+    out=$(FAKE_REVIEW_DATE="$day" launch "$role" --path elsewhere --task '' --round invalid 2>&1) || rc=$?
+    [ "$rc" -ne 0 ] || fail 'malformed query before invalid task/round was accepted'
+    if [[ "$out" != *'unknown path query'* ]] || [ "$(call_count)" -ne "$before" ]; then
+      printf 'not ok - %s/%s query was not rejected at option intake: %s\n' "$day" "$role" "$out" >&2
+      query_failures=$((query_failures + 1))
+    fi
+  done
+done
+[ "$query_failures" -eq 0 ] || fail "$query_failures malformed queries violated intake rejection or evidence preservation"
+pass 'review-round: malformed queries are rejected at intake without calls or artifact changes; omitted path still launches'
+
 ln -s "$OTHER_DIR" "$REVIEW_ROOT/linked.abcdef"
 mkdir -p "$REVIEW_ROOT/../escape.abcdef" "$REVIEW_ROOT/bad.abcde" "$REVIEW_ROOT/bad.abcdefg" "$REVIEW_ROOT/bad.a!cdef" "$REVIEW_ROOT/abcdef"
 LONG_TOKEN="$(printf '%065d' 1).abcdef"

@@ -75,7 +75,12 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --round) ROUND=$2 ;;
     --task) TASK_TOKEN=$2 ;;
-    --path) PATH_KIND=$2 ;;
+    --path)
+      case "$2" in
+        input|reply|report|handoff|summary) PATH_KIND=$2 ;;
+        *) die 'unknown path query; expected input, reply, report, handoff or summary' ;;
+      esac
+      ;;
     *) die "unknown option: $1" ;;
   esac
   shift 2
