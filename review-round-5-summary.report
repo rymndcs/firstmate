@@ -1,0 +1,131 @@
+Review round 5: CDPATH fix held; one filename edge case remains
+
+Purpose
+Workers should use a bundled launcher for one fresh reviewer or fixer round,
+with safe prompts, dated model selection, separate replies/diagnostics,
+fresh task files and explicit launch failures. Both generated instruction
+paths use one authoritative launch slot while preserving configured policy.
+
+Outcome and branch
+The approved CDPATH correction is committed and held by a fresh final reviewer.
+The branch was rebased without conflicts onto advanced local main before this
+review; main is 53151828786e57f936e535eaa154aaaabb72e706.
+Final reviewer examined 4f76f823baebbb2862437458b436a992a92bcf24 against that base.
+It found new P2 R5-1 and held every earlier fix. No new minor/question.
+No additional fix or validation run started; no review-completion/done event.
+This summary is committed so the branch alone preserves the decision boundary.
+Branch remains ready for a future guarded fast-forward once review is complete;
+it is NOT approved or ready to land now.
+
+History and fixes
+Round 1 found four P2s: diagnostics/blank text counted as replies (R1-1), policy
+lost by command matching (R1-2), dotted task names refused (R1-3), and tests
+missing duplicate process launches (R1-4). Q1 asked for a task-specific NEW
+fixer handoff destination; Q2 questioned large-policy performance. Firstmate
+approved the four findings and Q1, leaving Q2 deferred. The first fix round
+separated replies from diagnostics, tightened validation, reused task-name
+validation, counted processes and generated a task-specific handoff destination.
+
+Round 2 held those original cases except R1-2: full legacy command recognition
+remained incomplete. It found R2-1: Claude success followed by an error object
+was accepted as success. The captain approved a structural launch slot and
+whole-response validation, red tests first. Both generated instruction paths
+now preserve all policy in bounded fragments; only the filled launch slot
+can direct launches. Existing slotless configurations work automatically.
+No command recognition remains. Claude requires exactly one valid non-error
+result object containing a meaningful string for both roles.
+
+Round 3 held all prior fixes and found no new defect. Firstmate approved final
+review, kept Q2 deferred and decided Q3 needed no live probe. The live-Claude
+receipt and worker-interpretation limits remain accepted and unobserved.
+
+Round 4 held earlier fixes, detected 26 mutations with zero survivors, and
+found R4-1: exported CDPATH polluted directory captures for valid relative
+paths. Firstmate approved a narrow launcher-local correction, red test first.
+The fresh fixer recorded the cause before editing code, then demonstrated all
+16 requested relative/default combinations failing on unchanged production.
+The independent control passed while the two reported CDPATH cases failed.
+The one-line correction unsets CDPATH before all launcher directory captures.
+No parent environment or persistent coordination state changed.
+
+Twenty new cases cover both roles/date-runtime branches and shadow-directory
+lookup. Four focused mutations were detected: no correction, input-only,
+output-only, and output suppression without neutralizing directory search.
+All affected checks passed after exact restoration. The fix was committed,
+then rebased onto advanced local main; all three affected tests and canonical
+lint/doc checks passed again on the combined head before final review.
+
+Round 5 independently held R4-1 and every earlier finding. It detected all
+30 final red-gate mutations, with zero survivors and combined affected tests
+passing after every restoration. It also found the new issue below.
+
+R5-1 [P2]: bare relative filenames starting with a dash abort launch
+Quoting a filename protects shell splitting but does not stop utilities from
+interpreting it as an option. Input/output resolution passes bare relative
+names to dirname and basename without an option terminator or normalization.
+The same mechanism affects launcher lines 76, 78, 80 and 82.
+
+Concrete example from the isolated task review directory:
+  fm-review-round.sh reviewer --round 1 --in -round.md --out <fresh-absolute-output>
+Observed: exit 1, dirname/basename report "illegal option", no role process.
+Control --in ./-round.md succeeds with exactly one process.
+A fresh --out -round.out similarly fails; --out ./-round.out succeeds.
+Eight failing cases and eight controls cover both roles and both runtime dates.
+Reproduction (NEW fake binaries; no real model call):
+  python3 /Users/rymndcs/.codex/review-scratch/round5-kwz3d1bm/leading_dash.py
+
+Likelihood: low-frequency manual filename edge case, deterministic when used.
+Generated absolute paths are unaffected, and ./ is an available workaround.
+No frequency was measured in real fleet use.
+Who it hurts: a worker/operator using an otherwise valid bare relative name
+inside the task review directory. Reviewer or fixer never starts, delaying work.
+Impact: availability failure; nonzero result prevents false clean-review success.
+No file destruction, outside-file write or false success was reproduced.
+
+This is in the same path-processing area as the preceding fix, so the structural
+option is explicit before another patch: normalize all accepted relative input
+and output paths to safe absolute/dot-prefixed operands before utility parsing,
+or consistently terminate option parsing for every path utility. Both must
+cover input and output and preserve physical containment. Recommend a narrow
+whole-primitive correction plus red tests for both roles/runtime branches,
+leading-dash files/directories and controls; do not add unrelated path state.
+Estimated correction/regression cost: 5-15 minutes. No fix was made on worker
+authority at this boundary.
+
+Validation evidence and scope
+Restored final affected command:
+  bin/fm-test-run.sh tests/fm-review-round.test.sh tests/fm-brief.test.sh tests/fm-task-delivery.test.sh
+  total=3 failed=0 skipped_gate=0
+These cover the launcher and both generated instruction consumers.
+Canonical bin/fm-lint.sh passed with ShellCheck 0.11.0.
+bin/fm-doc-audience-check.sh passed, surfaces=71 local_links=213.
+git diff --check passed for working tree and complete branch diff.
+Thirty mutations detected, zero survivors; every restoration run passed the
+combined affected tests. All 388 tracked files matched starting bytes;
+reviewed head and tree were unchanged at reviewer completion.
+Independent probes: 40 unsafe cases refused without launch; 40 reply/failure
+cases preserved retry evidence; 14 generated-consumer cases passed.
+Full suite deliberately excluded under targeted scope. Q2 stress and Q3 live
+probes were not run. No-mistakes validation was NOT started because the final
+review found a defect. No push, PR, merge, browser, Herdr or process kill.
+
+Next round and recommendation
+Recommend approving the narrow whole-primitive filename correction red-first.
+Expect 5-15 minutes for correction/checks, then 15-25 minutes for a fresh final
+review with the full red gate and restoration checks. Validation follows only
+if that review is clean, with publication/CI and the full test step skipped
+because affected tests ran locally. No continuation has started.
+
+Evidence and private recipe
+Task directory:
+/Users/rymndcs/ai-workspace/.git/worktrees/ai-workspace7/adv-review-loop/fm-review-round-script.MXpYWS
+Includes round-4-handoff.md, its red/green/mutation logs, post-rebase checks,
+round-5-reviewer.md, round-5-reviewer.out, separate diagnostics and report.md.
+Independent probe/red-gate directory:
+/Users/rymndcs/.codex/review-scratch/round5-kwz3d1bm
+Includes leading_dash.py, leading-dash.log, red_gate.py, red-gate-results.json,
+probe-results.json and consumer-results.json.
+Private data/codex-review-loop.md was not edited. Its manual launch recipes,
+prompt/model flags, dated override pointer, root-level output/report layout,
+and repeated boundary/completion recipes are redundant with the launcher,
+generated launch slot and skill pointers once this work is accepted.
