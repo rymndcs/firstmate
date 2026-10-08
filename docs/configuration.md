@@ -357,13 +357,6 @@ The key is never printed, never passed on a command line, and is removed from an
 This file is local to its home and is not part of secondmate inherited configuration, because propagating a credential to another host is the captain's decision rather than a side effect of provisioning.
 A secondmate that needs the binding gets its own key file placed in its own home.
 
-## Jev decision helper
-
-[`bin/fm-jev.sh`](../bin/fm-jev.sh) supplies advisory TypeSafe rankings from review summaries, task briefs with live capacity, or general context files; its header and `--help` own inputs, output, the confidence bar, credential handling, and failure behavior.
-It is an optional macOS helper using the existing `dev.friday.typesafe` Keychain credential, read at call time.
-[`task-lifecycle`](../.agents/skills/task-lifecycle/SKILL.md) owns when Firstmate asks for confirmation and how it presents worker model rankings.
-Deterministic regression coverage is in `tests/fm-jev.test.sh`, using temporary fake tools and response fixtures rather than the live service.
-
 ## Toolchain
 
 On session start the first mate detects what its required toolchain is missing or too old and lists each problem with either an exact install command or manual instructions.

@@ -44,15 +44,10 @@ Treat file or subsystem overlap as a risk signal rather than an automatic reason
 Serialize only for a true semantic dependency, shared mutable external state, incompatible concurrent migration, or another concrete condition that makes independent progress or reconciliation unsafe; same-file editing alone is insufficient, and genuine blockers remain durable.
 Write the task-specific brief under "Briefs" below before spawning.
 
-## Jev-assisted decisions
+## Review-round and model decisions
 
-Use `bin/fm-jev.sh` for a bounded decision with explicit options and the relevant context; its header and help own the invocation and output contract.
-Read its `confident` flag rather than duplicating the confidence bar.
-When the flag is `no` or the helper fails, ask the captain for confirmation before acting, including before continuing to another review round.
-A `yes` flag permits only decisions already authorized by the captain's request and standing authority; it never overrides a required captain approval.
-For worker model selection, use the helper's model-ranking mode with caller-supplied candidates and present the returned ranking and probabilities to the captain, then wait for their selection.
-Never select a model automatically; candidates marked as requiring explicit permission need that permission before dispatch.
-At an open review-round boundary, read the worker's private summary named in its decision request before judging continuation; the worker stops and firstmate owns the decision under this procedure.
+At an open review-round boundary, read the worker's private summary named in its decision request, then ask the captain with your recommendation; the worker stops and firstmate owns the decision under this procedure.
+For worker model selection, recommend a model and wait for the captain's selection; never select a model automatically.
 
 ## Briefs
 
@@ -106,9 +101,6 @@ Preserve durable structured identifiers, dependencies, and completion artifact l
 ## Evaluations
 
 Check this skill against these scenarios after any edit.
-- Jev returns below-bar probabilities or cannot be reached: ask the captain before acting or continuing a review round.
-- A model ranking has a confident top candidate: present the ranking and wait for captain selection, including explicit permission for marked candidates.
-- Jev is confident about continuing a review round: proceed only when the captain's accepted scope and standing authority already authorize that decision.
 - A captain request names no project and matches two registered projects: intake asks which project instead of guessing, and spawns nothing until answered.
 - A worker reports a PR ready while its checks are still red: the task is not treated as PR-ready, and the worker is steered to fix the checks first.
 - A scout finishes with a report: its findings are relayed, the report is recorded as the Done artifact, and the queue is re-evaluated, with no ship task started unless promotion applies.
