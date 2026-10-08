@@ -46,7 +46,8 @@ Write the task-specific brief under "Briefs" below before spawning.
 
 ## Review-round and model decisions
 
-At an open review-round boundary, read the worker's private summary named in its decision request, then ask the captain with your recommendation; the worker stops and firstmate owns the decision under this procedure.
+At an open review-round boundary, read the worker's private summary named in its decision request, then ask the captain with your recommendation; the worker stops and does not decide continuation itself, and the captain decides.
+Standing `yolo` authority never lets firstmate decide review-round continuation; it always goes to the captain.
 For worker model selection, recommend a model and wait for the captain's selection; never select a model automatically.
 
 ## Briefs
@@ -104,3 +105,5 @@ Check this skill against these scenarios after any edit.
 - A captain request names no project and matches two registered projects: intake asks which project instead of guessing, and spawns nothing until answered.
 - A worker reports a PR ready while its checks are still red: the task is not treated as PR-ready, and the worker is steered to fix the checks first.
 - A scout finishes with a report: its findings are relayed, the report is recorded as the Done artifact, and the queue is re-evaluated, with no ship task started unless promotion applies.
+- A review round ends with findings: firstmate reads the worker's summary and asks the captain with its recommendation, never continuing on its own.
+- A worker-model choice comes up: firstmate recommends a model and waits for the captain's selection.
