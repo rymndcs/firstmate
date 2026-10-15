@@ -83,6 +83,7 @@ fm_git_identity fmtest fmtest@example.invalid
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 PR_CHECK="$ROOT/bin/fm-pr-check.sh"
 TMP_ROOT=$(fm_test_tmproot fm-teardown-tests)
+trap 'rm -rf "$TMP_ROOT"' EXIT
 REAL_GIT_FOR_TEST=$(command -v git)
 export REAL_GIT_FOR_TEST
 
@@ -2818,6 +2819,404 @@ MD
     "recovery-context-survives: the captured failure reason did not survive intact"
   pass "captured data/<id>/recovery-context.md survives teardown that erases state and the worktree"
 }
+
+cleanup_fixture() {
+  local name=$1 case_dir
+  case_dir=$(make_case "cleanup-$name")
+  printf '%s\n' 'target' '.build/' 'build/' '*.log' '.evidence/' 'scratch/' '*.tmp' \
+    'node_modules/' 'vendor/' '.venv/' 'venv/' '.bundle/' '.env' > "$case_dir/wt/.gitignore"
+  mkdir -p "$case_dir/wt/build"
+  printf 'tracked\n' > "$case_dir/wt/build/source"
+  git -C "$case_dir/wt" add -f .gitignore build/source
+  git -C "$case_dir/wt" commit -qm 'fixture ignores and tracked build source'
+  git -C "$case_dir/project" update-ref refs/heads/main "$(git -C "$case_dir/wt" rev-parse HEAD)"
+  write_meta "$case_dir" local-only ship
+  printf '%s\n' "$case_dir"
+}
+
+cleanup_free_fixture() {
+  local case_dir=$1
+  mkdir -p "$case_dir/pool"
+  printf '{"version":4,"worktrees":[{"name":"1","path":"%s","leased":false}]}\n' \
+    "$case_dir/wt" > "$case_dir/pool/treehouse-state.json"
+  : > "$case_dir/pool/treehouse-state.lock"
+  printf '[{"name":"1","path":"%s","status":"available","lease_id":"","processes":[]}]\n' \
+    "$case_dir/wt" > "$case_dir/status.json"
+  cat > "$case_dir/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = status ]; then
+  cat "$CLEANUP_CASE/status.json"
+  exit 0
+fi
+exit 1
+SH
+  chmod +x "$case_dir/fakebin/treehouse"
+}
+
+run_cleanup_free() {
+  local case_dir=$1; shift
+  CLEANUP_CASE="$case_dir" PATH="$case_dir/fakebin:$PATH" \
+    "$TEARDOWN" --clean-free-slot "$case_dir/project" "$case_dir/pool" 1 "$@"
+}
+
+test_cleanup_outputs() {
+  local c name
+  c=$(cleanup_fixture outputs)
+  for name in target .build build scratch .evidence; do
+    mkdir -p "$c/wt/$name/nested"
+    printf 'compiler output\n' > "$c/wt/$name/nested/old"
+  done
+  printf 'old log\n' > "$c/wt/fri24-previous.log"
+  printf 'temp\n' > "$c/wt/file.tmp"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail "cleanup outputs: teardown failed"
+  for name in target .build scratch .evidence build/nested fri24-previous.log file.tmp; do
+    [ ! -e "$c/wt/$name" ] || fail "cleanup outputs: ignored $name survived"
+  done
+  [ "$(cat "$c/wt/build/source")" = tracked ] || fail 'cleanup removed tracked build source'
+  grep -Eq '^cleanup: removed .+; freed ~[1-9][0-9]* bytes' "$c/out" || fail 'missing one-line cleanup size report'
+  pass 'teardown removes ignored output and scratch and reports allocated space'
+}
+
+test_cleanup_keep() {
+  local c name
+  c=$(cleanup_fixture keep)
+  for name in node_modules vendor/bundle .venv venv .bundle; do
+    mkdir -p "$c/wt/$name"
+    printf 'dependency\n' > "$c/wt/$name/installed"
+  done
+  mkdir -p "$c/wt/vendor/cache" "$c/wt/scratch/node_modules"
+  printf 'keep\n' > "$c/wt/scratch/node_modules/installed"
+  printf 'scratch\n' > "$c/wt/vendor/cache/old.log"
+  printf 'secret config\n' > "$c/wt/.env"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'cleanup keep: teardown failed'
+  for name in node_modules vendor/bundle .venv venv .bundle scratch/node_modules; do
+    [ -f "$c/wt/$name/installed" ] || fail "cleanup removed dependency $name"
+  done
+  [ -f "$c/wt/.env" ] || fail 'cleanup removed private environment configuration'
+  [ ! -e "$c/wt/vendor/cache/old.log" ] || fail 'dependency keep widened to all vendor'
+  pass 'one keep-list preserves dependency installs and private configuration'
+}
+
+test_cleanup_unlanded() {
+  local c
+  c=$(cleanup_fixture unlanded)
+  wt_commit_file "$c" new-source 'unlanded'
+  mkdir -p "$c/wt/target"
+  printf 'output\n' > "$c/wt/target/old"
+  if run_teardown "$c" > "$c/out" 2> "$c/err"; then fail 'cleanup allowed unlanded work'; fi
+  [ -f "$c/wt/target/old" ] || fail 'cleanup ran before landed-work refusal'
+  [ -f "$c/state/task-x1.meta" ] || fail 'unlanded refusal removed task state'
+  pass 'unlanded refusal precedes ignored cleanup'
+}
+
+test_cleanup_symlinks() {
+  local c external
+  c=$(cleanup_fixture symlinks)
+  mkdir -p "$c/task-temp/target" "$c/external"
+  printf 'build\n' > "$c/task-temp/target/old"
+  printf 'external\n' > "$c/external/source"
+  printf 'tasktmp=%s\n' "$c/task-temp" >> "$c/state/task-x1.meta"
+  ln -s "$c/task-temp/target" "$c/wt/target"
+  external=$(mktemp -d /var/tmp/fm-cleanup-external.XXXXXX)
+  printf 'external\n' > "$external/source"
+  ln -s "$external" "$c/wt/build/elsewhere.log"
+  ln -s "$c/task-temp/missing" "$c/wt/dangling.log"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'symlink teardown failed'
+  [ ! -L "$c/wt/target" ] || fail 'build symlink survived'
+  [ ! -e "$c/task-temp/target" ] || fail 'temporary build target survived'
+  [ ! -L "$c/wt/dangling.log" ] || fail 'dangling link survived'
+  [ ! -L "$c/wt/build/elsewhere.log" ] || fail 'external link survived'
+  [ -f "$external/source" ] || fail 'followed non-temporary symlink'
+  rm -rf "$external"
+  pass 'temporary build targets removed; external and dangling links only unlinked'
+}
+
+test_cleanup_force() {
+  local c
+  c=$(cleanup_fixture force)
+  printf 'untracked\n' > "$c/wt/untracked-source"
+  printf 'modified\n' > "$c/wt/build/source"
+  printf 'old\n' > "$c/wt/build/old.log"
+  run_teardown "$c" --force > "$c/out" 2> "$c/err" || fail 'forced teardown failed'
+  [ -f "$c/wt/untracked-source" ] || fail 'force widened cleanup to non-ignored source'
+  [ "$(cat "$c/wt/build/source")" = modified ] || fail 'force widened cleanup to tracked source'
+  [ ! -e "$c/wt/build/old.log" ] || fail 'force did not remove ignored output'
+  pass 'force does not widen ignored cleanup selection'
+}
+
+test_cleanup_free() {
+  local c
+  c=$(cleanup_fixture free)
+  cleanup_free_fixture "$c"
+  printf 'source\n' > "$c/wt/untracked-source"
+  mkdir -p "$c/wt/target"
+  printf 'old\n' > "$c/wt/target/output"
+  run_cleanup_free "$c" > "$c/out" 2> "$c/err" || fail 'free-slot cleanup failed'
+  [ ! -e "$c/wt/target" ] || fail 'free-slot cleanup left target'
+  [ -f "$c/wt/untracked-source" ] || fail 'free-slot cleanup touched non-ignored source'
+  [ -f "$c/wt/build/source" ] || fail 'free-slot cleanup touched tracked source'
+  pass 'free-slot mode applies the same cleanup without returning or resetting the slot'
+}
+
+test_cleanup_leased() {
+  local c
+  c=$(cleanup_fixture leased)
+  cleanup_free_fixture "$c"
+  printf 'old\n' > "$c/wt/old.log"
+  python3 - "$c/pool/treehouse-state.json" <<'PYCODE'
+import json, sys
+p = sys.argv[1]
+s = json.load(open(p))
+s['worktrees'][0]['leased'] = True
+open(p, 'w').write(json.dumps(s))
+PYCODE
+  if run_cleanup_free "$c" > "$c/out" 2> "$c/err"; then fail 'free-slot mode allowed a leased slot'; fi
+  grep -q 'leased' "$c/err" || fail 'leased-slot refusal did not explain lease'
+  [ -f "$c/wt/old.log" ] || fail 'leased slot was cleaned'
+  pass 'free-slot mode refuses a lease even if status claims available'
+}
+
+test_cleanup_protected_targets() {
+  local c destination
+  for destination in ancestor root descendant; do
+    c=$(cleanup_fixture "protected-$destination")
+    case "$destination" in
+      ancestor) ln -s "$c" "$c/wt/target" ;;
+      root) ln -s "$c/wt" "$c/wt/target" ;;
+      descendant) ln -s "$c/wt/build" "$c/wt/target" ;;
+    esac
+    "$ROOT/bin/fm-worktree-cleanup.sh" --worktree "$c/wt" "$TMP_ROOT" > "$c/out" 2> "$c/err" \
+      || fail 'worktree target prevented safe unlink'
+    [ -f "$c/wt/build/source" ] || fail "temporary $destination target destroyed tracked source"
+    [ -f "$c/state/task-x1.meta" ] || fail "temporary $destination target destroyed task state"
+    [ ! -L "$c/wt/target" ] || fail 'worktree link was not unlinked'
+  done
+  c=$(cleanup_fixture git-target)
+  fm_git_init_commit "$c/other-repo"
+  mkdir -p "$c/other-repo/target"
+  printf 'source\n' > "$c/other-repo/target/source"
+  git -C "$c/other-repo" add target/source
+  git -C "$c/other-repo" commit -qm 'other tracked build source'
+  ln -s "$c/other-repo/target" "$c/wt/target"
+  "$ROOT/bin/fm-worktree-cleanup.sh" --worktree "$c/wt" "$c" > "$c/out" 2> "$c/err" \
+    || fail 'git target prevented safe unlink'
+  [ -f "$c/other-repo/target/source" ] || fail 'temporary target destroyed another repository source'
+  [ ! -L "$c/wt/target" ] || fail 'git target link was not unlinked'
+  pass 'temporary targets cannot erase the worktree ancestor or another repository'
+}
+
+test_cleanup_link_cycle() {
+  local c
+  c=$(cleanup_fixture link-cycle)
+  ln -s target "$c/wt/target"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'symlink cycle prevented teardown'
+  [ ! -L "$c/wt/target" ] || fail 'cyclic symlink survived'
+  pass 'cyclic ignored build link is unlinked without traversal'
+}
+
+test_cleanup_reservations() {
+  local c flag
+  for flag in owner_pid destroying lease_id recovery_error; do
+    c=$(cleanup_fixture "reserved-$flag")
+    cleanup_free_fixture "$c"
+    printf 'output\n' > "$c/wt/old.log"
+    python3 - "$c/pool/treehouse-state.json" "$flag" <<'PYCODE'
+import json, sys
+p, flag = sys.argv[1:]
+s = json.load(open(p))
+s['worktrees'][0][flag] = 123 if flag == 'owner_pid' else True
+open(p, 'w').write(json.dumps(s))
+PYCODE
+    if run_cleanup_free "$c" > "$c/out" 2> "$c/err"; then fail "free-slot mode allowed reservation $flag"; fi
+    [ -f "$c/wt/old.log" ] || fail "reserved slot $flag was cleaned"
+  done
+  pass 'free-slot mode refuses outstanding reservations and recovery state'
+}
+
+test_cleanup_unavailable() {
+  local c state
+  for state in leased in-use dirty unverified damaged; do
+    c=$(cleanup_fixture "unavailable-$state")
+    cleanup_free_fixture "$c"
+    printf 'output\n' > "$c/wt/old.log"
+    printf '[{"name":"1","path":"%s","status":"%s"}]\n' "$c/wt" "$state" > "$c/status.json"
+    if run_cleanup_free "$c" > "$c/out" 2> "$c/err"; then fail "free-slot mode allowed status $state"; fi
+    [ -f "$c/wt/old.log" ] || fail "unavailable slot $state was cleaned"
+  done
+  pass 'free-slot mode refuses every non-available status'
+}
+
+test_cleanup_changed_pool() {
+  local c
+  c=$(cleanup_fixture changed-pool)
+  cleanup_free_fixture "$c"
+  printf 'output\n' > "$c/wt/old.log"
+  cat > "$c/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf '\n' >> "$CLEANUP_CASE/pool/treehouse-state.json"
+cat "$CLEANUP_CASE/status.json"
+SH
+  if run_cleanup_free "$c" > "$c/out" 2> "$c/err"; then fail 'cleanup allowed changed pool snapshot'; fi
+  [ -f "$c/wt/old.log" ] || fail 'cleanup ran after pool changed'
+  pass 'free-slot cleanup refuses a pool that changed during inspection'
+}
+
+test_cleanup_lock() {
+  local c
+  c=$(cleanup_fixture locked-pool)
+  cleanup_free_fixture "$c"
+  printf 'output\n' > "$c/wt/old.log"
+  if ! CLEANUP_CASE="$c" PATH="$c/fakebin:$PATH" python3 - "$c" "$TEARDOWN" <<'PYCODE'
+import fcntl, pathlib, subprocess, sys
+c, teardown = sys.argv[1:]
+with open(c + '/pool/treehouse-state.lock', 'r+') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    result = subprocess.run([teardown, '--clean-free-slot', c + '/project', c + '/pool', '1'],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert result.returncode != 0, 'cleanup ignored the native pool lock'
+assert pathlib.Path(c + '/wt/old.log').exists(), 'contended pool was cleaned'
+PYCODE
+  then
+    fail 'native pool lock regression'
+  fi
+  pass 'free-slot cleanup holds the native pool lock and refuses contention'
+}
+
+test_cleanup_free_unlanded() {
+  local c
+  c=$(cleanup_fixture free-unlanded)
+  cleanup_free_fixture "$c"
+  wt_commit_file "$c" new-source 'not landed'
+  printf 'output\n' > "$c/wt/old.log"
+  if run_cleanup_free "$c" > "$c/out" 2> "$c/err"; then fail 'free-slot mode allowed unlanded branch'; fi
+  [ -f "$c/wt/old.log" ] || fail 'free-slot mode cleaned unlanded branch'
+  pass 'free-slot cleanup independently verifies content landed on the local default'
+}
+
+test_cleanup_nested_repository() {
+  local c
+  c=$(cleanup_fixture nested-repo)
+  mkdir -p "$c/wt/scratch"
+  fm_git_init_commit "$c/wt/scratch/other-repo"
+  printf 'old\n' > "$c/wt/scratch/old.log"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'nested repository teardown failed'
+  [ -f "$c/wt/scratch/other-repo/README.md" ] || fail 'cleanup destroyed nested tracked source'
+  [ ! -e "$c/wt/scratch/old.log" ] || fail 'nested repository prevented sibling scratch cleanup'
+  pass 'ignored scratch preserves nested repository source'
+}
+
+test_cleanup_unattributed_target() {
+  local c
+  c=$(cleanup_fixture unattributed-target)
+  mkdir -p "$c/shared-temp/target"
+  printf 'other task\n' > "$c/shared-temp/target/output"
+  ln -s "$c/shared-temp/target" "$c/wt/target"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'unattributed target teardown failed'
+  [ -f "$c/shared-temp/target/output" ] || fail 'cleanup destroyed a temp target with no task ownership record'
+  [ ! -L "$c/wt/target" ] || fail 'unattributed build link survived'
+  pass 'unattributed temporary targets are preserved while their ignored links are removed'
+}
+
+test_cleanup_external_links() {
+  local c external
+  c=$(cleanup_fixture external-links)
+  external=$(mktemp -d /var/tmp/fm-cleanup-external.XXXXXX)
+  printf 'unrelated\n' > "$external/source"
+  ln -s "$external" "$c/wt/target"
+  "$ROOT/bin/fm-worktree-cleanup.sh" --worktree "$c/wt" /var/tmp > "$c/out" 2> "$c/err" \
+    || fail 'non-temporary build target prevented unlink'
+  [ -f "$external/source" ] || fail 'cleanup followed build target outside permitted temp roots'
+  rm -rf "$external"
+  c=$(cleanup_fixture nested-links)
+  mkdir -p "$c/task-temp/target" "$c/task-temp/shared"
+  printf 'unrelated\n' > "$c/task-temp/shared/source"
+  ln -s "$c/task-temp/shared" "$c/task-temp/target/build"
+  ln -s "$c/task-temp/target" "$c/wt/target"
+  "$ROOT/bin/fm-worktree-cleanup.sh" --worktree "$c/wt" "$c/task-temp" > "$c/out" 2> "$c/err" \
+    || fail 'nested symlink prevented cleanup'
+  [ -f "$c/task-temp/shared/source" ] || fail 'cleanup followed a link inside the temp target'
+  [ ! -e "$c/task-temp/target" ] || fail 'owned build target survived'
+  c=$(cleanup_fixture nonbuild-links)
+  mkdir -p "$c/task-temp/shared"
+  printf 'unrelated\n' > "$c/task-temp/shared/source"
+  ln -s "$c/task-temp/shared" "$c/wt/old.log"
+  "$ROOT/bin/fm-worktree-cleanup.sh" --worktree "$c/wt" "$c/task-temp" > "$c/out" 2> "$c/err" \
+    || fail 'non-build link prevented cleanup'
+  [ -f "$c/task-temp/shared/source" ] || fail 'cleanup followed a non-build symlink'
+  pass 'external build links and links inside a temp target are never followed'
+}
+
+test_cleanup_slot_identity() {
+  local c variant
+  for variant in missing duplicate wrong-path; do
+    c=$(cleanup_fixture "slot-identity-$variant")
+    cleanup_free_fixture "$c"
+    printf 'output\n' > "$c/wt/old.log"
+    python3 - "$c/pool/treehouse-state.json" "$c/status.json" "$variant" <<'PYCODE'
+import json, sys
+p, status_path, variant = sys.argv[1:]
+s = json.load(open(p))
+if variant == 'missing':
+    s['worktrees'] = []
+elif variant == 'duplicate':
+    s['worktrees'].append(s['worktrees'][0])
+else:
+    status = json.load(open(status_path))
+    status[0]['path'] += '/other'
+    open(status_path, 'w').write(json.dumps(status))
+open(p, 'w').write(json.dumps(s))
+PYCODE
+    if run_cleanup_free "$c" > "$c/out" 2> "$c/err"; then fail "free-slot mode allowed $variant identity"; fi
+    [ -f "$c/wt/old.log" ] || fail "free-slot mode cleaned $variant identity"
+    grep -q '^REFUSED: ignored cleanup:' "$c/err" || fail "missing $variant identity diagnostic"
+  done
+  pass 'free-slot mode requires one matching state and status identity'
+}
+
+test_cleanup_hardlinks() {
+  local c
+  c=$(cleanup_fixture hardlinks)
+  printf 'shared blocks\n' > "$c/external-source"
+  ln "$c/external-source" "$c/wt/old.log"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'hardlink teardown failed'
+  [ -f "$c/external-source" ] || fail 'hardlink source was removed'
+  [ ! -e "$c/wt/old.log" ] || fail 'ignored hardlink survived'
+  grep -q '; freed ~0 bytes$' "$c/out" || fail 'cleanup counted still-shared hardlink blocks as freed'
+  pass 'cleanup does not claim freed blocks while another hardlink retains them'
+}
+
+test_cleanup_gate() {
+  local c rc=0
+  c=$(cleanup_fixture gate)
+  cleanup_free_fixture "$c"
+  printf 'output\n' > "$c/wt/old.log"
+  FM_GATE_REFUSE_BYPASS='' NO_MISTAKES_GATE=1 run_cleanup_free "$c" > "$c/out" 2> "$c/err" || rc=$?
+  expect_code 3 "$rc" 'free-slot mode must retain the gate-agent lifecycle refusal'
+  [ -f "$c/wt/old.log" ] || fail 'gate agent cleaned the free slot'
+  pass 'free-slot mode retains the gate-agent lifecycle refusal before mutation'
+}
+
+test_cleanup_dangling_build() {
+  local c
+  c=$(cleanup_fixture dangling-build)
+  mkdir -p "$c/task-temp"
+  printf 'tasktmp=%s\n' "$c/task-temp" >> "$c/state/task-x1.meta"
+  ln -s "$c/task-temp/missing" "$c/wt/target"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'dangling build link prevented teardown'
+  [ ! -L "$c/wt/target" ] || fail 'dangling build link survived'
+  pass 'owned temporary build link is unlinked when its target is already missing'
+}
+
+if [ "${1:-}" = cleanup ]; then
+  shift
+  if [ "$#" -gt 0 ]; then
+    "test_cleanup_$1"
+  else
+    for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build; do "test_cleanup_$cleanup_case"; done
+  fi
+  exit 0
+fi
+for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build; do "test_cleanup_$cleanup_case"; done
 
 test_shared_daemon_restored_after_a_successful_return
 test_landed_task_clears_only_its_gate_backups
