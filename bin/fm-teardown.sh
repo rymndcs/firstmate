@@ -115,8 +115,12 @@
 # observe the outage. bin/fm-nomistakes-daemon.sh owns that contract; it is
 # idempotent, silent when a healthy daemon exists, and reports rather than fails
 # - a daemon problem can never block or fail a teardown.
-# Ignored-artifact selection, retention and temporary-target policy are owned by
-# bin/fm-worktree-cleanup.sh; cleanup runs before returning a finished task slot.
+# A landed ship teardown (the landed-work guards ran and passed, so never with
+# --force and never for a scout) stops the slot's processes and deletes its
+# ignored files while the slot is still leased, then returns it. A cleanup that
+# cannot finish is reported and the return proceeds, leaving what remained.
+# bin/fm-worktree-cleanup.sh owns writer stopping, selection, retention, the
+# task's temporary-target record (state/<task-id>.temp-targets) and reporting.
 # Usage: fm-teardown.sh <task-id> [--force]
 #   fm-teardown.sh --clean-free-slot <project> <pool-directory> <slot-name>
 #   The one-off mode prunes only an available pool slot; it never returns it.
@@ -2218,7 +2222,12 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   [ -z "$T_ORCA" ] || fm_backend_kill "$BACKEND" "$T" "$(meta_value "$META" zellij_tab_id)" "fm-$ID" 2>/dev/null || true
   fm_backend_remove_worktree "$BACKEND" "$ORCA_WORKTREE_ID"
 elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
-  "$SCRIPT_DIR/fm-worktree-cleanup.sh" --worktree "$WT" "$TASK_TMP"
+  landed_guards_passed=0
+  if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ]; then
+    landed_guards_passed=1
+    "$SCRIPT_DIR/fm-worktree-cleanup.sh" --worktree "$WT" "$TASK_TMP" "$STATE/$ID.temp-targets" \
+      || echo "teardown: ignored cleanup incomplete for $ID; returning the slot with the leftovers reported above" >&2
+  fi
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then
     if git -C "$WT" checkout --detach -q 2>/dev/null; then
@@ -2233,7 +2242,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   # the project. teardown_treehouse_return tolerates transient and stale git locks
   # left by a killed crew process; see the script header for retry and stale-lock proof.
   post_lock_cleanup_check=
-  if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ]; then
+  if [ "$landed_guards_passed" = 1 ]; then
     post_lock_cleanup_check=validate_worktree_teardown_safety
   fi
   teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
@@ -2381,7 +2390,7 @@ retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 cleanup_gate_backup_refs || true
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
-  "$STATE/$ID.kimi-turnend-token"
+  "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.temp-targets"
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi

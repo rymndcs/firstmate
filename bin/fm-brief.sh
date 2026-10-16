@@ -297,6 +297,7 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+TEMP_TARGETS=$(shell_quote "$STATE/$ID.temp-targets")
 DECISION_HOLD_CMD="FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-decision-hold.sh")"
 
 if [ "$KIND" = secondmate ]; then
@@ -603,6 +604,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 # Rules
 $RULE1
 2. Stay inside this worktree; modify nothing outside it.
+   If you create a temporary directory outside this worktree, record its absolute path so teardown knows this task owns it: \`echo <absolute-path> >> $TEMP_TARGETS\`.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`

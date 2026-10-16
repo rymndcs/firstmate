@@ -230,7 +230,7 @@ Task landings go through `bin/fm-pr-merge.sh` or `bin/fm-merge-local.sh`, which 
 The helper requires a full `https://github.com/<owner>/<repo>/pull/<n>` URL, invokes `gh-axi pr merge <n> --repo <owner>/<repo>`, defaults to `--squash`, preserves explicit merge-method flags, and rejects malformed URLs or repo override flags before recording merge state; a well-formed GitLab merge request URL (see [docs/gitlab-merge-watch.md](gitlab-merge-watch.md)) is refused too, explicitly, rather than sent to the wrong forge.
 Teardown is fail-closed for ship worktrees: dirty worktrees refuse, and committed work must be landed before the worktree is returned.
 [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the landed-work proofs, PR-discovery fallback, attributable gate-backup-ref cleanup, stale-lock recovery, and the one-off free-slot cleanup entry point.
-[`bin/fm-worktree-cleanup.sh`](../bin/fm-worktree-cleanup.sh) owns ignored-artifact retention and temporary-target attribution; [`tests/fm-teardown.test.sh`](../tests/fm-teardown.test.sh) exercises both teardown and free-slot cleanup.
+[`bin/fm-worktree-cleanup.sh`](../bin/fm-worktree-cleanup.sh) owns stopping a returning slot's processes before its ignored artifacts are deleted, retention, and temporary-target attribution; [`tests/fm-teardown.test.sh`](../tests/fm-teardown.test.sh) exercises both teardown and free-slot cleanup.
 
 ## Optional X mode
 
