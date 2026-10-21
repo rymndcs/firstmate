@@ -3865,6 +3865,28 @@ test_cleanup_tracked_dependency_install() {
   pass 'a dependency install beside a tracked node_modules file stays'
 }
 
+test_cleanup_tracked_nested_project() {
+  local c
+  c=$(cleanup_fixture tracked-nested-project)
+  printf '%s\n' .claude >> "$(git -C "$c/wt" rev-parse --git-path info/exclude)"
+  mkdir -p "$c/wt/apps/web/.claude/hooks" "$c/wt/apps/web/node_modules/pkg" "$c/wt/apps/web/node_modules/other"
+  printf '{}\n' > "$c/wt/apps/web/.claude/settings.json"
+  printf '{}\n' > "$c/wt/apps/web/node_modules/pkg/package.json"
+  cleanup_track "$c" apps/web/.claude/settings.json apps/web/node_modules/pkg/package.json
+  printf 'hook\n' > "$c/wt/apps/web/.claude/hooks/h.sh"
+  printf 'notes\n' > "$c/wt/apps/web/.claude/notes.md"
+  printf 'module\n' > "$c/wt/apps/web/node_modules/other/index.js"
+  printf 'old\n' > "$c/wt/old.log"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'tracked nested project teardown failed'
+  [ -f "$c/wt/apps/web/.claude/hooks/h.sh" ] || fail 'cleanup removed a local hook beside tracked apps/web/.claude/settings.json'
+  [ -f "$c/wt/apps/web/.claude/notes.md" ] || fail 'cleanup removed local notes beside tracked apps/web/.claude/settings.json'
+  [ -f "$c/wt/apps/web/node_modules/other/index.js" ] || fail 'cleanup removed a dependency beside tracked apps/web/node_modules/pkg/package.json'
+  [ -f "$c/wt/apps/web/.claude/settings.json" ] || fail 'cleanup removed tracked apps/web/.claude/settings.json'
+  [ -f "$c/wt/apps/web/node_modules/pkg/package.json" ] || fail 'cleanup removed tracked apps/web/node_modules/pkg/package.json'
+  [ ! -e "$c/wt/old.log" ] || fail 'tracked nested project cleanup left worktree output'
+  pass 'local files beside tracked files in a nested project stay'
+}
+
 test_cleanup_deps_contexts() {
   local c
   c=$(cleanup_fixture deps-contexts)
@@ -3887,11 +3909,11 @@ if [ "${1:-}" = cleanup ]; then
   if [ "$#" -gt 0 ]; then
     "test_cleanup_$1"
   else
-    for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children tracked_agent_config tracked_codex_config tracked_dependency_install deps_contexts; do "test_cleanup_$cleanup_case"; done
+    for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children tracked_agent_config tracked_codex_config tracked_dependency_install tracked_nested_project deps_contexts; do "test_cleanup_$cleanup_case"; done
   fi
   exit 0
 fi
-for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children tracked_agent_config tracked_codex_config tracked_dependency_install deps_contexts; do "test_cleanup_$cleanup_case"; done
+for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children tracked_agent_config tracked_codex_config tracked_dependency_install tracked_nested_project deps_contexts; do "test_cleanup_$cleanup_case"; done
 
 test_shared_daemon_restored_after_a_successful_return
 test_landed_task_clears_only_its_gate_backups
