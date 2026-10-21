@@ -3811,16 +3811,87 @@ test_cleanup_kept_listed_children() {
   pass 'ignored files git lists inside a kept directory stay with it'
 }
 
+# A tracked file makes git list the ignored entries beside it one by one.
+cleanup_track() {
+  local c=$1; shift
+  git -C "$c/wt" add -f -- "$@"
+  git -C "$c/wt" commit -qm 'track a file inside a kept directory'
+  git -C "$c/project" update-ref refs/heads/main "$(git -C "$c/wt" rev-parse HEAD)"
+}
+
+test_cleanup_tracked_agent_config() {
+  local c
+  c=$(cleanup_fixture tracked-agent-config)
+  printf '%s\n' .claude >> "$(git -C "$c/wt" rev-parse --git-path info/exclude)"
+  mkdir -p "$c/wt/.claude/hooks" "$c/wt/.claude/skills/mine" "$c/wt/.claude/skills/shared"
+  printf '{}\n' > "$c/wt/.claude/settings.json"
+  printf 'shared skill\n' > "$c/wt/.claude/skills/shared/SKILL.md"
+  cleanup_track "$c" .claude/settings.json .claude/skills/shared/SKILL.md
+  printf 'hook\n' > "$c/wt/.claude/hooks/local-hook.sh"
+  printf 'skill\n' > "$c/wt/.claude/skills/mine/SKILL.md"
+  printf 'old\n' > "$c/wt/old.log"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'tracked agent config teardown failed'
+  [ -f "$c/wt/.claude/hooks/local-hook.sh" ] || fail 'cleanup removed a local hook beside tracked .claude/settings.json'
+  [ -f "$c/wt/.claude/skills/mine/SKILL.md" ] || fail 'cleanup removed a local skill beside a tracked .claude skill'
+  [ -f "$c/wt/.claude/settings.json" ] || fail 'cleanup removed tracked .claude/settings.json'
+  [ ! -e "$c/wt/old.log" ] || fail 'tracked agent config cleanup left worktree output'
+  pass 'local agent config beside a tracked .claude file stays'
+}
+
+test_cleanup_tracked_codex_config() {
+  local c
+  c=$(cleanup_fixture tracked-codex-config)
+  printf '%s\n' .codex >> "$(git -C "$c/wt" rev-parse --git-path info/exclude)"
+  mkdir -p "$c/wt/.codex"
+  printf 'model = "x"\n' > "$c/wt/.codex/config.toml"
+  cleanup_track "$c" .codex/config.toml
+  printf 'notes\n' > "$c/wt/.codex/local-notes.md"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'tracked codex config teardown failed'
+  [ -f "$c/wt/.codex/local-notes.md" ] || fail 'cleanup removed local notes beside tracked .codex/config.toml'
+  [ -f "$c/wt/.codex/config.toml" ] || fail 'cleanup removed tracked .codex/config.toml'
+  pass 'local notes beside a tracked .codex file stay'
+}
+
+test_cleanup_tracked_dependency_install() {
+  local c
+  c=$(cleanup_fixture tracked-dependency-install)
+  mkdir -p "$c/wt/node_modules/pkg" "$c/wt/node_modules/other"
+  printf '{}\n' > "$c/wt/node_modules/pkg/package.json"
+  cleanup_track "$c" node_modules/pkg/package.json
+  printf 'module\n' > "$c/wt/node_modules/other/index.js"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'tracked dependency install teardown failed'
+  [ -f "$c/wt/node_modules/other/index.js" ] || fail 'cleanup removed a dependency beside tracked node_modules/pkg/package.json'
+  [ -f "$c/wt/node_modules/pkg/package.json" ] || fail 'cleanup removed tracked node_modules/pkg/package.json'
+  pass 'a dependency install beside a tracked node_modules file stays'
+}
+
+test_cleanup_deps_contexts() {
+  local c
+  c=$(cleanup_fixture deps-contexts)
+  mkdir -p "$c/wt/build/node/deps" "$c/wt/build/node/cargo/deps" "$c/wt/tools/build/deps" \
+    "$c/wt/tools/build/cargo/debug/deps"
+  printf 'dependency\n' > "$c/wt/build/node/deps/installed"
+  printf 'dependency\n' > "$c/wt/build/node/cargo/deps/installed"
+  printf 'dependency\n' > "$c/wt/tools/build/deps/installed"
+  printf 'test binary\n' > "$c/wt/tools/build/cargo/debug/deps/fri37_test-abcd"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'deps contexts teardown failed'
+  [ -f "$c/wt/build/node/deps/installed" ] || fail 'cleanup removed build/node/deps, which is not a named compiler context'
+  [ -f "$c/wt/tools/build/deps/installed" ] || fail 'cleanup removed tools/build/deps, which is not a named compiler context'
+  [ -f "$c/wt/build/node/cargo/deps/installed" ] || fail 'cleanup removed build/node/cargo/deps, which is not below build/cargo'
+  [ ! -e "$c/wt/tools/build/cargo" ] || fail 'cleanup kept compiler deps in a nested build/cargo/debug/deps'
+  pass 'deps goes only below target or build/cargo'
+}
+
 if [ "${1:-}" = cleanup ]; then
   shift
   if [ "$#" -gt 0 ]; then
     "test_cleanup_$1"
   else
-    for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children; do "test_cleanup_$cleanup_case"; done
+    for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children tracked_agent_config tracked_codex_config tracked_dependency_install deps_contexts; do "test_cleanup_$cleanup_case"; done
   fi
   exit 0
 fi
-for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children; do "test_cleanup_$cleanup_case"; done
+for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children tracked_agent_config tracked_codex_config tracked_dependency_install deps_contexts; do "test_cleanup_$cleanup_case"; done
 
 test_shared_daemon_restored_after_a_successful_return
 test_landed_task_clears_only_its_gate_backups

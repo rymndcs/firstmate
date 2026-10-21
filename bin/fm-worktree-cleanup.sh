@@ -4,8 +4,9 @@
 # selected. A path git lists inside another listed directory is handled with
 # that directory, never again on its own. KEEP below is the single retention
 # list: names match at any depth and entries with a slash match as a path
-# suffix, except that deps below a target or build directory is compiler output
-# (target/debug/deps, build/cargo/debug/deps) and goes. It holds
+# suffix, except that deps below a target or build/cargo directory is compiler
+# output (target/**/deps, build/cargo/**/deps) and goes. A path is kept when it
+# or any directory above it matches, even when git lists it apart. It holds
 # reusable dependency installs, .env* private configuration, live Lavish review
 # sessions and local agent configuration or notes. Everything else ignored is
 # disposable task material. A read-only directory inside an ignored worktree
@@ -68,7 +69,7 @@ import time
 KEEP = ("node_modules", "vendor/bundle", ".venv", "venv", ".bundle", "deps", ".yarn/cache",
         "Pods", ".terraform", ".gradle", "bower_components", ".env*", ".lavish",
         ".claude", ".codex", ".agents", "CLAUDE.local.md")
-COMPILER_OUTPUT = {"target", "build"}
+COMPILER_OUTPUT = (("target",), ("build", "cargo"))
 BUILD_OUTPUT = ("target", ".build", "build")
 TEMP_ROOTS = tuple(Path(p).resolve() for p in ("/tmp", "/private/tmp", "/var/folders", "/private/var/folders"))
 
@@ -82,10 +83,15 @@ def repository(path):
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
+def compiled(parts):
+    return any(parts[i:i + len(context)] == context
+               for context in COMPILER_OUTPUT for i in range(len(parts)))
+
+
 def keep(relative):
     parts = relative.parts
     return any(fnmatch.fnmatchcase("/".join(parts[i:]), pattern)
-               and (pattern != "deps" or not COMPILER_OUTPUT.intersection(parts[:i]))
+               and (pattern != "deps" or not compiled(parts[:i]))
                for pattern in KEEP for i in range(len(parts)))
 
 
@@ -245,7 +251,7 @@ class Cleanup:
         ).split(b"\0") if raw]
         tops = set(listed)
         for relative in listed:
-            if not any(parent in tops for parent in relative.parents):
+            if not any(parent in tops or keep(parent) for parent in relative.parents):
                 before = self.removed
                 self.remove(self.root / relative, relative)
                 if self.removed != before:
