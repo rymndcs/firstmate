@@ -82,6 +82,8 @@ mkdir -p "$STATE"
 . "$SCRIPT_DIR/fm-pending-reply-lib.sh"
 # shellcheck source=bin/fm-busy-lib.sh
 . "$SCRIPT_DIR/fm-busy-lib.sh"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
 
 WATCH_LOCK="$STATE/.watch.lock"
 WATCH_PATH="$SCRIPT_DIR/fm-watch.sh"
@@ -762,7 +764,14 @@ if ! fm_pr_poll_retirement_recover_all "$STATE" "$SCRIPT_DIR/fm-pr-poll.sh"; the
   wake "$reason"
 fi
 
+DESKTOP_AWAY_AT_START=0
+fm_afk_desktop_selected "$STATE" && DESKTOP_AWAY_AT_START=1
 while :; do
+  if [ "$DESKTOP_AWAY_AT_START" -eq 0 ] && fm_afk_desktop_selected "$STATE"; then
+    reason='check: away-owner - transfer normal supervision to Desktop away delivery'
+    fm_wake_append check away-owner "$reason" || exit 1
+    wake "$reason"
+  fi
   # Self-eviction: if the singleton lock no longer names this process, a second
   # watcher has taken over (e.g. a transient duplicate from a racy arm). Stand
   # down so the rightful singleton continues alone. The EXIT trap's release

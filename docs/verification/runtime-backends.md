@@ -568,3 +568,41 @@ The host-tool sequence was:
 Observed guarantee: a Desktop-owned thread can write Firstmate lifecycle files when the prompt provides an authorized absolute path, and create, send, read, and archive work at the Desktop host-tool layer.
 The missing guarantee remains a supported shell-callable bridge that lets Firstmate perform those operations against the same visible Desktop endpoint.
 App-server partial methods and raw socket experiments do not satisfy that bridge contract.
+
+## Claude CLI hooks for Desktop away delivery
+
+The Stop-hook mechanism was verified on 2026-10-22 with Claude Code 2.1.296 in disposable projects and separate fixture homes.
+This is CLI evidence; actual Desktop lifecycle and UI behavior still require operator acceptance before unattended use.
+The AFK skill owns the shared policy, and `docs/watcher-continuity.md` owns delivery continuity and cancellation limits.
+
+Refresh the credentialed CLI evidence with:
+
+```sh
+FM_AFK_DESKTOP_LIVE=1 bin/fm-test-run.sh \
+  tests/fm-afk-desktop-live-e2e.test.sh \
+  tests/fm-afk-desktop-policy-live-e2e.test.sh
+```
+
+The live scripts' headers own transcript retention and fixture controls.
+The fixture helper strips inherited terminal selectors and installs fake terminal transports in copied backend code, including when PATH changes.
+`tests/fm-afk-fixture-isolation.test.sh` is the portable regression for that isolation boundary.
+
+The chain released ten separate event latches, completed ten hook continuations and emitted eleven assistant text blocks, each exactly `·`, with zero no-visible-output demands.
+Two shortened pre-expiry renewals emitted three exact marks and zero such demands.
+The stable verdicts were:
+
+```text
+ok - D1: Claude 2.1.296 (Claude Code) completed 10 silent hook continuations
+ok - D2: Claude 2.1.296 (Claude Code) completed 2 silent hook continuations
+ok - D7 CLI: concurrent Stop ownership, fixture hold suppression and dismissal
+```
+
+The policy fixture resolved one authorized fake stop, parked one unresolved choice in durable state, completed unrelated work and handled repeated internal callbacks without repeating those actions.
+Its three away text blocks were exact marks, followed by one current-state summary on real return.
+A pending completion released after return produced no late away handoff.
+UserPromptSubmit received both marked internal callbacks as well as real input, so that hook alone does not establish human presence.
+Concurrent Stop calls under the real CLI ancestry admitted one coordinator, and a fixture global hold suppressed it until explicit fixture dismissal.
+
+The local API rejection retained away state and pending evidence, emitted `StopFailure` only and started no replacement Stop cycle.
+Its non-mark assistant error record had model `<synthetic>` and `is_api_error_message: true`, matching the AFK policy's host-error exception.
+No Desktop window/session closure, app quit, machine sleep, visible-notification behavior or full configured hook lifetime is established by these CLI tests.

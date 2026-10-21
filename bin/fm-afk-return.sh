@@ -104,14 +104,6 @@ write_gate() {  # <evidence-file> <blockers-file>
   mv "$pending" "$GATE"
 }
 
-print_evidence() {  # <file>
-  local file=$1 kind text
-  while IFS="$(printf '\t')" read -r tag kind text; do
-    [ "$tag" = evidence ] || continue
-    printf 'catch-up %s: %s\n' "$kind" "$text"
-  done < "$file"
-}
-
 print_blockers() {  # <file>
   local file=$1 tag id key summary
   while IFS="$(printf '\t')" read -r tag id key summary; do
@@ -173,14 +165,12 @@ return_reconcile() {
   if [ "$lifecycle_ok" -ne 1 ] || [ -s "$blockers" ]; then
     write_gate "$evidence" "$blockers" || { rm -f "$evidence" "$blockers"; return 1; }
     printf 'fm-afk-return: catch-up must finish before the captain request\n' >&2
-    print_evidence "$GATE" >&2
     print_blockers "$GATE" >&2
     printf 'fm-afk-return: handle each blocker now, or close it with resolved [key=...] and append a durable reclassification reason, then run bin/fm-afk-return.sh check\n' >&2
     rm -f "$evidence" "$blockers"
     return 3
   fi
 
-  print_evidence "$evidence"
   rm -f "$GATE"
   clear_delivery_artifacts
   rm -f "$evidence" "$blockers"

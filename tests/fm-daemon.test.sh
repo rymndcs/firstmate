@@ -598,6 +598,8 @@ test_escalate_batches_into_one_digest() {
     || fail "escalate_flush failed"
   grep -F 'FIRSTMATE_OP: v1 away-supervisor: ' "$sent" >/dev/null \
     || fail "batch digest lacks the exact current away-supervisor kind"
+  grep -F 'End every away turn with exactly · as its only visible text.' "$sent" >/dev/null \
+    || fail "pane reminder lost quiet-F contract"
   grep -F "event A" "$sent" >/dev/null || fail "batch digest missing event A"
   grep -F "event B" "$sent" >/dev/null || fail "batch digest missing event B"
   grep -F 'event A: done: PR 1 | event B: done: PR 2' "$sent" >/dev/null \

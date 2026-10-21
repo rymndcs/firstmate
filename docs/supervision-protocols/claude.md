@@ -1,6 +1,6 @@
 Mode: Claude Stop-hook-owned supervision.
 
-When this session owns supervision and neither away mode nor a captain hold is active:
+When this session owns supervision and no captain hold is active, follow the selected supervision policy:
 1. Drain first with `bin/fm-wake-drain.sh`.
 2. Routine watcher arm and re-arm are owned by the Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`), never by you.
    Every turn end while supervision is needed launches or attaches one home-scoped watcher cycle with no model command and no model tokens.
@@ -19,7 +19,9 @@ When this session owns supervision and neither away mode nor a captain hold is a
 8. The turn-end guard (`bin/fm-turnend-guard.sh --claude`) remains the final backstop.
    It uses the same live-watcher and fresh-beacon predicate as the pull guard.
    It allows the stop when a watcher is healthy or the role-verified auto-arm owns recovery, while fresh failure epochs advance the bounded one-time attended fail-open progression described in [`turnend-guard.md`](../turnend-guard.md).
-9. Waiting on the hook-owned cycle is silent: do not send idle progress while the watcher is parked.
+9. In Desktop away mode, load `/afk`; the same Stop owner runs the shared away coordinator and delivers marked internal reminders, including quiet renewal.
+   Follow `/afk`'s fixed-mark output policy until a genuine return and preserve the pending batch until consumption.
+10. Waiting on the hook-owned cycle is silent: do not send idle progress while the watcher is parked.
 
 The watcher itself remains `bin/fm-watch.sh`, and `bin/fm-watch-arm.sh` remains the verified arm wrapper that the Stop hook foregrounds.
 Re-arm attaches to an existing healthy cycle when one is already present and follows its verified successor chain.

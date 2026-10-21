@@ -143,7 +143,15 @@ budget_reset() {
 
 continue_stop() {
   [ "$CLAUDE_MODE" -eq 0 ] || [ ! -e "$STATE/.captain-hold" ] || exit 0
-  [ -z "${1:-}" ] || printf '%s\n' "$1" >&2
+  if [ -n "${1:-}" ] && fm_afk_desktop_selected "$STATE"; then
+    # shellcheck source=bin/fm-operational-input.sh
+    . "$SCRIPT_DIR/fm-operational-input.sh"
+    local away_recovery=
+    fm_operational_input_encode away-supervisor "$1 $(fm_afk_turn_policy)" away_recovery
+    printf '%s\n' "$away_recovery" >&2
+  else
+    [ -z "${1:-}" ] || printf '%s\n' "$1" >&2
+  fi
   exit 2
 }
 
