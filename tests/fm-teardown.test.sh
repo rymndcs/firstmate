@@ -3823,9 +3823,9 @@ test_cleanup_rails_keys() {
   local c mode name
   for mode in worktree free-slot; do
     c=$(cleanup_fixture "rails-keys-$mode")
-    printf '%s\n' config/master.key 'config/credentials/*.key' \
+    printf '%s\n' config/master.key 'config/credentials/*.key' config/settings.local.yml tmp/other.key \
       >> "$(git -C "$c/wt" rev-parse --git-path info/exclude)"
-    mkdir -p "$c/wt/config/credentials" "$c/wt/log"
+    mkdir -p "$c/wt/config/credentials" "$c/wt/log" "$c/wt/tmp"
     printf 'encrypted development\n' > "$c/wt/config/credentials/development.yml.enc"
     printf 'encrypted production\n' > "$c/wt/config/credentials/production.yml.enc"
     cleanup_track "$c" config/credentials/development.yml.enc config/credentials/production.yml.enc
@@ -3833,6 +3833,8 @@ test_cleanup_rails_keys() {
       printf 'fixture key\n' > "$c/wt/config/$name"
     done
     printf 'old log\n' > "$c/wt/log/test.log"
+    printf 'fixture setting\n' > "$c/wt/config/settings.local.yml"
+    printf 'fixture other key\n' > "$c/wt/tmp/other.key"
     if [ "$mode" = worktree ]; then
       "$ROOT/bin/fm-worktree-cleanup.sh" --worktree "$c/wt" "" > "$c/out" 2> "$c/err" \
         || fail 'Rails keys worktree cleanup failed'
@@ -3844,9 +3846,11 @@ test_cleanup_rails_keys() {
       [ "$(cat "$c/wt/config/$name" 2>/dev/null)" = 'fixture key' ] \
         || fail "$mode cleanup removed or changed config/$name"
     done
-    [ ! -e "$c/wt/log/test.log" ] || fail "$mode Rails keys cleanup left ignored log/test.log"
+    for name in log/test.log config/settings.local.yml tmp/other.key; do
+      [ ! -e "$c/wt/$name" ] || fail "$mode Rails keys cleanup left ignored $name"
+    done
   done
-  pass 'both cleanup modes keep Rails keys beside tracked encrypted credentials and remove ignored logs'
+  pass 'both cleanup modes keep only Rails keys and remove ignored logs, config siblings and other keys'
 }
 
 test_cleanup_tracked_agent_config() {
