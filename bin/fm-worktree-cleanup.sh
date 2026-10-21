@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
 # Private implementation for fm-teardown.sh's ignored-artifact cleanup.
 # Git selects ignored, untracked paths; tracked and non-ignored paths are never
-# selected. KEEP below is the single retention list: names match at any depth,
-# entries with a slash match as a path suffix, and it holds reusable dependency
-# installs, .env* private configuration, live Lavish review sessions and local
-# agent configuration or notes. Everything else ignored is disposable task
-# material. A read-only directory inside an ignored worktree path being removed
-# is made writable first; a retained one gets its mode back, and nothing outside
-# the worktree or behind a link is ever made writable.
-# Symlinks are unlinked, never traversed. A build-output link whose target lies
-# in a temporary root also removes that target only when the task owns it:
-# below the recorded tasktmp, or at or below an absolute path the task listed,
-# one per line, in its temporary-target record (state/<task-id>.temp-targets)
-# when it created that directory. A listed path must lie inside a temporary
-# root. Every other existing temporary link target outside the worktree is kept,
-# and the report names it with its size so firstmate can decide. Nested
-# repositories stay.
+# selected. A path git lists inside another listed directory is handled with
+# that directory, never again on its own. KEEP below is the single retention
+# list: names match at any depth and entries with a slash match as a path
+# suffix, except that deps below a target or build directory is compiler output
+# (target/debug/deps, build/cargo/debug/deps) and goes. It holds
+# reusable dependency installs, .env* private configuration, live Lavish review
+# sessions and local agent configuration or notes. Everything else ignored is
+# disposable task material. A read-only directory inside an ignored worktree
+# path being removed is made writable first; a retained one gets its mode back,
+# and nothing outside the worktree or behind a link is ever made writable.
+# Symlinks are unlinked, never traversed. Every directory the task listed, one
+# absolute path per line, in its temporary-target record
+# (state/<task-id>.temp-targets) is removed whole, whether or not a link
+# reaches it. A listed path must lie inside a temporary root, and must not be
+# or hold the caller's TMPDIR. A build-output link whose target lies below the
+# recorded tasktmp also removes that target. Neither removal touches the
+# worktree, a directory holding it, or a git repository. Every other existing
+# temporary target outside the worktree is kept, and the report names it with
+# its size so firstmate can decide. Nested repositories stay.
 # A path that cannot be removed does not stop the rest; the one report line
 # lists completed removals, freed space and each failing path, and the exit
 # status is 1. Space is estimated from allocated blocks (hard-linked files do
@@ -26,7 +30,8 @@
 #
 # --worktree <worktree> <tasktmp> [<temp-target-record>] first stops every
 # process whose working directory is inside the worktree (the set Treehouse's
-# return terminates), except this process and its callers: SIGTERM, then SIGKILL
+# return terminates) or inside a recorded directory it will remove, never one it
+# keeps, except this process and its callers: SIGTERM, then SIGKILL
 # after FM_WORKTREE_CLEANUP_STOP_GRACE_SECS (default 2, Treehouse's own return
 # grace). It refuses without deleting when it cannot inspect processes or one
 # survives. Teardown calls it only after the landed-work guards passed and while
@@ -63,6 +68,7 @@ import time
 KEEP = ("node_modules", "vendor/bundle", ".venv", "venv", ".bundle", "deps", ".yarn/cache",
         "Pods", ".terraform", ".gradle", "bower_components", ".env*", ".lavish",
         ".claude", ".codex", ".agents", "CLAUDE.local.md")
+COMPILER_OUTPUT = {"target", "build"}
 BUILD_OUTPUT = ("target", ".build", "build")
 TEMP_ROOTS = tuple(Path(p).resolve() for p in ("/tmp", "/private/tmp", "/var/folders", "/private/var/folders"))
 
@@ -71,10 +77,16 @@ def git(root, *args):
     return subprocess.check_output(["git", "-C", str(root), *args])
 
 
+def repository(path):
+    return subprocess.run(["git", "-C", str(path), "rev-parse", "--git-dir"],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
 def keep(relative):
     parts = relative.parts
     return any(fnmatch.fnmatchcase("/".join(parts[i:]), pattern)
-               for i in range(len(parts)) for pattern in KEEP)
+               and (pattern != "deps" or not COMPILER_OUTPUT.intersection(parts[:i]))
+               for pattern in KEEP for i in range(len(parts)))
 
 
 def within(parent, path):
@@ -109,19 +121,20 @@ def processes():
     return table
 
 
-def writers(root):
+def writers(roots):
     table = processes()
     protected, pid = set(), os.getpid()
     while pid in table and pid not in protected:
         protected.add(pid)
         pid = table[pid][0]
-    return {pid for pid, (_, cwd) in table.items() if pid not in protected and within(root, cwd)}
+    return {pid for pid, (_, cwd) in table.items()
+            if pid not in protected and any(within(root, cwd) for root in roots)}
 
 
-def stop_writers(root):
+def stop_writers(roots):
     grace = float(os.environ.get("FM_WORKTREE_CLEANUP_STOP_GRACE_SECS", "2"))
     for sig in (signal.SIGTERM, signal.SIGKILL):
-        targets = writers(root)
+        targets = writers(roots)
         if not targets:
             return
         for pid in targets:
@@ -130,11 +143,11 @@ def stop_writers(root):
             except OSError:
                 pass
         deadline = time.monotonic() + grace
-        while targets & writers(root) and time.monotonic() < deadline:
+        while targets & writers(roots) and time.monotonic() < deadline:
             time.sleep(0.05)
-    survivors = writers(root)
+    survivors = writers(roots)
     if survivors:
-        raise OSError("worktree processes survived termination: "
+        raise OSError("processes survived termination: "
                       + ", ".join(str(pid) for pid in sorted(survivors)))
 
 
@@ -146,44 +159,54 @@ def allocated(path):
     return total
 
 
-def owned_roots(task_temp, record):
-    owned = [Path(task_temp).resolve()] if task_temp else []
+def recorded_targets(record):
     try:
         lines = Path(record).read_text().splitlines() if record else []
     except FileNotFoundError:
         lines = []
+    user_temp = Path(os.environ.get("TMPDIR", "/tmp")).resolve()
+    recorded = []
     for line in lines:
         if os.path.isabs(line):
             entry = Path(line).resolve()
-            if any(temporary in entry.parents for temporary in TEMP_ROOTS):
-                owned.append(entry)
-    return owned
+            if any(temporary in entry.parents for temporary in TEMP_ROOTS) and not within(entry, user_temp):
+                recorded.append(entry)
+    return recorded
 
 
 class Cleanup:
-    def __init__(self, root, owned=()):
+    def __init__(self, root, task_temp="", recorded=()):
         self.root = Path(root).resolve()
-        self.owned = owned
+        self.owned = [Path(task_temp).resolve()] if task_temp else []
+        self.recorded = recorded
         self.removed = 0
         self.freed = 0
         self.names = []
         self.kept = {}
         self.failed = []
 
+    def outside(self, target):
+        return (target.exists() and any(temporary in target.parents for temporary in TEMP_ROOTS)
+                and not within(target, self.root) and not within(self.root, target))
+
+    def removable_recorded(self):
+        return [entry for entry in self.recorded if self.outside(entry) and not repository(entry)]
+
+    def release(self, target, owned):
+        if not self.outside(target):
+            return
+        if owned and not repository(target):
+            self.remove(target, Path(target.name), external=True)
+        else:
+            self.kept[target] = allocated(target)
+
     def release_target(self, link):
         try:
             target = link.resolve()
         except (OSError, RuntimeError):
             return
-        if (not target.exists() or not any(temporary in target.parents for temporary in TEMP_ROOTS)
-                or within(target, self.root) or within(self.root, target)):
-            return
-        if (link.name in BUILD_OUTPUT and any(within(owned, target) for owned in self.owned)
-                and subprocess.run(["git", "-C", str(target), "rev-parse", "--git-dir"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0):
-            self.remove(target, Path(target.name), external=True)
-        else:
-            self.kept[target] = allocated(target)
+        if not any(within(entry, target) for entry in self.recorded):
+            self.release(target, link.name in BUILD_OUTPUT and any(within(owned, target) for owned in self.owned))
 
     def remove(self, path, relative, external=False):
         if not external and keep(relative):
@@ -217,21 +240,27 @@ class Cleanup:
         return True
 
     def run(self):
-        candidates = git(self.root, "ls-files", "--others", "--ignored", "--exclude-standard",
-                         "--directory", "-z").split(b"\0")
-        for raw in candidates:
-            if raw:
-                relative = Path(os.fsdecode(raw.rstrip(b"/")))
+        listed = [Path(os.fsdecode(raw.rstrip(b"/"))) for raw in git(
+            self.root, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"
+        ).split(b"\0") if raw]
+        tops = set(listed)
+        for relative in listed:
+            if not any(parent in tops for parent in relative.parents):
                 before = self.removed
                 self.remove(self.root / relative, relative)
                 if self.removed != before:
                     self.names.append(str(relative))
+        for entry in self.recorded:
+            before = self.removed
+            self.release(entry, True)
+            if self.removed != before:
+                self.names.append(str(entry))
         shown = ", ".join(repr(name) for name in self.names[:8]) or "none"
         if len(self.names) > 8:
             shown += f", +{len(self.names) - 8} more"
         line = f"cleanup: removed {self.removed} ignored entries ({shown}); freed ~{self.freed} bytes"
         if self.kept:
-            line += "; kept temporary link targets: " + ", ".join(
+            line += "; kept temporary targets: " + ", ".join(
                 f"'{target}' (~{size} bytes)" for target, size in self.kept.items())
         if self.failed:
             line += "; failed: " + ", ".join(f"'{path}' ({error})" for path, error in self.failed)
@@ -240,9 +269,9 @@ class Cleanup:
 
 
 def worktree(root, task_temp="", record=""):
-    root = Path(root).resolve()
-    stop_writers(root)
-    return Cleanup(root, owned_roots(task_temp, record)).run()
+    cleanup = Cleanup(root, task_temp, recorded_targets(record))
+    stop_writers([cleanup.root, *cleanup.removable_recorded()])
+    return cleanup.run()
 
 
 def free_slot(project, pool, name):

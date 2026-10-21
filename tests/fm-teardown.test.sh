@@ -3041,7 +3041,7 @@ test_cleanup_protected_targets() {
     [ -f "$c/wt/build/source" ] || fail "temporary $destination target destroyed tracked source"
     [ -f "$c/state/task-x1.meta" ] || fail "temporary $destination target destroyed task state"
     [ ! -L "$c/wt/target" ] || fail 'worktree link was not unlinked'
-    ! grep -q 'temporary link targets' "$c/out" || fail "cleanup offered the $destination worktree path for removal"
+    ! grep -q 'kept temporary' "$c/out" || fail "cleanup offered the $destination worktree path for removal"
   done
   c=$(cleanup_fixture git-target)
   fm_git_init_commit "$c/other-repo"
@@ -3166,9 +3166,9 @@ test_cleanup_unattributed_target() {
   run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'unattributed target teardown failed'
   [ -f "$c/shared-temp/target/output" ] || fail 'cleanup destroyed a temp target with no task ownership record'
   [ ! -L "$c/wt/target" ] || fail 'unattributed build link survived'
-  grep -Fq "; kept temporary link targets: '$(real_path "$c/shared-temp/target")' (~" "$c/out" \
+  grep -Fq "; kept temporary targets: '$(real_path "$c/shared-temp/target")' (~" "$c/out" \
     || fail 'cleanup line did not name the unattributed temporary target'
-  grep -Eq "kept temporary link targets: '[^']+' \(~[1-9][0-9]* bytes\)" "$c/out" \
+  grep -Eq "kept temporary targets: '[^']+' \(~[1-9][0-9]* bytes\)" "$c/out" \
     || fail 'cleanup line did not size the unattributed temporary target'
   pass 'unattributed temporary targets are preserved while their ignored links are removed'
 }
@@ -3272,12 +3272,13 @@ mode_of() {
   python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777)[2:])' "$1"
 }
 
-# Start a detached process whose working directory is the case worktree, as a
-# worker's dev server or watcher is. flush recreates scratch/dev.log when asked
-# to stop; stubborn ignores SIGTERM. Prints the pid once the handler is armed.
+# Start a detached process whose working directory is the case worktree (or the
+# given directory), as a worker's dev server or watcher is. flush recreates
+# scratch/dev.log when asked to stop; stubborn ignores SIGTERM. Prints the pid
+# once the handler is armed.
 start_worktree_writer() {
-  local case_dir=$1 behavior=$2 pid
-  pid=$(python3 - "$case_dir/wt" "$behavior" <<'PYCODE'
+  local case_dir=$1 behavior=$2 directory=${3:-$1/wt} pid
+  pid=$(python3 - "$directory" "$behavior" <<'PYCODE'
 import os, signal, sys
 worktree, behavior = sys.argv[1:]
 ready_read, ready_write = os.pipe()
@@ -3586,6 +3587,8 @@ test_cleanup_partial_failure() {
   [ ! -e "$c/state/task-x1.meta" ] || fail 'cleanup failure blocked the rest of teardown'
   grep -Eq "^cleanup: removed [1-9][0-9]* ignored entries .*; freed ~[1-9][0-9]* bytes; failed: '[^']*/made-by-task/ro/obj' \\(" "$c/out" \
     || fail 'partial failure did not report completed removals, freed space and the failing path'
+  [ "$(grep -o 'made-by-task/ro/obj' "$c/out" | wc -l | tr -d ' ')" = 1 ] || fail "partial failure reported the failing path more than once: $(cat "$c/out")"
+  ! grep -q 'kept temporary' "$c/out" || fail 'partial failure also reported the recorded directory as kept'
   grep -q 'ignored cleanup incomplete' "$c/err" || fail 'teardown did not warn about incomplete cleanup'
   pass 'a failed path is reported with completed removals and freed space, and teardown continues'
 }
@@ -3641,16 +3644,183 @@ test_cleanup_lock_lifetime() {
   pass 'free-slot deletion runs while Treehouse pool lock is held'
 }
 
+test_cleanup_rust_deps() {
+  local c
+  c=$(cleanup_fixture rust-deps)
+  printf '%s\n' deps/ >> "$(git -C "$c/wt" rev-parse --git-path info/exclude)"
+  mkdir -p "$c/wt/deps/plug" "$c/wt/target/debug/deps" "$c/wt/target/debug/incremental" \
+    "$c/wt/build/cargo/debug/deps"
+  printf 'dependency\n' > "$c/wt/deps/plug/installed"
+  printf 'rlib\n' > "$c/wt/target/debug/deps/libold-0123.rlib"
+  printf 'test binary\n' > "$c/wt/build/cargo/debug/deps/fri37_test-abcd"
+  printf 'state\n' > "$c/wt/target/debug/incremental/state"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'rust deps teardown failed'
+  [ ! -e "$c/wt/target" ] || fail 'cleanup kept Rust compiler deps in target/debug/deps'
+  [ ! -e "$c/wt/build/cargo" ] || fail 'cleanup kept Rust compiler deps in build/cargo/debug/deps'
+  [ -f "$c/wt/deps/plug/installed" ] || fail 'cleanup removed the root deps dependency install'
+  [ -f "$c/wt/build/source" ] || fail 'rust deps cleanup removed tracked build source'
+  pass 'compiler deps inside build output are removed while a root deps install stays'
+}
+
+test_cleanup_nested_deps() {
+  local c
+  c=$(cleanup_fixture nested-deps)
+  printf '%s\n' deps/ >> "$(git -C "$c/wt" rev-parse --git-path info/exclude)"
+  mkdir -p "$c/wt/apps/service/deps/plug" "$c/wt/apps/service/target/debug/deps"
+  printf 'dependency\n' > "$c/wt/apps/service/deps/plug/installed"
+  printf 'rlib\n' > "$c/wt/apps/service/target/debug/deps/libold-0123.rlib"
+  printf 'secret config\n' > "$c/wt/build/.env"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'nested deps teardown failed'
+  [ -f "$c/wt/apps/service/deps/plug/installed" ] || fail 'cleanup removed the nested apps/service/deps dependency install'
+  [ ! -e "$c/wt/apps/service/target" ] || fail 'cleanup kept Rust compiler deps in a nested target/debug/deps'
+  [ -f "$c/wt/build/.env" ] || fail 'the compiler-output exception for deps removed other kept entries inside build'
+  pass 'a nested deps install stays while compiler deps inside nested build output go'
+}
+
+test_cleanup_recorded_unlinked() {
+  local c made
+  c=$(cleanup_fixture recorded-unlinked)
+  made="$c/made-by-task"
+  mkdir -p "$made/debug"
+  printf 'build\n' > "$made/debug/object"
+  printf '%s\n' "$made" > "$c/state/task-x1.temp-targets"
+  printf 'old\n' > "$c/wt/old.log"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'recorded unlinked teardown failed'
+  [ ! -e "$made" ] || fail 'a recorded temporary directory no link reaches survived'
+  [ ! -e "$c/wt/old.log" ] || fail 'recorded unlinked cleanup left worktree output'
+  grep -Fq "'$(real_path "$c")/made-by-task'" "$c/out" || fail 'cleanup line did not name the removed recorded directory'
+  pass 'a recorded temporary directory is removed even when no worktree link reaches it'
+}
+
+test_cleanup_recorded_parent() {
+  local c made
+  c=$(cleanup_fixture recorded-parent)
+  made="$c/friday-search-updates-scope"
+  mkdir -p "$made/target/debug" "$made/notes"
+  printf 'build\n' > "$made/target/debug/object"
+  printf 'notes\n' > "$made/notes/scratch.bin"
+  printf '%s\n' "$made" > "$c/state/task-x1.temp-targets"
+  ln -s "$made/target" "$c/wt/target"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'recorded parent teardown failed'
+  [ ! -e "$made" ] || fail 'the recorded parent of a linked target survived'
+  [ ! -L "$c/wt/target" ] || fail 'link into the recorded parent survived'
+  ! grep -q 'kept temporary' "$c/out" || fail 'cleanup reported a removed recorded directory as kept'
+  pass 'a recorded parent holding a linked target and notes is removed whole'
+}
+
+test_cleanup_recorded_protections() {
+  local c
+  c=$(cleanup_fixture recorded-protections)
+  fm_git_init_commit "$c/cloned-repo"
+  printf 'unpushed\n' > "$c/cloned-repo/work"
+  mkdir -p "$c/wt/node_modules"
+  printf 'dependency\n' > "$c/wt/node_modules/installed"
+  printf '%s\n' "$c/cloned-repo" "$c" "$c/wt" "$c/wt/node_modules" > "$c/state/task-x1.temp-targets"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'recorded protections teardown failed'
+  [ -f "$c/cloned-repo/work" ] || fail 'cleanup removed a recorded git repository'
+  [ -f "$c/wt/node_modules/installed" ] || fail 'cleanup removed a kept worktree path through the record'
+  [ -f "$c/wt/build/source" ] || fail 'cleanup removed tracked worktree source through the record'
+  grep -Fq "kept temporary targets: '$(real_path "$c/cloned-repo")' (~" "$c/out" \
+    || fail 'cleanup line did not name the kept recorded repository'
+  ! sed 's/; freed.*//' "$c/out" | grep -Fq 'cloned-repo' || fail 'cleanup line named a kept recorded repository as removed'
+  pass 'recorded directories keep the temporary-root, worktree and repository protections'
+}
+
+test_cleanup_record_user_temp() {
+  local c
+  c=$(cleanup_fixture record-user-temp)
+  mkdir -p "$c/user-temp/T/other-task"
+  printf 'other\n' > "$c/user-temp/T/other-task/data"
+  printf '%s\n' "$c/user-temp/T" > "$c/state/task-x1.temp-targets"
+  TMPDIR="$c/user-temp/T/" run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'user temp record teardown failed'
+  [ -f "$c/user-temp/T/other-task/data" ] || fail 'a record naming TMPDIR removed the whole user temporary directory'
+  c=$(cleanup_fixture record-user-temp-parent)
+  mkdir -p "$c/user-temp/T/other-task"
+  printf 'other\n' > "$c/user-temp/T/other-task/data"
+  printf '%s\n' "$c/user-temp" > "$c/state/task-x1.temp-targets"
+  TMPDIR="$c/user-temp/T" run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'user temp parent record teardown failed'
+  [ -f "$c/user-temp/T/other-task/data" ] || fail 'a record naming a parent of TMPDIR removed the user temporary directory'
+  c=$(cleanup_fixture record-no-tmpdir)
+  mkdir -p "$c/made-by-task"
+  printf 'build\n' > "$c/made-by-task/object"
+  printf '%s\n' "$c/made-by-task" > "$c/state/task-x1.temp-targets"
+  ( unset TMPDIR; run_teardown "$c" ) > "$c/out" 2> "$c/err" || fail 'record teardown without TMPDIR failed'
+  [ ! -e "$c/made-by-task" ] || fail 'a recorded directory survived when TMPDIR is unset'
+  pass 'a record never removes the user temporary directory or a directory holding it'
+}
+
+test_cleanup_recorded_writer() {
+  local c made pid
+  c=$(cleanup_fixture recorded-writer)
+  made="$c/made-by-task"
+  mkdir -p "$made/work"
+  printf 'object\n' > "$made/work/object"
+  printf '%s\n' "$made" > "$c/state/task-x1.temp-targets"
+  pid=$(start_worktree_writer "$c" flush "$made/work")
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'recorded writer teardown failed'
+  ! process_running "$pid" || fail 'a process working inside a recorded temporary directory survived teardown'
+  [ ! -e "$made" ] || fail 'output a recorded-directory writer flushed on shutdown survived cleanup'
+  pass 'processes inside a recorded temporary directory stop before it is removed'
+}
+
+test_cleanup_recorded_writer_protections() {
+  local c repo holder user_temp
+  c=$(cleanup_fixture recorded-writer-protections)
+  fm_git_init_commit "$c/cloned-repo"
+  printf '%s\n' "$c/cloned-repo" "$c" > "$c/state/task-x1.temp-targets"
+  repo=$(start_worktree_writer "$c" stubborn "$c/cloned-repo")
+  holder=$(start_worktree_writer "$c" stubborn "$c")
+  FM_WORKTREE_CLEANUP_STOP_GRACE_SECS=0.2 run_teardown "$c" > "$c/out" 2> "$c/err" \
+    || fail 'recorded writer protections teardown failed'
+  process_running "$repo" || fail 'cleanup stopped a process inside a recorded repository it keeps'
+  process_running "$holder" || fail 'cleanup stopped a process inside a recorded directory holding the worktree'
+  kill -KILL "$repo" "$holder"
+  c=$(cleanup_fixture recorded-writer-user-temp)
+  mkdir -p "$c/user-temp/T/other-task"
+  printf '%s\n' "$c/user-temp/T" > "$c/state/task-x1.temp-targets"
+  user_temp=$(start_worktree_writer "$c" stubborn "$c/user-temp/T/other-task")
+  TMPDIR="$c/user-temp/T" FM_WORKTREE_CLEANUP_STOP_GRACE_SECS=0.2 run_teardown "$c" > "$c/out" 2> "$c/err" \
+    || fail 'recorded user temp writer teardown failed'
+  process_running "$user_temp" || fail 'cleanup stopped a process inside the user temporary directory'
+  kill -KILL "$user_temp"
+  pass 'cleanup never stops processes in recorded paths it does not remove'
+}
+
+test_cleanup_ignored_only_directory() {
+  local c
+  c=$(cleanup_fixture ignored-only-directory)
+  mkdir -p "$c/wt/evidence"
+  printf 'run\n' > "$c/wt/evidence/run.log"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'ignored-only directory teardown failed'
+  [ ! -e "$c/wt/evidence" ] || fail 'untracked directory of ignored files survived'
+  ! grep -q 'failed:' "$c/out" || fail "cleanup reported a path it had already removed as failed: $(cat "$c/out")"
+  ! grep -q 'ignored cleanup incomplete' "$c/err" || fail 'teardown warned about leftovers after a complete cleanup'
+  pass 'a directory git lists with its own ignored files is removed once and reported clean'
+}
+
+test_cleanup_kept_listed_children() {
+  local c
+  c=$(cleanup_fixture kept-listed-children)
+  printf '%s\n' .claude/notes.local.md 'Pods/*.lock' >> "$(git -C "$c/wt" rev-parse --git-path info/exclude)"
+  mkdir -p "$c/wt/.claude" "$c/wt/Pods"
+  printf 'local config\n' > "$c/wt/.claude/notes.local.md"
+  printf 'pods\n' > "$c/wt/Pods/Manifest.lock"
+  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'kept listed children teardown failed'
+  [ -f "$c/wt/.claude/notes.local.md" ] || fail 'cleanup removed ignored local agent config inside a kept directory'
+  [ -f "$c/wt/Pods/Manifest.lock" ] || fail 'cleanup removed ignored files inside a kept dependency install'
+  pass 'ignored files git lists inside a kept directory stay with it'
+}
+
 if [ "${1:-}" = cleanup ]; then
   shift
   if [ "$#" -gt 0 ]; then
     "test_cleanup_$1"
   else
-    for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime; do "test_cleanup_$cleanup_case"; done
+    for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children; do "test_cleanup_$cleanup_case"; done
   fi
   exit 0
 fi
-for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime; do "test_cleanup_$cleanup_case"; done
+for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children; do "test_cleanup_$cleanup_case"; done
 
 test_shared_daemon_restored_after_a_successful_return
 test_landed_task_clears_only_its_gate_backups

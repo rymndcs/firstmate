@@ -117,8 +117,9 @@
 # - a daemon problem can never block or fail a teardown.
 # A landed ship teardown (the landed-work guards ran and passed, so never with
 # --force and never for a scout) stops the slot's processes and deletes its
-# ignored files while the slot is still leased, then returns it. A cleanup that
-# cannot finish is reported and the return proceeds, leaving what remained.
+# ignored files and the temporary directories the task recorded while the slot
+# is still leased, then returns it. A cleanup that cannot finish is reported
+# and the return proceeds, leaving what remained.
 # bin/fm-worktree-cleanup.sh owns writer stopping, selection, retention, the
 # task's temporary-target record (state/<task-id>.temp-targets) and reporting.
 # Usage: fm-teardown.sh <task-id> [--force]
