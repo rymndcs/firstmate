@@ -104,7 +104,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-merge.sh`         | Apply the configured ship-review gate, then record PR metadata and merge a task's canonical full GitHub URL |
 | `fm-linear.sh`           | Own Linear API mechanics: move a Linear-tracked task's issue as part of the dispatch, PR-record, and merge steps |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode and its configured ship-review step |
-| `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes, and clear the landed task's attributable no-mistakes gate backup refs |
+| `fm-teardown.sh`         | Fail-closed teardown: prune and return landed ship worktrees, require completed scout deliverables, retire secondmate homes, and clear the landed task's attributable no-mistakes gate backup refs; `--clean-free-slot` prunes one available pool slot |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
 | `fm-lock.sh`             | Per-home firstmate session lock                                                      |
 | `fm-x-lib.sh`            | Shared X-mode config, relay, and reply-threading helpers                             |
