@@ -7,8 +7,9 @@
 # suffix, except that deps below a target or build/cargo directory is compiler
 # output (target/**/deps, build/cargo/**/deps) and goes. A path is kept when it
 # or any directory above it matches, even when git lists it apart. It holds
-# reusable dependency installs, .env* private configuration, live Lavish review
-# sessions and local agent configuration or notes. Everything else ignored is
+# reusable dependency installs, .env* private configuration, Rails keys
+# (config/master.key, config/credentials/*.key), live Lavish review sessions
+# and local agent configuration or notes. Everything else ignored is
 # disposable task material. A read-only directory inside an ignored worktree
 # path being removed is made writable first; a retained one gets its mode back,
 # and nothing outside the worktree or behind a link is ever made writable.
@@ -68,6 +69,7 @@ import time
 
 KEEP = ("node_modules", "vendor/bundle", ".venv", "venv", ".bundle", "deps", ".yarn/cache",
         "Pods", ".terraform", ".gradle", "bower_components", ".env*", ".lavish",
+        "config/master.key", "config/credentials/*.key",
         ".claude", ".codex", ".agents", "CLAUDE.local.md")
 COMPILER_OUTPUT = (("target",), ("build", "cargo"))
 BUILD_OUTPUT = ("target", ".build", "build")

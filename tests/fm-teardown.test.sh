@@ -3819,6 +3819,36 @@ cleanup_track() {
   git -C "$c/project" update-ref refs/heads/main "$(git -C "$c/wt" rev-parse HEAD)"
 }
 
+test_cleanup_rails_keys() {
+  local c mode name
+  for mode in worktree free-slot; do
+    c=$(cleanup_fixture "rails-keys-$mode")
+    printf '%s\n' config/master.key 'config/credentials/*.key' \
+      >> "$(git -C "$c/wt" rev-parse --git-path info/exclude)"
+    mkdir -p "$c/wt/config/credentials" "$c/wt/log"
+    printf 'encrypted development\n' > "$c/wt/config/credentials/development.yml.enc"
+    printf 'encrypted production\n' > "$c/wt/config/credentials/production.yml.enc"
+    cleanup_track "$c" config/credentials/development.yml.enc config/credentials/production.yml.enc
+    for name in master.key credentials/development.key credentials/production.key; do
+      printf 'fixture key\n' > "$c/wt/config/$name"
+    done
+    printf 'old log\n' > "$c/wt/log/test.log"
+    if [ "$mode" = worktree ]; then
+      "$ROOT/bin/fm-worktree-cleanup.sh" --worktree "$c/wt" "" > "$c/out" 2> "$c/err" \
+        || fail 'Rails keys worktree cleanup failed'
+    else
+      cleanup_free_fixture "$c"
+      run_cleanup_free "$c" > "$c/out" 2> "$c/err" || fail 'Rails keys free-slot cleanup failed'
+    fi
+    for name in master.key credentials/development.key credentials/production.key; do
+      [ "$(cat "$c/wt/config/$name" 2>/dev/null)" = 'fixture key' ] \
+        || fail "$mode cleanup removed or changed config/$name"
+    done
+    [ ! -e "$c/wt/log/test.log" ] || fail "$mode Rails keys cleanup left ignored log/test.log"
+  done
+  pass 'both cleanup modes keep Rails keys beside tracked encrypted credentials and remove ignored logs'
+}
+
 test_cleanup_tracked_agent_config() {
   local c
   c=$(cleanup_fixture tracked-agent-config)
@@ -3909,11 +3939,11 @@ if [ "${1:-}" = cleanup ]; then
   if [ "$#" -gt 0 ]; then
     "test_cleanup_$1"
   else
-    for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children tracked_agent_config tracked_codex_config tracked_dependency_install tracked_nested_project deps_contexts; do "test_cleanup_$cleanup_case"; done
+    for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children rails_keys tracked_agent_config tracked_codex_config tracked_dependency_install tracked_nested_project deps_contexts; do "test_cleanup_$cleanup_case"; done
   fi
   exit 0
 fi
-for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children tracked_agent_config tracked_codex_config tracked_dependency_install tracked_nested_project deps_contexts; do "test_cleanup_$cleanup_case"; done
+for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children rails_keys tracked_agent_config tracked_codex_config tracked_dependency_install tracked_nested_project deps_contexts; do "test_cleanup_$cleanup_case"; done
 
 test_shared_daemon_restored_after_a_successful_return
 test_landed_task_clears_only_its_gate_backups
