@@ -143,6 +143,7 @@
 #          the daemon; a tight crash-restart spin is detected and backed off.
 # --stop-hook runs the shared coordinator in a Claude asyncRewake process.
 # FM_AFK_RENEW_SECS (default 25200) renews before the 28800-second hook limit;
+# FM_AFK_HOOK_STARTED, set by the Stop hook, is the epoch that limit counts from;
 # FM_AFK_TICK_SECS (default 1) controls its poll cadence and short fixture ticks.
 # Hook delivery writes a check reason and retains evidence until launch acknowledge.
 set -u
@@ -1502,7 +1503,7 @@ fm_super_main() {
   }
 
   local rc reason started
-  started=$(_now)
+  started=${FM_AFK_HOOK_STARTED:-$(_now)}
   while true; do
     if [ "$FM_AFK_STOP_HOOK" -eq 1 ]; then
       if ! fm_afk_desktop_selected "$STATE" || [ -e "$STATE/.captain-hold" ]; then

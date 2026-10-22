@@ -17,7 +17,8 @@
 #     ancestry remains inert, so a competing session never arms or rewakes.
 #   - AFK: explicit Desktop selection uses this same Stop owner with the shared
 #     foreground away coordinator. Pane delivery keeps this hook inert.
-#     Delivery selection is rechecked before translating an away completion.
+#     Delivery selection is rechecked after every coordinator close; a return
+#     that deselected Desktop retires this owner cleanly, never as a failure.
 #   - Captain hold: state/.captain-hold suppresses arming and translation;
 #     pending durable wake records remain untouched until release.
 #   - Need: uses the shared metadata/X/process-source/Desktop-away predicate;
@@ -55,6 +56,9 @@
 # lock contention, it exits 0 and leaves continuity to the synchronous guard and
 # the model.
 set -u
+# The host lifetime limit counts from this invocation, so the coordinator
+# renews against it rather than against its own later start.
+HOOK_STARTED=$(date +%s)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -175,12 +179,20 @@ while [ "$attempt" -lt "$AUTOARM_ATTEMPTS" ]; do
   OUT=$(mktemp "$STATE/.claude-autoarm-output.XXXXXX") || OUT=
   if [ -n "$OUT" ]; then
     if [ "$DESKTOP" -eq 1 ]; then
-      "$SCRIPT_DIR/fm-supervise-daemon.sh" --stop-hook >"$OUT" 2>&1 || true
+      FM_AFK_HOOK_STARTED=$HOOK_STARTED "$SCRIPT_DIR/fm-supervise-daemon.sh" --stop-hook >"$OUT" 2>&1 || true
     else
       "$SCRIPT_DIR/fm-watch-arm.sh" >"$OUT" 2>&1 || true
     fi
   else
     [ "$DESKTOP" -eq 1 ] || "$SCRIPT_DIR/fm-watch-arm.sh" >/dev/null 2>&1 || true
+  fi
+
+  # Return deselects Desktop and retires its coordinator: that close is the end
+  # of this owner, not a startup failure, so it records no failure episode.
+  if [ "$DESKTOP" -eq 1 ] && ! fm_afk_desktop_selected "$STATE"; then
+    write_epoch clean
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    exit 0
   fi
 
   if [ "$DESKTOP" -eq 0 ] && fm_afk_desktop_selected "$STATE"; then
@@ -282,7 +294,13 @@ if [ "$ACTIONABLE" -eq 1 ]; then
     printf 'Run bin/fm-wake-drain.sh first and handle the wake. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.\n'
   )
   if [ "$DESKTOP" -eq 1 ]; then
-    BANNER="$(cat "$OUT") Stay away: load /afk, drain with bin/fm-wake-drain.sh, then run bin/fm-afk-launch.sh acknowledge. Handle authorized stops; park captain-only decisions durably and continue other work. The next Stop owns renewal."
+    # A renewal delivers no batch, so acknowledging it would erase pending
+    # events firstmate was never shown; they stay for the next cycle's batch.
+    if grep -q '^check: away-renewal' "$OUT" 2>/dev/null; then
+      BANNER="$(cat "$OUT") Stay away: load /afk and drain with bin/fm-wake-drain.sh; this renewal delivered no batch, so skip acknowledgment. Handle authorized stops; park captain-only decisions durably and continue other work. The next Stop owns renewal."
+    else
+      BANNER="$(cat "$OUT") Stay away: load /afk, drain with bin/fm-wake-drain.sh, then run bin/fm-afk-launch.sh acknowledge. Handle authorized stops; park captain-only decisions durably and continue other work. The next Stop owns renewal."
+    fi
   fi
   handoff_rewake "$BANNER"
 fi

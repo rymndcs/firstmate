@@ -452,8 +452,170 @@ finally:
     if p.poll() is None:p.terminate();p.wait()
 PYTEST
 }
+bounded() {  # <seconds> <command...>
+  python3 - "$@" <<'PY'
+import os,signal,subprocess,sys
+p=subprocess.Popen(sys.argv[2:],start_new_session=True)
+try:sys.exit(p.wait(timeout=float(sys.argv[1])))
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid,signal.SIGTERM);p.wait()
+    sys.exit(124)
+PY
+}
+watch_once() {
+  FM_HOME="$D" FM_POLL=0.02 FM_HEARTBEAT=999999 FM_CHECK_INTERVAL=0 FM_CHECK_TIMEOUT=5 FM_SIGNAL_GRACE=0 \
+    bounded 20 "$D/bin/fm-watch.sh" > "$D/watch.out" 2> "$D/watch.err"
+}
+return_handoff() {  # <expected-handling-payload>
+  select_desktop
+  local out
+  out=$(FM_HOME="$D" "$D/bin/fm-afk-return.sh" 2>&1) || fail "return did not clear: $out"
+  assert_contains "$out" "handling input, not summary content: $1" 'return consumed a pending actionable wake without handing it to firstmate'
+  printf '%s\n' "$out"
+}
+test_return_merge() {
+  D=$(fixture return-merge)
+  mkdir "$D/fakegh"
+  printf '#!/usr/bin/env bash\ncase " $* " in *" state "*) printf "MERGED\\n" ;; esac\n' > "$D/fakegh/gh"
+  chmod +x "$D/fakegh/gh"
+  printf 'window=fixture:fm-t1\nkind=ship\n' > "$D/state/t1.meta"
+  printf 'done: PR ready https://github.com/o/r/pull/7\n' > "$D/state/t1.status"
+  PATH="$D/fakegh:$PATH" FM_HOME="$D" "$D/bin/fm-pr-check.sh" t1 https://github.com/o/r/pull/7 >/dev/null 2>&1 || fail 'merge poll did not arm'
+  PATH="$D/fakegh:$PATH" watch_once
+  assert_grep 't1.check.sh: merged' "$D/watch.out" 'real merge poll did not wake'
+  assert_absent "$D/state/t1.check.sh" 'merged poll did not retire, so the queue would not be its only record'
+  printf 'needs-decision [key=old]: replayed history\n' > "$D/state/.subsuper-escalations"
+  printf 'fm away-mode inject WEDGED: replayed history\n' > "$D/state/.subsuper-inject-wedged"
+  FM_HOME="$D" bash -c '. "$FM_HOME/bin/fm-wake-lib.sh"; fm_wake_append signal t1.status "signal: replayed history"'
+  local out
+  out=$(return_handoff "check: $D/state/t1.check.sh: merged") || return 1
+  assert_not_contains "$out" 'replayed history' 'return replayed non-check history into its output'
+}
+test_return_mention() {
+  D=$(fixture return-mention)
+  : > "$D/state/x1.meta"
+  printf 'working: busy\n' > "$D/state/x1.status"
+  python3 - "$D/relay.port" <<'PY' > "$D/relay.log" 2>&1 &
+import http.server,json,sys,time
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body=json.dumps({"request_id":"req-1","text":"@firstmate status please","platform":"x","in_reply_to":None}).encode()
+        self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+    def log_message(self,*a): pass
+s=http.server.HTTPServer(('127.0.0.1',0),H)
+open(sys.argv[1],'w').write(str(s.server_port))
+s.timeout=0.2
+end=time.time()+20
+while time.time()<end and not __import__('os').path.exists(sys.argv[1]+'.stop'): s.handle_request()
+PY
+  local relay=$! _
+  for _ in $(seq 1 100); do [ -s "$D/relay.port" ] && break; sleep 0.05; done
+  printf 'FMX_PAIRING_TOKEN=fixture-token\nFMX_RELAY_URL=http://127.0.0.1:%s\n' "$(cat "$D/relay.port")" > "$D/.env"
+  (umask 077; FM_HOME="$D" bash -c '. "$FM_HOME/bin/fm-x-lib.sh"; fmx_poll_shim_content "$FM_HOME" "$FM_HOME" > "$FM_HOME/state/x-watch.check.sh"')
+  chmod 700 "$D/state/x-watch.check.sh"
+  watch_once
+  : > "$D/relay.port.stop"
+  wait "$relay"
+  assert_grep 'x-mention req-1' "$D/watch.out" 'real relay poll did not wake'
+  return_handoff "check: $D/state/x-watch.check.sh: x-mention req-1" >/dev/null
+}
+test_return_process() {
+  D=$(fixture return-process)
+  : > "$D/state/p1.meta"
+  printf 'working: busy\n' > "$D/state/p1.status"
+  printf 'feedback: captain comment\n' > "$D/result.src"
+  FM_HOME="$D" bash -c '. "$FM_HOME/bin/fm-pr-lib.sh"; . "$FM_HOME/bin/fm-wake-lib.sh"; . "$FM_HOME/bin/fm-procevent-lib.sh"; fm_procevent_capture "$FM_HOME/state" review1 lavish "$FM_HOME/result.src"' >/dev/null || fail 'process result capture failed'
+  FM_HOME="$D" "$D/bin/fm-procevent.sh" reconcile >/dev/null 2>&1 || fail 'process result was not published'
+  return_handoff 'check: procevent lavish review1 1' >/dev/null
+}
+hook_bounded() {  # <seconds>
+  FM_HOME="$D" bounded "$1" claude -c '
+    echo "$$" > "$FM_HOME/state/.lock"
+    "$FM_HOME/bin/fm-claude-stop-autoarm.sh" <<<'"'"'{"session_id":"fixture"}'"'"'
+  '
+}
+quiet_watcher() {
+  mkfifo "$D/state/quiet"
+  printf '#!/usr/bin/env bash\nexec 3<>"$FM_HOME/state/quiet"; read -r ignored <&3\n' > "$D/bin/fm-watch.sh"
+  chmod +x "$D/bin/fm-watch.sh"
+}
+test_return_live_hook() {
+  D=$(fixture return-live-hook)
+  : > "$D/state/task.meta"
+  printf 'working: busy\n' > "$D/state/task.status"
+  select_desktop
+  quiet_watcher
+  local hp rc out _
+  (FM_AFK_TICK_SECS=0.05 FM_HOUSEKEEPING_TICK=1 hook_bounded 30 > "$D/hook.out" 2> "$D/hook.err"; echo "$?" > "$D/hook.rc") &
+  hp=$!
+  for _ in $(seq 1 200); do [ -s "$D/state/.supervise-daemon.pid" ] && break; sleep 0.05; done
+  assert_present "$D/state/.supervise-daemon.pid" 'Desktop hook never started its coordinator'
+  FM_HOME="$D" "$D/bin/fm-afk-return.sh" > "$D/return.out" 2>&1 || fail "return did not clear: $(cat "$D/return.out")"
+  wait "$hp"
+  [ "$(cat "$D/hook.rc")" = 0 ] || fail "Desktop owner did not retire cleanly on return: rc=$(cat "$D/hook.rc") $(cat "$D/hook.err")"
+  assert_absent "$D/state/.claude-autoarm-failure-notified" 'return recorded a failure notice that was never sent'
+  printf '#!/usr/bin/env bash\necho "watcher: startup failed" >&2\nexit 1\n' > "$D/bin/fm-watch-arm.sh"
+  rc=0
+  out=$(hook 2>&1) || rc=$?
+  expect_code 2 "$rc" 'real failure after return did not request recovery'
+  assert_contains "$out" 'auto-arm FAILED' 'first real failure after return lost its one notice'
+}
+test_renewal_keeps_unseen() {
+  D=$(fixture renewal-keeps-unseen)
+  : > "$D/state/task.meta"
+  printf 'blocked [key=creds]: need registry credentials\n' > "$D/state/task.status"
+  select_desktop
+  quiet_watcher
+  local out
+  out=$(FM_AFK_TICK_SECS=0.05 FM_HOUSEKEEPING_TICK=1 FM_HEARTBEAT_SCAN_SECS=0 FM_ESCALATE_BATCH_SECS=3600 FM_AFK_RENEW_SECS=4 hook_bounded 30 2>&1)
+  assert_contains "$out" 'check: away-renewal' 'quiet cycle did not renew'
+  assert_grep 'key=creds' "$D/state/.subsuper-escalations" 'fixture event never reached the pending buffer'
+  case "$out" in *'then run bin/fm-afk-launch.sh acknowledge'*) launch acknowledge >/dev/null 2>&1 ;; esac
+  out=$(FM_AFK_TICK_SECS=0.05 FM_HOUSEKEEPING_TICK=1 FM_HEARTBEAT_SCAN_SECS=0 FM_ESCALATE_BATCH_SECS=0 FM_AFK_RENEW_SECS=30 hook_bounded 30 2>&1)
+  assert_contains "$out" 'key=creds' 'following the renewal handoff discarded an event firstmate was never shown'
+}
+test_transition_renewal_clock() {
+  D=$(fixture transition-renewal-clock)
+  : > "$D/state/task.meta"
+  cat > "$D/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+sleep 5
+date +%s > "$FM_HOME/state/.afk"
+printf 'none\t-\tdesktop\n' > "$FM_HOME/state/.afk-daemon-terminal"
+printf 'check: away-owner transition\n'
+SH
+  printf '#!/usr/bin/env bash\n: > "$FM_HOME/state/coordinator-watcher-started"\nexec 3<>"$FM_HOME/state/quiet"; read -r ignored <&3\n' > "$D/bin/fm-watch.sh"
+  mkfifo "$D/state/quiet"
+  chmod +x "$D/bin/fm-watch-arm.sh" "$D/bin/fm-watch.sh"
+  local out rc=0
+  out=$(FM_AFK_TICK_SECS=0.05 FM_HOUSEKEEPING_TICK=1 FM_AFK_RENEW_SECS=4 hook_bounded 30 2>&1) || rc=$?
+  expect_code 2 "$rc" 'transitioned Desktop owner did not hand off'
+  assert_contains "$out" 'check: away-renewal' 'transitioned Desktop owner did not renew'
+  assert_absent "$D/state/coordinator-watcher-started" 'renewal clock ignored time the same hook already spent in normal monitoring'
+}
+test_transition_budget() {
+  D=$(fixture transition-budget)
+  : > "$D/state/task.meta"
+  cat > "$D/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+date +%s > "$FM_HOME/state/.afk"
+printf 'none\t-\tdesktop\n' > "$FM_HOME/state/.afk-daemon-terminal"
+printf 'check: away-owner transition\n'
+SH
+  cat > "$D/bin/fm-supervise-daemon.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'run\n' >> "$FM_HOME/state/coordinator-runs"
+[ "$(wc -l < "$FM_HOME/state/coordinator-runs")" -ge 2 ] && printf 'check: second coordinator attempt\n'
+exit 0
+SH
+  chmod +x "$D/bin/fm-watch-arm.sh" "$D/bin/fm-supervise-daemon.sh"
+  local out rc=0
+  out=$(FM_CLAUDE_AUTOARM_ATTEMPTS=2 hook 2>&1) || rc=$?
+  expect_code 2 "$rc" 'transitioned Desktop owner did not hand off'
+  assert_contains "$out" 'second coordinator attempt' 'Desktop successor did not get the full retry budget after the transition'
+}
 failed=0
-for name in launch rewake late_return hold policy_delivery renewal protocol parked launch_conflicts launch_rollback guard_provenance transition idle_transition batch_snapshot parked_prior_stale direct_owner_conflict daemon_owner_conflict output_failure_owner live_pane_owner flush_hold ack_wrong_owner flush_return hook_no_alarm coordinator_retirement one_handoff selected_watcher hook_ignores_terminal_config transition_queue_failure; do
+for name in launch rewake late_return hold policy_delivery renewal protocol parked launch_conflicts launch_rollback guard_provenance transition idle_transition batch_snapshot parked_prior_stale direct_owner_conflict daemon_owner_conflict output_failure_owner live_pane_owner flush_hold ack_wrong_owner flush_return hook_no_alarm coordinator_retirement one_handoff selected_watcher hook_ignores_terminal_config transition_queue_failure return_merge return_mention return_process return_live_hook renewal_keeps_unseen transition_renewal_clock transition_budget; do
   if ("test_$name"); then pass "Desktop away: $name"; else failed=$((failed + 1)); fi
 done
 [ "$failed" -eq 0 ]

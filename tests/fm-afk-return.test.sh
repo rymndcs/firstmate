@@ -68,6 +68,7 @@ test_return_gate_orders_catchup_before_bearings() {
   printf 'fm away-mode inject WEDGED: 4555s undelivered\n' > "$dir/home/state/.subsuper-inject-wedged"
   {
     printf '1784074271\t2\tsignal\trepair-task.status\tsignal: synthetic status\n'
+    printf '1784074272\t3\tcheck\trepair-task.check.sh\tcheck: repair-task.check.sh: merged\n'
     printf 'wake annotation: latest wake-EVENT observed at drain, not current state: repair-task.status: blocked synthetic dependency\n'
   } > "$dir/home/state/.fake-drain"
 
@@ -76,6 +77,7 @@ test_return_gate_orders_catchup_before_bearings() {
   rc=$?
   set -e
   [ "$rc" -eq 3 ] || fail "return begin should gate on a live blocker (rc=$rc): $out"
+  assert_not_contains "$out" 'handling input' "gated return handed wakes over before its gate cleared"
   gate="$dir/home/state/.afk-return-catchup"
   [ -s "$gate" ] || fail "return begin did not persist its fail-closed catch-up gate"
   assert_contains "$out" 'firstmate-actionable blocker: repair-task [key=synthetic-dependency]' "return output did not assign blocker remediation to Firstmate"
@@ -111,11 +113,15 @@ test_return_gate_orders_catchup_before_bearings() {
   printf 'resolved [key=synthetic-dependency]: refreshed the synthetic token and resumed the task\n' >> "$dir/home/state/repair-task.status"
   out=$(run_return "$dir" check) || fail "resolved blocker did not clear return catch-up: $out"
   assert_contains "$out" 'catch-up clear' "successful check did not announce that ordinary work may proceed"
+  [ "$(printf '%s\n' "$out" | grep -c 'handling input, not summary content: check: repair-task.check.sh: merged')" -eq 1 ] \
+    || fail "check row retained by the gated run was not handed over exactly once: $out"
+  assert_not_contains "$out" 'synthetic status' "return handed a non-check wake over as handling input"
   [ ! -e "$gate" ] || fail "successful check left the return gate behind"
   [ ! -e "$dir/home/state/.subsuper-escalations" ] || fail "successful check left delivered escalation state behind"
   [ ! -e "$dir/home/state/.subsuper-inject-wedged" ] || fail "successful check left the wedge marker behind"
 
   out=$(run_return "$dir" check) || fail "an already-clear repeated check should be idempotent: $out"
+  assert_not_contains "$out" 'handling input' "repeated clear check handed the same wake over twice"
   [ ! -e "$gate" ] || fail "idempotent clear check recreated a gate"
   pass "return catch-up precedes Bearings, owns live blocker remediation, preserves evidence once, and clears idempotently"
 }

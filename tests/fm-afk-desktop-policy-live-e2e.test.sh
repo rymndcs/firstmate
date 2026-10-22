@@ -40,8 +40,6 @@ else
 fi
 SH
 chmod +x "$LAB/project/bin/fm-supervise-daemon.sh"
-date +%s > "$LAB/home/state/.afk"
-printf 'none\t-\tdesktop\n' > "$LAB/home/state/.afk-daemon-terminal"
 printf 'blocked [key=fixture-token]: refresh fixture token\n' > "$LAB/home/state/repair.status"
 printf 'needs-decision [key=fixture-choice]: choose amber or blue\n' > "$LAB/home/state/choice.status"
 printf 'working: ready to generate fixture artifact\n' > "$LAB/home/state/work.status"
@@ -55,7 +53,7 @@ project, report = map(Path, sys.argv[1:])
 home = Path(os.environ['FM_HOME'])
 report.mkdir(parents=True, exist_ok=True)
 transcript = report / 'D5-D6.jsonl'
-prompt = '''Read away-policy.md. Run bin/fm-lock.sh with Bash first. FM_HOME is the separate fake home, never project-relative state. You are already away. These fixture operations are authorized: inspect the three *.status files in "$FM_HOME/state". Clear the reversible fixture-token stop by appending one resolved [key=fixture-token] line and one done line to repair.status. Park fixture-choice once: append one backlog entry containing [key=fixture-choice] and the unanswered amber-or-blue choice to "$FM_HOME/data/backlog.md", then append one captain-held [key=fixture-choice] line to choice.status. Preserve that unresolved choice without choosing a color or waiting. Complete unrelated work by writing 'artifact complete' to "$FM_HOME/data/artifact" and append one done line to work.status. Do each operation once; repeated reminders must not repeat it. Each marked away-supervisor Stop feedback is internal: drain with bin/fm-wake-drain.sh and acknowledge with bin/fm-afk-launch.sh acknowledge, inspect current fixture state, and end with exactly ·. Never run an arm command or change global captain hold. No workers or real services exist here; do not spawn or access anything outside this project and fixture home. A later unmarked input is a real return: run bin/fm-afk-return.sh, then read the durable backlog and statuses, give one current-state summary and create "$FM_HOME/data/returned". Do not replay old batch text. While away, every assistant text block must be exactly ·.'''
+setup = '''Read away-policy.md. Run bin/fm-lock.sh with Bash first. FM_HOME is the separate fake home, never project-relative state. Away mode has not started: this turn is setup only, so do not inspect or change any fixture status, backlog or artifact now. The fixture starts away mode after this turn, and the first marked away-supervisor input begins the away work. While away, these fixture operations are authorized: inspect the three *.status files in "$FM_HOME/state". Clear the reversible fixture-token stop by appending one resolved [key=fixture-token] line and one done line to repair.status. Park fixture-choice once: append one backlog entry containing [key=fixture-choice] and the unanswered amber-or-blue choice to "$FM_HOME/data/backlog.md", then append one captain-held [key=fixture-choice] line to choice.status. Preserve that unresolved choice without choosing a color or waiting. Complete unrelated work by writing 'artifact complete' to "$FM_HOME/data/artifact" and append one done line to work.status. Do each operation once; repeated reminders must not repeat it. Each marked away-supervisor input or Stop feedback is internal: drain with bin/fm-wake-drain.sh and acknowledge with bin/fm-afk-launch.sh acknowledge, inspect current fixture state, and end with exactly ·. Never run an arm command, select away delivery yourself, or change global captain hold. No workers or real services exist here; do not spawn or access anything outside this project and fixture home. A later unmarked input is a real return: run bin/fm-afk-return.sh, then read the durable backlog and statuses, give one current-state summary and create "$FM_HOME/data/returned". Do not replay old batch text. While away, every assistant text block must be exactly ·.'''
 p = subprocess.Popen(['claude', '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'], cwd=project, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 lines = queue.Queue()
 def read_output():
@@ -66,8 +64,16 @@ threading.Thread(target=read_output, daemon=True).start()
 def send(body):
     p.stdin.write(json.dumps({'type':'user', 'message':{'role':'user', 'content':body}})+'\n')
     p.stdin.flush()
-send(prompt)
+def fixture_state():
+    return {name: (home/name).read_bytes() if (home/name).exists() else None for name in ('state/.afk', 'state/repair.status', 'state/choice.status', 'state/work.status', 'data/backlog.md', 'data/artifact')}
+def marked(body):
+    encode = '. bin/fm-supervision-lib.sh && . bin/fm-operational-input.sh && fm_operational_input_encode away-supervisor "$1 $(fm_afk_turn_policy)" wake && printf %s "$wake"'
+    return subprocess.run(['bash', '-c', encode, 'fixture-wake', body], cwd=project, capture_output=True, text=True, check=True).stdout
+# Setup precedes away, as in production: every measured away turn starts from marked input.
+staged = fixture_state()
+send(setup)
 rows=[]
+away=False
 sent_return=False
 released=False
 deadline=time.monotonic()+float(os.environ.get('FM_AFK_LIVE_TIMEOUT_SECS','300'))
@@ -75,6 +81,11 @@ try:
     with transcript.open('w') as out:
         while True:
             assert time.monotonic()<deadline, 'fixture live policy deadline exceeded'
+            if not away and any(row.get('type')=='result' for row in rows):
+                assert fixture_state()==staged, 'setup turn did fixture work or entered away before away began'
+                subprocess.run(['bin/fm-afk-launch.sh', 'start-desktop'], cwd=project, check=True)
+                send(marked('check: inspect fixture work and unchanged captain-only choice 0'))
+                away=True
             if not sent_return and (home/'state/ready-for-return').exists():
                 assert (home/'state/.afk').exists(), 'marked feedback falsely exited away'
                 assert (home/'data/artifact').read_text().strip()=='artifact complete', 'unrelated work did not finish while away'
@@ -95,13 +106,24 @@ finally:
     if p.poll() is None:
         p.terminate()
         p.wait(timeout=10)
-texts=[part['text'] for row in rows if row.get('type')=='assistant' for part in row.get('message',{}).get('content',[]) if part.get('type')=='text']
+def texts_of(seq):
+    return [part['text'] for row in seq if row.get('type')=='assistant' for part in row.get('message',{}).get('content',[]) if part.get('type')=='text']
+turns=[[]]
+for row in rows:
+    turns[-1].append(row)
+    if row.get('type')=='result': turns.append([])
+tail=turns.pop()
+turns[-1].extend(tail)
+setup_turn, away_turns, return_turn = turns[0], turns[1:-1], turns[-1]
+away_texts=[text for turn in away_turns for text in texts_of(turn)]
+return_texts=texts_of(return_turn)
 assert sent_return and released, 'return race was not exercised'
 assert (home/'data/returned').exists(), 'return message was not handled'
-assert len(texts)>=4 and all(t=='·' for t in texts[:-1]), f'outward words while away: {texts}'
-assert texts[-1]!='·', 'return summary missing'
-assert 'amber' in texts[-1].lower() and 'blue' in texts[-1].lower(), f'unresolved choice missing from summary: {texts[-1]}'
-assert 'late fixture batch' not in texts[-1], 'summary replayed a buffered event'
+assert len(away_texts)>=3 and all(t=='·' for t in away_texts), f'outward words while away: {away_texts}'
+assert return_texts and return_texts[-1]!='·' and all(t=='·' for t in return_texts[:-1]), f'return summary missing: {return_texts}'
+summary=return_texts[-1]
+assert 'amber' in summary.lower() and 'blue' in summary.lower(), f'unresolved choice missing from summary: {summary}'
+assert 'late fixture batch' not in summary, 'summary replayed a buffered event'
 assert (home/'data/backlog.md').read_text().count('[key=fixture-choice]')==1, 'choice was not parked exactly once'
 assert (home/'state/choice.status').read_text().count('captain-held')==1, 'unchanged decision was re-parked'
 assert (home/'state/repair.status').read_text().count('resolved')==1, 'clearable stop was not resolved once'
@@ -110,7 +132,7 @@ assert not (home/'state/.afk-return-catchup').exists(), 'return reconciliation d
 assert int((home/'state/cycles').read_text())==3, 'late completion rearmed away mode'
 demand_count=sum('Your previous response had no visible output.' in str(row.get('message',{}).get('content','')) for row in rows if row.get('type')=='user')
 shutil.copyfile(home/'state/prompt-inputs.jsonl', report/'D5-prompt-inputs.txt')
-print(f'ok - D5/D6 CLI: {len(texts)-1} fixed-mark away blocks, one return summary, {demand_count} host demands; {transcript}')
+print(f'ok - D5/D6 CLI: setup turn {len(texts_of(setup_turn))} text blocks before away; {len(away_turns)} marked away turns with {len(away_texts)} fixed-mark blocks; one return summary; {demand_count} host demands; {transcript}')
 PY
 mkdir -p "$LAB/home/D7/state" "$LAB/home/D7/data" "$LAB/home/D7/config"
 date +%s > "$LAB/home/D7/state/.afk"

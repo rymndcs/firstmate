@@ -598,6 +598,7 @@ ok - D7 CLI: concurrent Stop ownership, fixture hold suppression and dismissal
 ```
 
 The policy fixture resolved one authorized fake stop, parked one unresolved choice in durable state, completed unrelated work and handled repeated internal callbacks without repeating those actions.
+Its setup turn ran before away mode began, as in production, and each measured away turn began from a marked away-supervisor input.
 Its three away text blocks were exact marks, followed by one current-state summary on real return.
 A pending completion released after return produced no late away handoff.
 UserPromptSubmit received both marked internal callbacks as well as real input, so that hook alone does not establish human presence.

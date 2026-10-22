@@ -39,7 +39,8 @@ The selected owner continues supervision after that fixed mark.
 1. Drain the durable wake queue before inspecting or acting.
    A Desktop `Stop hook feedback` carrying the `away-supervisor` envelope is internal even when the host adds text before that envelope.
    It never means the captain returned.
-   After reading the Desktop handoff and draining successfully, use the launcher's `acknowledge` command.
+   After reading a Desktop batch handoff and draining successfully, use the launcher's `acknowledge` command.
+   A renewal handoff delivers no batch, so never acknowledge it; its pending events stay for the next batch.
    An emitted hook reminder alone is not acknowledgment; the delivery buffer survives until consumption.
 2. Reconcile current state before acting on a historical event.
    Clear firstmate-actionable stops already within accepted authority, including eligible tool approvals, guard false positives, and environment recovery, through their existing lifecycle owners.
@@ -74,7 +75,9 @@ Bias genuinely ambiguous messages toward return.
 2. Remediate any remaining firstmate-actionable blocker, or durably reclassify and resolve its key through the existing lifecycle, then run `bin/fm-afk-return.sh check`.
    Resume normal supervision while doing this; no blind wait is allowed.
    Captain-only decisions stay parked and do not block this reconciliation.
-3. Once the return gate clears, gather a fresh Bearings snapshot through the `bearings` skill and give one concise return summary from current durable work state.
+3. When the return gate clears, handle every `handling input` line it printed as an ordinary wake before building the summary, such as merge follow-up, a mention response, or a process result.
+   Those lines are pending work for firstmate, never summary content.
+4. Then gather a fresh Bearings snapshot through the `bearings` skill and give one concise return summary from current durable work state, which now reflects that handling.
    Do not replay escalation buffers, drained events, or historical status tails.
    Include current decisions and failures, completed work, ongoing work, and what remains queued using Bearings' existing format.
    Then handle the captain's message without producing a second catch-up summary.
