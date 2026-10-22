@@ -126,6 +126,20 @@ test_return_gate_orders_catchup_before_bearings() {
   pass "return catch-up precedes Bearings, owns live blocker remediation, preserves evidence once, and clears idempotently"
 }
 
+test_return_ignores_internal_away_owner_transfer() {
+  local dir out
+  dir="$TMP_ROOT/away-owner"
+  install_runner "$dir"
+  {
+    printf '1784074271\t1\tcheck\taway-owner\tcheck: away-owner - transfer normal supervision to Desktop away delivery\n'
+    printf '1784074272\t2\tcheck\tmerge.check.sh\tcheck: merge.check.sh: merged\n'
+  } > "$dir/home/state/.fake-drain"
+  out=$(run_return "$dir" begin) || fail "return did not clear: $out"
+  assert_not_contains "$out" 'away-owner' "return handed the obsolete internal away-owner transfer to firstmate"
+  assert_contains "$out" 'handling input, not summary content: check: merge.check.sh: merged' "return dropped an actionable check"
+  pass "return ignores internal away-owner transfers and preserves actionable checks"
+}
+
 test_explicit_reclassification_requires_durable_reason() {
   local backend dir out rc
   for backend in tmux herdr; do
@@ -217,6 +231,7 @@ test_check_retries_recorded_terminal_teardown() {
 }
 
 test_return_gate_orders_catchup_before_bearings
+test_return_ignores_internal_away_owner_transfer
 test_explicit_reclassification_requires_durable_reason
 test_captain_decision_does_not_masquerade_as_firstmate_blocker
 test_away_reentry_refuses_pending_return_gate

@@ -21,7 +21,7 @@
 # calls are idempotent. `guard` never mutates state and is suitable for ordinary
 # read entrypoints such as fm-bearings-snapshot.sh.
 #
-# When the gate clears, each drained `check:` wake, including one retained by an
+# When the gate clears, each actionable `check:` wake, including one retained by an
 # earlier gated run, prints once as a `handling input` line before `catch-up
 # clear`. One-shot producers such as a merged PR poll or an offered X mention
 # have no other durable record, so firstmate handles these rows; they are never
@@ -165,7 +165,7 @@ return_reconcile() {
     drained=""
   }
   append_evidence wake "$drained" "$evidence"
-  append_evidence handle "$(printf '%s\n' "$drained" | awk -F '\t' '$3 == "check" { print $5 }')" "$evidence"
+  append_evidence handle "$(printf '%s\n' "$drained" | awk -F '\t' '$3 == "check" && $4 != "away-owner" { print $5 }')" "$evidence"
 
   if [ -s "$STATE/.subsuper-inject-wedged" ]; then
     wedge=$(head -1 "$STATE/.subsuper-inject-wedged" 2>/dev/null || true)
