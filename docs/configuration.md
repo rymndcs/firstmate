@@ -667,6 +667,8 @@ FM_CRASH_BACKOFF=60                # seconds to wait after crossing the crash th
 FM_CRASH_NORMAL_SLEEP=5            # seconds to wait after an isolated watcher crash
 FM_LOG_MAX_BYTES=1048576           # daemon log size that triggers trimming
 FM_LOG_KEEP_LINES=2000             # daemon log lines kept when trimming
+FM_AFK_RENEW_SECS=25200            # Claude Desktop away mode: seconds after the Stop hook starts before the coordinator quietly renews, below the 28800-second hook limit
+FM_AFK_TICK_SECS=1                 # Claude Desktop away mode: coordinator poll cadence in seconds
 ```
 
 `fm-teardown.sh` retries Git's `Unable to create '...index.lock': File exists` return failure up to `FM_TREEHOUSE_RETURN_LOCK_RETRIES` times, and that signature is the only return failure these settings govern; [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the rest of the return-failure contract.
