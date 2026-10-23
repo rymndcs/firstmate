@@ -62,6 +62,13 @@ export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=core.excludesFile
 export GIT_CONFIG_VALUE_0=/dev/null
 
+# Drop omp's ambient harness marker for the suite at large. omp exports
+# OMPCODE=1 into every command it runs, and bin/fm-harness.sh ranks it above
+# CLAUDECODE, so a suite launched from an omp session would resolve omp wherever
+# a test pins its harness with CLAUDECODE=1. Tests that cover omp detection set
+# OMPCODE themselves.
+unset OMPCODE
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034

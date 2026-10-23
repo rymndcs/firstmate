@@ -910,6 +910,88 @@ EOF
   pass ".opencode primary plugin: guard path is anchored to worktree, not directory"
 }
 
+test_omp_extension_maps_shared_owners_onto_native_events() {
+  local repo home ext log out status
+  repo="$TMP_ROOT/omp-ext-root"
+  home="$TMP_ROOT/omp-ext-home"
+  ext="$repo/.omp/extensions/fm-primary-omp.ts"
+  log="$TMP_ROOT/omp-ext.log"
+  mkdir -p "$repo/.omp/extensions" "$repo/bin" "$home/state"
+  cp "$ROOT/.omp/extensions/fm-primary-omp.ts" "$ext"
+  # Owner stubs record what the extension handed them; the guard blocks only a
+  # first stop, the way the real guard's one-block loop guard does.
+  cat > "$repo/bin/fm-turnend-guard.sh" <<'SH'
+#!/usr/bin/env bash
+payload=$(cat)
+printf 'guard ompcode=%s payload=%s\n' "${OMPCODE:-}" "$payload" >> "${FM_OMP_LOG:?}"
+case "$payload" in *'"stop_hook_active":true'*) exit 0 ;; esac
+printf 'omp guard fired\n' >&2
+exit 2
+SH
+  cat > "$repo/bin/fm-arm-pretool-check.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm %s\n' "$2" >> "${FM_OMP_LOG:?}"
+case "$2" in *'&') printf 'watcher-background denied\n' >&2; exit 2 ;; esac
+exit 0
+SH
+  cat > "$repo/bin/fm-cd-pretool-check.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  cat > "$repo/bin/fm-sessionstart-nudge.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'nudge\n' >> "${FM_OMP_LOG:?}"
+printf 'run session start\n'
+SH
+  chmod +x "$repo/bin/"*.sh
+  out=$(PLUGIN="$ext" FM_HOME="$home" FM_OMP_LOG="$log" node --input-type=module 2>&1 <<'EOF'
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const handlers = new Map();
+const sent = [];
+const pi = {
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
+  sendMessage(message, options) {
+    sent.push({ message, options });
+  },
+};
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+const log = () => readFileSync(process.env.FM_OMP_LOG, "utf8");
+
+await handlers.get("session_start")({ type: "session_start" }, { agent: { kind: "sub" } });
+if (sent.length !== 0) throw new Error("a subagent session was nudged to run session start");
+await handlers.get("session_start")({ type: "session_start" }, { agent: { kind: "main" } });
+if (sent.length !== 1) throw new Error(`main session nudge sent ${sent.length} messages`);
+if (sent[0].message.content !== "run session start") throw new Error(`nudge content: ${sent[0].message.content}`);
+if (sent[0].options?.deliverAs !== "nextTurn") throw new Error("nudge would start a turn instead of riding the first prompt");
+if (log().split("nudge").length !== 2) throw new Error("subagent session ran the nudge owner");
+
+const blocked = await handlers.get("session_stop")({ type: "session_stop", stop_hook_active: false });
+if (blocked?.decision !== "block") throw new Error(`a blind first stop was not blocked: ${JSON.stringify(blocked)}`);
+if (!blocked.reason.includes("omp guard fired")) throw new Error(`block reason lost guard stderr: ${blocked.reason}`);
+const allowed = await handlers.get("session_stop")({ type: "session_stop", stop_hook_active: true });
+if (allowed?.decision) throw new Error("the stop after a block was refused again");
+if (!log().includes('guard ompcode=1 payload={"stop_hook_active":false}')) throw new Error(`guard did not run as omp: ${log()}`);
+
+const denied = await handlers.get("tool_call")({ type: "tool_call", toolName: "bash", input: { command: "bin/fm-watch-arm.sh &" } });
+if (denied?.block !== true || !denied.reason.includes("watcher-background")) throw new Error(`shell & arm was not denied: ${JSON.stringify(denied)}`);
+const ok = await handlers.get("tool_call")({ type: "tool_call", toolName: "bash", input: { command: "exec bin/fm-watch-arm.sh" } });
+if (ok?.block) throw new Error("the blessed arm command was denied");
+const before = log();
+await handlers.get("tool_call")({ type: "tool_call", toolName: "read", input: { path: "x" } });
+if (log() !== before) throw new Error("a non-bash tool ran the seatbelt");
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "omp extension must map the shared owners onto session_start, session_stop, and tool_call"
+  [ -z "$out" ] || fail "omp extension test printed output: $out"
+  pass ".omp primary extension: nudge, turn-end block, and arm seatbelt reach the shared owners"
+}
+
 test_pi_extension_injects_once_per_logical_agent_run() {
   local repo home ext log out status
   repo="$TMP_ROOT/pi-logical-run-root"
@@ -1586,6 +1668,7 @@ test_codex_hook_ignores_nested_git_root_guard
 test_opencode_plugin_anchors_guard_to_worktree
 test_pi_extension_injects_once_per_logical_agent_run
 test_pi_extension_retries_after_followup_delivery_failure
+test_omp_extension_maps_shared_owners_onto_native_events
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
 test_hook_claude_mode_reblocks_x_mode_without_tasks
 test_hook_claude_mode_allows_when_autoarm_owner_alive

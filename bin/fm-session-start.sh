@@ -380,6 +380,12 @@ if [ "$PRIMARY_HARNESS" = pi ] || [ "$PRIMARY_HARNESS" = pi-signed ]; then
     printf 'PI_WATCH_EXTENSION: not loaded - approve Pi project trust once per clone, then restart %s so %s and %s auto-load for turn-end guard and background wake coverage; use -e %s -e %s only if project hooks are not trusted\n' "$PI_RESTART_COMMAND" "$PI_TURNEND_EXT" "$PI_EXT" "$PI_TURNEND_EXT" "$PI_EXT"
   fi
 fi
+if [ "$PRIMARY_HARNESS" = omp ]; then
+  OMP_EXT="$FM_ROOT/.omp/extensions/fm-primary-omp.ts"
+  if ! pi_extension_loaded "$STATE/.omp-extension-loaded" "$(hash_file "$OMP_EXT" || printf '')" "$STATE/.lock"; then
+    printf 'OMP_EXTENSION: not loaded - restart omp from %s without --no-extensions so %s auto-loads for the turn-end guard and the watcher-arm seatbelt\n' "$FM_ROOT" "$OMP_EXT"
+  fi
+fi
 "$SCRIPT_DIR/fm-supervision-instructions.sh" \
   --harness "$PRIMARY_HARNESS" \
   --read-only "$READ_ONLY" \
