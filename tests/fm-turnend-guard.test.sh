@@ -1155,10 +1155,13 @@ run_integrated_autoarm() {
   local dir=$1 home
   home=$(cd "$dir" && pwd)
   # shellcheck disable=SC2016 # the fake harness expands FM_HOME inside its child shell.
+  # The trailing exit keeps bash 5 from exec-ing the auto-arm in place of the
+  # fake harness, which must stay its live lock-owning parent.
   printf '{"session_id":"sess-claude-mode","stop_hook_active":false}\n' \
     | FM_HOME="$home" "$dir/fake-claude" -c '
         printf "%s\n" "$$" > "$FM_HOME/state/.lock"
         "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+        exit $?
       ' 2>&1
 }
 
@@ -1952,7 +1955,7 @@ test_claude_terminal_warning_replacement_alarm() {
 #!/usr/bin/env bash
 payload='{"stop_hook_active":true,"session_id":"sess-claude-mode"}'
 guard() { printf '%s' "$payload" | FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 bash "$FM_HOME/bin/fm-turnend-guard.sh" --claude; }
-auto() { printf '%s' "$payload" | "$FM_HOME/fake-claude" -c 'printf "%s\n" "$$" > "$FM_HOME/state/.lock"; "$FM_HOME/bin/fm-claude-stop-autoarm.sh"'; }
+auto() { printf '%s' "$payload" | "$FM_HOME/fake-claude" -c 'printf "%s\n" "$$" > "$FM_HOME/state/.lock"; "$FM_HOME/bin/fm-claude-stop-autoarm.sh"; exit $?'; }
 mv "$FM_HOME/state/recovery-candidate" "$FM_HOME/state/.watch.lock"
 touch "$FM_HOME/state/.last-watcher-beat"
 guard > "$FM_HOME/recovery.out" 2>&1 || exit 11
