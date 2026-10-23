@@ -230,7 +230,9 @@ SH
         elif [ "$PREP_PHASE" = validation ]; then
           VALIDATION_GROUP=$(cat "$PREPARATION/state/jobs/$(cat "$PREPARATION/job-id")/.claim/group")
         fi
-        rm -rf -- "${PREPARATION:?}/$MISSING_DIR"
+        # Rename, not rm -rf: a heartbeat written mid-traversal makes rm -rf fail
+        # with "Directory not empty" and leaves the directory in place.
+        mv -- "${PREPARATION:?}/$MISSING_DIR" "$PREPARATION/removed-$MISSING_DIR"
         touch "$PREPARATION/release" "$PREPARATION/drain-release"
         worker_wait_gone "$PREPARATION_PID"
         PREPARATION_PID=
@@ -303,7 +305,7 @@ SH
       done
       assert_present "$LIFETIME/maintenance-entered" "queue maintenance did not reach the deletion barrier"
     fi
-    rm -rf -- "${LIFETIME:?}/$MISSING_DIR"
+    mv -- "${LIFETIME:?}/$MISSING_DIR" "$LIFETIME/removed-$MISSING_DIR"
     touch "$LIFETIME/maintenance-release"
     worker_wait_gone "$LIFETIME_PID"
     assert_absent "${LIFETIME:?}/$MISSING_DIR" "worker recreated its removed directory"
@@ -347,7 +349,7 @@ SH
   done
   assert_present "$ACTIVE/started" "active lifetime job did not start"
   ACTIVE_GROUP=$(cat "$ACTIVE/state/jobs/$(cat "$ACTIVE/job-id")/.claim/group")
-  rm -rf -- "${ACTIVE:?}/$MISSING_DIR"
+  mv -- "${ACTIVE:?}/$MISSING_DIR" "$ACTIVE/removed-$MISSING_DIR"
   worker_wait_gone "$ACTIVE_PID"
   kill -0 -- "-$ACTIVE_GROUP" 2>/dev/null && fail "directory removal left an active command group"
   assert_absent "${ACTIVE:?}/$MISSING_DIR" "active worker recreated a removed directory"
