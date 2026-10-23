@@ -185,6 +185,7 @@ Applicability turns on one question: does the harness expose built-in delegation
 | Grok | present, exact tokens unconfirmed | Not wired pending live verification. See below. |
 | OpenCode | present, exact tokens unconfirmed | Not wired pending live verification. See below. |
 | Pi | none reported | Not wired pending live verification. See below. |
+| omp | present, uninspected | Not wired; primary-seat support covers only the cd-guard, seatbelt, nudge, and turn-end guard. |
 
 ### Codex, verified not applicable
 

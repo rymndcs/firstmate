@@ -47,6 +47,8 @@ If `jq` is missing or hook stdin is empty, the guard exits 0 because it cannot s
 - Pi listens for `agent_settled` in `.pi/extensions/fm-primary-turnend-guard.ts`, runs once per logical agent run, and calls `pi.sendUserMessage(..., { deliverAs: "followUp" })` once when the guard returns 2.
 - Grok registers a `Stop` hook in `.grok/hooks/fm-primary-turnend-guard.json` and delegates capability selection to `bin/fm-turnend-guard-grok.sh`.
   The tracked Claude Stop entries are inert when `GROK_AGENT` is present, so Grok's Claude-compatible settings loading cannot create a second continuation path.
+- omp listens for `session_stop` in `.omp/extensions/fm-primary-omp.ts`, which fires only for the main session, runs the default-mode guard with `stop_hook_active`, and returns `{decision: "block", reason}` when the guard returns 2.
+  omp runs no `.claude/settings.json` command hooks, so the Claude Stop entries are inert under omp, and omp re-fires with `stop_hook_active=true` after a block so the one-block loop guard applies.
 
 Grok and Kimi crew turn-end wakes are authorized per task rather than per checkout: one shared Firstmate-owned hook script reads a per-task authorization file from that harness's `fm-turn-end.d` directory, so no worktree hook file and no trust grant is needed.
 `bin/fm-spawn.sh` writes that authorization file and records its name as the task's token under `state/<id>.grok-turnend-token` or `state/<id>.kimi-turnend-token`, and `bin/fm-teardown.sh` reads the token to delete the authorization file and then removes the token itself.
@@ -112,7 +114,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 
 ## Regression coverage
 
-`tests/fm-turnend-guard.test.sh` covers the predicate, main and secondmate primary scope, child-worktree exclusion, `FM_HOME` and `FM_STATE_OVERRIDE` precedence, the live-lock and fresh-beacon guard predicate, the cooperative `--claude` claim wait, monotonic failed-epoch progression, bounded attended fail-open, post-alarm continuation suppression, positive recovery reset, Pi logical-run latching, missing-`jq` behavior, all five primary registrations, Grok native and legacy selection, typed field precedence, malformed input, and exactly-one-path safety.
+`tests/fm-turnend-guard.test.sh` covers the predicate, main and secondmate primary scope, child-worktree exclusion, `FM_HOME` and `FM_STATE_OVERRIDE` precedence, the live-lock and fresh-beacon guard predicate, the cooperative `--claude` claim wait, monotonic failed-epoch progression, bounded attended fail-open, post-alarm continuation suppression, positive recovery reset, Pi logical-run latching, missing-`jq` behavior, all six primary registrations, the omp extension adapter, Grok native and legacy selection, typed field precedence, malformed input, and exactly-one-path safety.
 `tests/fm-guard-stale-banner.test.sh` covers the matching pull-guard predicate, including the fresh-leftover-beacon negative control.
 `tests/fm-kimi-harness.test.sh` covers the separate Kimi crew hook's format preservation, idempotence, refusal cases, token guard, spawn registration, and teardown cleanup.
 `tests/fm-supervision-instructions.test.sh` covers recovery-line ownership and pi-signed's identity-preserving reuse of Pi's protocol.

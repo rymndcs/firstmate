@@ -129,7 +129,7 @@ initial_watcher=$(watcher_pid)
 sleep 5
 printf 'done: omp live e2e watcher fire\n' > "$STATE/omp-e2e.status"
 wait_for "the action cycle was not classified in the lifecycle ledger" 240 \
-  grep -Eq 'reason=actionable-signal' "$STATE/.watch-cycle-exits.log"
+  grep -Eqs 'reason=actionable-signal' "$STATE/.watch-cycle-exits.log"
 wait_for "omp did not wake on the finished async job and re-arm" 480 watcher_rearmed
 
 # 3. Seatbelt: a shell-ampersand arm is denied before it runs.

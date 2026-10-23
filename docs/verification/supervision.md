@@ -47,6 +47,7 @@ Observed result: `PI_SMOKE_DONE`, with one session-start execution.
 The earlier `sendUserMessage` counterfactual raced the positional prompt; the current non-triggering `pi.sendMessage` custom message did not.
 The installed pi-signed 0.82.0 wrapper repeated the Pi primary extension and session-start path on 2026-07-27.
 [`runtime-backends.md`](runtime-backends.md#tmux) owns the shared-ancestry evidence and authoritative selection-marker boundary.
+omp 18.12.6 was verified on 2026-10-23 through `.omp/extensions/fm-primary-omp.ts`: its `session_start` handler delivered the nudge as a `nextTurn` custom message, and the session transcript recorded it as `firstmate-sessionstart-nudge` ahead of the first prompt.
 
 Current deterministic and live entry points:
 
@@ -54,6 +55,7 @@ Current deterministic and live entry points:
 tests/fm-sessionstart-nudge.test.sh
 FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh
 FM_OPENCODE_LIVE_E2E=1 tests/fm-opencode-primary-live-e2e.test.sh
+FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh
 ```
 
 The Ahoy first-message boundary was reverified on 2026-07-22 with Pi 0.81.1 and OpenCode 1.17.18.
@@ -105,6 +107,7 @@ The direct and passive mechanisms were validated across all five harnesses on 20
 | OpenCode | 1.17.6 | Passive `session.idle` callback | Throwing could not block, while `promptAsync` scheduled one TUI follow-up; headless remained fail-open. |
 | Pi | 0.80.5 | Passive `agent_settled` callback | Exactly one guard follow-up ran for an unhealthy cycle, with no recursion across tool turns. |
 | Grok | 0.2.112 native and 0.2.73 pre-native | Running-payload adaptive `Stop` | Native false-to-true continuation stayed in one process with two model turns and zero resume launches; the field-absent pre-native process launched exactly one guarded resume. |
+| omp | 18.12.6 | Blocking `session_stop` extension event | With a task in flight and no watcher, the first stop was refused with the guard banner as a `session-stop-continuation` message, and the model armed `bin/fm-watch-arm.sh` with `async: true` and `timeout: 0` without being asked; no second refusal followed once the arm job was running. |
 
 The Grok adaptive matrix ran on 2026-07-28 with separate scratch repositories and homes, dedicated tmux sockets, one target plus one control window, ambient tmux variables removed, and a socket-bound wrapper first in `PATH`.
 
@@ -215,6 +218,10 @@ grok 0.2.103 (89c3d36fb6f1) [stable]
 | OpenCode | `FM_OPENCODE_LIVE_E2E=1 tests/fm-opencode-primary-live-e2e.test.sh` | A verified successor existed before prompt handling, with no model re-arm or turn-end fallback. |
 | Pi | `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` | One initial tool call led to extension-owned successors and clean child retirement on exit. |
 | Grok | `FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh` | Native task completion surfaced the actionable close and the cycle ledger recorded `reason=actionable-signal`. |
+| omp | `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` | `bin/fm-lock.sh` recorded the omp process as holder, the finished async arm job started a new turn while the session was idle, that turn drained and re-armed, the cycle ledger recorded `reason=actionable-signal`, and a shell-ampersand arm was denied with `watcher-background`. |
+
+omp 18.12.6 passed that live guard on 2026-10-23 with `anthropic/claude-sonnet-5-5` at low thinking, printing `ok - omp/18.12.6 live E2E: lock, session_stop guard, async-job wake, and arm seatbelt`.
+The same run confirmed that omp runs no `.claude/settings.json` command hooks: Claude's Stop auto-arm never wrote `state/.claude-autoarm-epoch`.
 
 Pi 0.81.1 repeated the continuity and clean-exit lifecycle on 2026-07-23 after the Calm presentation changes.
 
