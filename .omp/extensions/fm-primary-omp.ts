@@ -11,7 +11,7 @@
 // firstmate hooks an omp primary gets.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
@@ -63,9 +63,12 @@ function lockOwnership(): LockOwnership {
 
 // bin/fm-session-start.sh compares this marker against the lock holder and the
 // current file hash to report an omp primary that did not load this extension.
+// A fresh home has no state/ until bin/fm-lock.sh runs, which is after this
+// session_start, so create it rather than skip the marker.
 function markLoaded(): void {
-  if (!existsSync(state) || lockOwnership() === "other") return;
+  if (lockOwnership() === "other") return;
   try {
+    mkdirSync(state, { recursive: true });
     writeFileSync(marker, `${extensionVersion}\n${process.pid}\n`);
   } catch {
   }

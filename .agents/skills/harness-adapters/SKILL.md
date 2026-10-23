@@ -389,11 +389,12 @@ omp is supported only as the primary firstmate session; `bin/fm-spawn.sh` has no
 
 | Fact | Value |
 | --- | --- |
-| Env marker | `OMPCODE=1`, exported alongside `CLAUDECODE=1` into every bash-tool command; `OMPCODE` wins detection. omp's own process env lacks it, so the extension launches owner scripts with `OMPCODE=1`. |
+| Env marker | `OMPCODE=1`, exported alongside `CLAUDECODE=1` into every bash-tool command; `OMPCODE` wins detection. omp's own process env lacks it, so the extension launches owner scripts with `OMPCODE=1`. `bin/fm-spawn.sh` unsets both in every worker pane before launch, and a tmux server firstmate starts excludes both, so they never reach another harness. |
 | Process name | Exact `omp`; bash-tool scripts run as direct children of the single compiled process. |
 | Hook transport | Project extension `.omp/extensions/fm-primary-omp.ts`, discovered only from the launch cwd with no trust gate: `session_start` nudge, bash `tool_call` cd-guard and seatbelt, `session_stop` turn-end guard. omp runs no `.claude/settings.json` command hooks, so the Claude hooks are inert. |
 | Launch | Interactive `omp` from the repo root, never `--no-extensions`; `bin/fm-session-start.sh` prints `OMP_EXTENSION: not loaded` when the extension marker is missing or stale. |
 | Wake shape | Async bash job (`async: true`, `timeout: 0`) on `bin/fm-watch-arm.sh`; see `docs/supervision-protocols/omp.md`. |
+| Away mode | tmux and Herdr supervisor panes, with omp-specific draft protection; see `docs/tmux-backend.md` and `docs/herdr-backend.md`. |
 | Crew dispatch | Not supported; an omp-primary home must name a verified crew adapter in `config/crew-harness` and `config/secondmate-harness`, because `default` resolves to omp and spawn refuses. |
 | Not wired | Delegation-shape guard and ask-user gate. |
 | Live guard | `tests/fm-omp-primary-live-e2e.test.sh` (`FM_OMP_LIVE_E2E=1`). |

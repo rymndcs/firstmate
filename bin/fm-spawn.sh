@@ -2493,6 +2493,11 @@ if [ "$KIND" = secondmate ]; then
   # injected carrier and this on/off snapshot are guaranteed to agree.
   LAUNCH="FM_ROOT_OVERRIDE= FM_STATE_OVERRIDE= FM_DATA_OVERRIDE= FM_PROJECTS_OVERRIDE= FM_CONFIG_OVERRIDE= FM_PUBLIC_FOLLOWUP_PRIMARY_HOME=$sq_primary_home FM_HOME=$sq_home FM_TRACE_CONTEXT=$SPAWN_TRACE_EFFECTIVE $LAUNCH"
 fi
+# A pane inherits its server's global environment, and a server started from an
+# omp primary stores the OMPCODE/CLAUDECODE pair omp exports to every command.
+# Drop both from the pane shell so the launched agent, and any later resume in
+# this pane, detects its own harness rather than omp (bin/fm-harness.sh).
+spawn_send_text_line "$T" "unset OMPCODE CLAUDECODE"
 # Export GOTMPDIR into the crewmate's pane shell so the agent and every child
 # process (go build, go test, ...) inherit it. Sent before the launch command so
 # the env is set when the agent starts; the brief sleep lets the export land.

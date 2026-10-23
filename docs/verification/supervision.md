@@ -218,9 +218,9 @@ grok 0.2.103 (89c3d36fb6f1) [stable]
 | OpenCode | `FM_OPENCODE_LIVE_E2E=1 tests/fm-opencode-primary-live-e2e.test.sh` | A verified successor existed before prompt handling, with no model re-arm or turn-end fallback. |
 | Pi | `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` | One initial tool call led to extension-owned successors and clean child retirement on exit. |
 | Grok | `FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh` | Native task completion surfaced the actionable close and the cycle ledger recorded `reason=actionable-signal`. |
-| omp | `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` | `bin/fm-lock.sh` recorded the omp process as holder, the finished async arm job started a new turn while the session was idle, that turn drained and re-armed, the cycle ledger recorded `reason=actionable-signal`, and a shell-ampersand arm was denied with `watcher-background`. |
+| omp | `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` | In a home with no `state/` at launch the extension still wrote its marker and session start reported no missing extension, `bin/fm-lock.sh` recorded the omp process as holder, the finished async arm job started a new turn while the session was idle, that turn drained and re-armed, the cycle ledger recorded `reason=actionable-signal`, a shell-ampersand arm was denied with `watcher-background`, and away-mode `inject_msg` delivered one wake to the idle composer while deferring one during the resulting turn and one over an unsent draft. |
 
-omp 18.12.6 passed that live guard on 2026-10-23 with `anthropic/claude-sonnet-5-5` at low thinking, printing `ok - omp/18.12.6 live E2E: lock, session_stop guard, async-job wake, and arm seatbelt`.
+omp 18.12.6 passed that live guard on 2026-10-23 with `anthropic/claude-sonnet-5-5` at low thinking, printing `ok - omp/18.12.6 live E2E: fresh-home marker, lock, session_stop guard, async-job wake, arm seatbelt, and away-mode injection`.
 The same run confirmed that omp runs no `.claude/settings.json` command hooks: Claude's Stop auto-arm never wrote `state/.claude-autoarm-epoch`.
 
 Pi 0.81.1 repeated the continuity and clean-exit lifecycle on 2026-07-23 after the Calm presentation changes.

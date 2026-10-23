@@ -47,7 +47,12 @@ make_fake_tmux() {  # <dir>
 set -u
 case "${1:-}" in
   display-message)
-    for a in "$@"; do case "$a" in *cursor_y*) printf '%s\n' "${FM_FAKE_CY:-0}"; exit 0 ;; esac; done
+    for a in "$@"; do
+      case "$a" in
+        *cursor_x*) printf '%s %s\n' "${FM_FAKE_CX:-0}" "${FM_FAKE_CY:-0}"; exit 0 ;;
+        *cursor_y*) printf '%s\n' "${FM_FAKE_CY:-0}"; exit 0 ;;
+      esac
+    done
     printf 'fakepane\n'; exit 0 ;;
   capture-pane)
     has_e=0
@@ -572,6 +577,82 @@ test_non_bordered_interior_edges_are_pending() {
 
 # --- fm-peek.sh stays escape-free (LLM-facing path) -------------------------
 
+# omp 18.12.6 rows, reproduced from real styled captures with the padding
+# shortened: its status line rides the composer's top border and the draft's
+# last line rides the bottom border.
+OMP_TOP=$'\033[38;2;0;180;255m╭──\033[39m\033[48;2;15;18;22m \033[38;2;107;114;128m󰵗\033[39m \033[38;2;0;180;255m󰪣 GPT-6.1 Sol\033[39m \033[38;2;15;18;22m\033[49m\033[38;2;0;180;255m──2%\033[38;2;42;48;56m────────────\033[38;2;0;180;255m──╮'
+OMP_EMPTY_BOTTOM=$'\033[38;2;0;180;255m╰─ \033[39m                                  \033[38;2;0;180;255m ─╯'
+
+omp_composer_state() {  # <capture> <cursor-x> <cursor-y> [harness]
+  PATH="$OMP_FB:$PATH" FM_FAKE_STYLED="$1" FM_FAKE_CX="$2" FM_FAKE_CY="$3" \
+    FM_COMPOSER_HARNESS="${4-omp}" fm_tmux_composer_state "fakepane"
+}
+
+test_omp_composer_reads_its_bottom_border_input_row() {
+  local dir capture out
+  dir="$TMP_ROOT/omp-composer"; mkdir -p "$dir"
+  OMP_FB=$(make_fake_tmux "$dir")
+  capture="$dir/styled.txt"
+
+  printf ' DONE\n%s\n%s\n' "$OMP_TOP" "$OMP_EMPTY_BOTTOM" > "$capture"
+  out=$(omp_composer_state "$capture" 3 2 '')
+  [ "$out" = unknown ] || fail "the generic reader no longer refuses omp's shape (got '$out'), so this case proves nothing"
+  out=$(omp_composer_state "$capture" 3 2)
+  [ "$out" = empty ] || fail "an idle omp composer should be empty, got '$out'"
+  out=$(omp_composer_state "$capture" 5 2)
+  [ "$out" = unknown ] || fail "a blank omp row with the cursor past its origin should be unknown, got '$out'"
+
+  printf '%s\n\033[38;2;0;180;255m╰─ \033[38;2;229;229;231mhello pending\033[39m                     \033[38;2;0;180;255m ─╯\n' "$OMP_TOP" > "$capture"
+  out=$(omp_composer_state "$capture" 16 1)
+  [ "$out" = pending ] || fail "omp text on its bottom row should be pending, got '$out'"
+  out=$(omp_composer_state "$capture" 3 1)
+  [ "$out" = pending ] || fail "omp text with the cursor moved to its origin should be pending, got '$out'"
+
+  printf '%s\n\033[38;2;0;180;255m│  \033[38;2;229;229;231mhello pending and a much longer line\033[38;2;0;180;255m  │\n\033[38;2;0;180;255m╰─ \033[38;2;229;229;231mexceeds one row\033[39m                      \033[38;2;0;180;255m ─╯\n' "$OMP_TOP" > "$capture"
+  out=$(omp_composer_state "$capture" 18 2)
+  [ "$out" = pending ] || fail "a wrapped omp draft should be pending, got '$out'"
+  out=$(omp_composer_state "$capture" 3 1)
+  [ "$out" = pending ] || fail "a wrapped omp draft read from its first row should be pending, got '$out'"
+
+  printf '%s\n\033[38;2;0;180;255m│                                       │\n%s\n' "$OMP_TOP" "$OMP_EMPTY_BOTTOM" > "$capture"
+  out=$(omp_composer_state "$capture" 3 2)
+  [ "$out" = unknown ] || fail "a blank multi-row omp draft should be unknown, got '$out'"
+
+  # A draft taller than the pane scrolls omp's top border out of view.
+  printf '%s\n' "$OMP_EMPTY_BOTTOM" > "$capture"
+  out=$(omp_composer_state "$capture" 3 0)
+  [ "$out" = unknown ] || fail "an omp box with no visible top border should be unknown, got '$out'"
+  pass "fm_tmux_composer_state: omp's bottom-border input row reads empty only at a one-row origin"
+}
+
+test_omp_composer_ghost_hint_and_shell_shapes() {
+  local dir capture out
+  dir="$TMP_ROOT/omp-composer-hints"; mkdir -p "$dir"
+  OMP_FB=$(make_fake_tmux "$dir")
+  capture="$dir/styled.txt"
+
+  # omp renders a predicted next prompt in its hint style at the cursor.
+  printf '%s\n\033[38;2;0;180;255m╰─ \033[2mfix the failing test\033[0m               \033[38;2;0;180;255m ─╯\n' "$OMP_TOP" > "$capture"
+  out=$(omp_composer_state "$capture" 3 1)
+  [ "$out" = empty ] || fail "a ghost-only omp composer should be empty, got '$out'"
+
+  # Before the first turn omp right-aligns a key hint whose glyphs keep the accent colour.
+  printf '%s\n\033[38;2;0;180;255m╰─ \033[38;2;229;229;231m                    \033[38;2;0;180;255m󰘶 󰌒\033[38;2;229;229;231m \033[38;2;107;114;128mto change thinking effort\033[38;2;0;180;255m ─╯\n' "$OMP_TOP" > "$capture"
+  out=$(omp_composer_state "$capture" 3 1)
+  [ "$out" != empty ] || fail "omp's key hint was read as an empty composer"
+
+  printf 'user@host ~ $ \n' > "$capture"
+  out=$(omp_composer_state "$capture" 14 0)
+  [ "$out" = unknown ] || fail "a dead shell under an omp primary should be unknown, got '$out'"
+
+  # A finished tool box sits above the composer; only the cursor's box counts.
+  printf '%s\n\033[38;2;0;180;255m│ $ sleep 25                             │\n\033[38;2;0;180;255m╰─── Wall: 25.02s ─────────────────────────╯\n%s\n%s\n' \
+    "$OMP_TOP" "$OMP_TOP" "$OMP_EMPTY_BOTTOM" > "$capture"
+  out=$(omp_composer_state "$capture" 3 4)
+  [ "$out" = empty ] || fail "an idle omp composer below a tool box should be empty, got '$out'"
+  pass "fm_tmux_composer_state: omp ghost text is empty while its hints and dead shells never are"
+}
+
 test_peek_output_is_escape_free() {
   local dir fb capture home out
   dir="$TMP_ROOT/peek"; mkdir -p "$dir"
@@ -625,4 +706,6 @@ test_fallback_capture_race_with_edge_is_unknown
 test_legitimate_empty_routes_remain_empty
 test_non_bordered_composer_uses_compatibility_fallback
 test_non_bordered_interior_edges_are_pending
+test_omp_composer_reads_its_bottom_border_input_row
+test_omp_composer_ghost_hint_and_shell_shapes
 test_peek_output_is_escape_free

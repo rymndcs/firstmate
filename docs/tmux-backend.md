@@ -78,6 +78,10 @@ The one remaining rendered-tail reader is Grok's isolated fallback inside that c
 The submit acknowledgement and away-mode supervisor-pane busy guard below still consult rendered output, but only to decide whether input can be delivered, never to decide recorded task state.
 The supervisor guard selects only the detected primary harness's signature rather than a global union of vendor patterns.
 
+omp draws its draft on the composer box's bottom border row, below a status-line top border, so the away-mode injector reads an omp primary through an omp-specific reader selected by the detected primary harness.
+That reader proves empty only for a one-row box with the cursor at the content origin and no typed text after ghost stripping; typed text on any row is pending, and every other shape is unknown.
+omp's busy signature reads its loader row, led by the interrupt key's symbol or carrying `Working…`, and never the status line's spinner and counter, which stay on while any async job runs, including the away daemon itself.
+
 `bin/fm-tmux-lib.sh` owns exact type-and-submit mechanics.
 It types a message once and retries Enter only until the composer clears.
 Only a proven empty composer is a positive delivery acknowledgement.
@@ -94,6 +98,7 @@ Ambiguous pending text never receives the busy-queue conversion.
 
 - tmux is the reference path and supports secondmate homes.
 - The OpenCode busy-queue exception is tmux-specific; Herdr retains its separately documented gap.
+- Away-mode delivery to an omp primary is verified on tmux and Herdr; [`herdr-backend.md`](herdr-backend.md#composer-and-injection-safety) owns Herdr's distinct native-identity and bottom-border proof.
 
 ```sh
 tests/fm-backend-tmux-smoke.test.sh
@@ -102,6 +107,7 @@ tests/fm-harness-liveness-drift-live-e2e.test.sh
 tests/fm-composer-ghost.test.sh
 tests/fm-kimi-harness.test.sh
 tests/fm-tmux-submit-busy.test.sh
+tests/fm-omp-harness.test.sh
 tests/fm-bootstrap.test.sh
 ```
 

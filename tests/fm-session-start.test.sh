@@ -165,8 +165,8 @@ SH
   printf '%s\n' "$harness" > "$fakebin/.harness-name"
 }
 
-make_fake_ps_pi_holder() {
-  local fakebin=$1 holder_pid=$2
+make_fake_ps_pi_holder() {  # <fakebin> <holder-pid> [harness]
+  local fakebin=$1 holder_pid=$2 harness=${3:-pi}
   cat > "$fakebin/ps" <<SH
 #!/usr/bin/env bash
 set -u
@@ -179,7 +179,7 @@ done
 case "\$*" in
   *"comm="*)
     if [ "\$pid" = "$holder_pid" ]; then
-      printf '/usr/local/bin/pi\n'
+      printf '/usr/local/bin/$harness\n'
     else
       printf '/bin/zsh\n'
     fi
@@ -187,7 +187,7 @@ case "\$*" in
     ;;
   *"args="*)
     if [ "\$pid" = "$holder_pid" ]; then
-      printf 'pi\n'
+      printf '$harness\n'
     else
       printf 'zsh\n'
     fi
@@ -1429,7 +1429,53 @@ EOF
   pass "session start rejects Pi loaded markers from previous sessions"
 }
 
+test_omp_extension_marker_survives_fresh_home_without_state() {
+  local rec root home fakebin out ext ready holder_pid i
+  rec=$(new_world omp-fresh-home)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  # A fresh clone: omp's session_start fires before bin/fm-lock.sh creates state/.
+  rm -rf "$home/state"
+  ext="$root/.omp/extensions/fm-primary-omp.ts"
+  mkdir -p "$root/.omp/extensions"
+  cp "$ROOT/.omp/extensions/fm-primary-omp.ts" "$ext"
+  ready="$TMP_ROOT/omp-fresh-home.ready"
+  # The real extension runs its main-agent session_start in a live process that
+  # then stays up as the omp session holding the lock.
+  PLUGIN="$ext" READY="$ready" FM_HOME="$home" node --input-type=module >/dev/null 2>&1 <<'EOF' &
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const handlers = new Map();
+const pi = { on(event, handler) { handlers.set(event, handler); }, sendMessage() {} };
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+await handlers.get("session_start")({ type: "session_start" }, { agent: { kind: "main" } });
+writeFileSync(process.env.READY, "ready\n");
+setTimeout(() => {}, 300000);
+EOF
+  holder_pid=$!
+  i=0
+  while [ ! -s "$ready" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  [ -s "$ready" ] || { kill "$holder_pid" 2>/dev/null; fail "the omp extension never finished session_start"; }
+  make_fake_ps_pi_holder "$fakebin" "$holder_pid" omp
+
+  out=$(OMPCODE=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  assert_contains "$out" "SUPERVISION OPERATING INSTRUCTIONS - primary harness: omp" "session start did not run as an omp primary"
+  [ "$(sed -n '1p' "$home/state/.lock" 2>/dev/null)" = "$holder_pid" ] \
+    || fail "the omp session did not take the lock, so the marker check proves nothing"
+  assert_not_contains "$out" "OMP_EXTENSION: not loaded" \
+    "a fresh home falsely reported the loaded omp extension as missing"
+
+  pass "session start accepts the omp extension marker written before a fresh home had state/"
+}
+
 test_context_digest_absent_empty_present
+test_omp_extension_marker_survives_fresh_home_without_state
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
 test_trace_context_effective_state_is_frozen_after_lock
