@@ -360,7 +360,7 @@ test_herdr_omp_draft_protection() (
   done
   pass "Herdr omp: native idle plus complete bottom-border composer permits delivery, drafts and ambiguous panes do not"
 )
-test_herdr_omp_draft_protection
+test_herdr_omp_draft_protection || exit 1
 
 # shellcheck disable=SC2329 # The real submit adapter invokes these fixture transport functions indirectly.
 test_herdr_omp_submit_with_delayed_native_status() (
@@ -385,4 +385,4 @@ test_herdr_omp_submit_with_delayed_native_status() (
   done
   pass "Herdr omp: cleared draft confirms submission despite delayed native status; swallowed Enter does not"
 )
-test_herdr_omp_submit_with_delayed_native_status
+test_herdr_omp_submit_with_delayed_native_status || exit 1

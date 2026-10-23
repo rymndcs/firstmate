@@ -67,6 +67,12 @@ lock_held_by_omp() {
   [ "$(cat "$STATE/.lock" 2>/dev/null)" = "$omp_pid" ]
 }
 
+lock_reply_completed() {
+  jq -se '[.[] | select(.type == "message" and .message.role == "assistant")
+    | .message.content[]? | select(.type == "text" and (.text | contains("OMP_LOCK_PROBE_DONE")))]
+    | length > 0' "$SESSIONS/"*.jsonl >/dev/null 2>&1
+}
+
 watcher_rearmed() {
   local pid
   pid=$(watcher_pid)
@@ -136,20 +142,24 @@ case "$(ps -o comm= -p "$omp_pid" 2>/dev/null)" in
   omp|*/omp) ;;
   *) fail "extension marker pid $omp_pid is not the omp process" ;;
 esac
-# One task in flight, so supervision is required and a blind stop is refused.
-printf 'project=fixture\n' > "$STATE/omp-e2e.meta"
+# Complete startup without an in-flight task. A compliant model may otherwise
+# arm voluntarily from its startup instructions, never exercising the guard.
 sleep 2
 
-# 1. Lock, then the turn-end guard: the prompt never names the watcher, and the
-#    transcript must hold the guard's refusal before the watcher counts.
+# 1. After startup settles, introduce work externally and request a tool-free
+# reply. Only the subsequent native stop refusal should cause an arm.
 # shellcheck disable=SC2016 # Backticks are literal prompt markup.
-send_prompt 'Run exactly `bin/fm-lock.sh` with the bash tool and reply LOCKED. Then follow any instruction you receive about supervision.'
+send_prompt 'Follow any session-start instruction, then run `bin/fm-lock.sh` with the bash tool and reply OMP_LOCK_PROBE_DONE. No work is in flight yet.'
 wait_for "fm-lock.sh did not record the omp session as the lock holder" 240 lock_held_by_omp
+wait_for "omp did not finish its initial lock reply" 240 lock_reply_completed
+sleep 1
 # Session start's extension check accepts the marker written before state/ existed.
 startup=$(OMPCODE=1 FM_HOME="$HOME_DIR" FM_ROOT_OVERRIDE="$PROJECT" "$PROJECT/bin/fm-session-start.sh" 2>&1)
 printf '%s\n' "$startup" | grep -q 'primary harness: omp' || fail "session start did not run as an omp primary"
 printf '%s\n' "$startup" | grep -q 'OMP_EXTENSION: not loaded' \
   && fail "session start reported the loaded omp extension as missing in a fresh home"
+printf 'project=fixture\n' > "$STATE/omp-e2e.meta"
+send_prompt 'Reply exactly OMP_STOP_PROBE without using tools for this reply. Then follow any further supervision instructions.'
 wait_for "the turn-end guard did not lead omp to arm a watcher" 480 live_watcher
 grep -rqs 'TURN WOULD END BLIND' "$SESSIONS" \
   || fail "the session transcript holds no session_stop guard refusal"
