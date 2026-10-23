@@ -341,6 +341,23 @@ else
     echo "error: text not sent to $T ($TARGET_BACKEND send failed; tried $RESOLUTION_TRIED)" >&2
     exit 1
   fi
+  # An exit command ends the agent, so the backend can no longer prove the
+  # submit from the agent's own turn state; a verified dead agent is the real
+  # postcondition.
+  exit_command_landed() {
+    local attempt=0
+    case "$MESSAGE" in /quit|/exit) ;; *) return 1 ;; esac
+    [ "$TARGET_BACKEND" != remote ] || return 1
+    while [ "$attempt" -lt "${FM_SEND_EXIT_POLLS:-10}" ]; do
+      [ "$(fm_backend_agent_alive "$TARGET_BACKEND" "$T")" != dead ] || return 0
+      sleep 0.5
+      attempt=$((attempt + 1))
+    done
+    return 1
+  }
+  if [ "$verdict" != empty ] && [ "$verdict" != send-failed ] && exit_command_landed; then
+    verdict=empty
+  fi
   case "$verdict" in
     empty)
       ;;

@@ -1703,6 +1703,20 @@ test_claude_captain_hold_allows_stop() {
 }
 test_claude_captain_hold_allows_stop
 
+test_omp_captain_hold_allows_stop() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/guard-omp-captain-hold")
+  : > "$dir/state/task.meta"
+  out=$(printf '{"stop_hook_active":false}' | FM_HOME="$dir" "$dir/bin/fm-turnend-guard.sh" --omp 2>&1); status=$?
+  expect_code 2 "$status" 'unheld omp Stop with no watcher must block'
+  : > "$dir/state/.captain-hold"
+  out=$(printf '{"stop_hook_active":false}' | FM_HOME="$dir" "$dir/bin/fm-turnend-guard.sh" --omp 2>&1); status=$?
+  expect_code 0 "$status" 'held omp Stop must be allowed'
+  [ -z "$out" ] || fail "held omp guard printed output: $out"
+  pass 'captain hold: omp Stop allowed silently; unheld omp still guarded'
+}
+test_omp_captain_hold_allows_stop
+
 
 test_claude_captain_hold_late_repair() {
   local mode=$1 dir out status

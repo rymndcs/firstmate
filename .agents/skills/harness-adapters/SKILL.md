@@ -1,6 +1,6 @@
 ---
 name: harness-adapters
-description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, kimi, and the primary-only omp seat.
+description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, resuming an exited agent, or verifying a new harness adapter; interrupt and exit keys are inline in AGENTS.md section 13. Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, kimi, and the primary-only omp seat.
 user-invocable: false
 metadata:
   internal: true
@@ -8,7 +8,8 @@ metadata:
 
 # harness-adapters
 
-Use this reference before any harness-specific firstmate operation: spawn, recovery, trust-dialog handling, skill invocation, interrupt, exit, resume, or adapter verification.
+Use this reference before any harness-specific firstmate operation: spawn, recovery, trust-dialog handling, skill invocation, resume, or adapter verification.
+`AGENTS.md` section 13 carries the interrupt and exit keys so stopping a worker needs no skill load; the per-adapter tables below remain their verified source.
 
 Crewmates default to the same harness firstmate is running on unless `config/crew-harness` records an adapter name.
 Optional dispatch profiles in `config/crew-dispatch.json` can override that static default for one crewmate or scout dispatch by selecting concrete harness, model, and effort axes at intake.

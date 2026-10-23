@@ -2,7 +2,7 @@
 name: task-lifecycle
 description: >-
   Agent-only procedure for the ship and scout task lifecycle behind the always-loaded authority contract in AGENTS.md section 7.
-  Use at intake of every new work request, before writing a brief or spawning a worker, before steering a worker, when a worker reports a PR ready or finished, before cleaning up a landed task, when a scout finishes or is promoted, and before writing or replacing a backlog item note.
+  Use at intake of every new work request, before writing a brief or spawning a worker, when a worker reports a PR ready or finished, before cleaning up a landed task, when a scout finishes or is promoted, and before writing or replacing a backlog item note.
   Owns project resolution, secondmate routing, ship-versus-scout classification, surface classification for no-mistakes-prod-only projects, check scope, overlap and serialization judgment, brief authoring, dispatch handoff and steering, the PR-ready signal, cleanup follow-through, scout relay and promotion, and backlog note hygiene.
 user-invocable: false
 metadata:

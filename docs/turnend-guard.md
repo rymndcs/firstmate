@@ -47,7 +47,7 @@ If `jq` is missing or hook stdin is empty, the guard exits 0 because it cannot s
 - Pi listens for `agent_settled` in `.pi/extensions/fm-primary-turnend-guard.ts`, runs once per logical agent run, and calls `pi.sendUserMessage(..., { deliverAs: "followUp" })` once when the guard returns 2.
 - Grok registers a `Stop` hook in `.grok/hooks/fm-primary-turnend-guard.json` and delegates capability selection to `bin/fm-turnend-guard-grok.sh`.
   The tracked Claude Stop entries are inert when `GROK_AGENT` is present, so Grok's Claude-compatible settings loading cannot create a second continuation path.
-- omp listens for `session_stop` in `.omp/extensions/fm-primary-omp.ts`, which fires only for the main session, runs the default-mode guard with `stop_hook_active`, and returns `{decision: "block", reason}` when the guard returns 2.
+- omp listens for `session_stop` in `.omp/extensions/fm-primary-omp.ts`, which fires only for the main session, runs the guard with `--omp` and `stop_hook_active`, and returns `{decision: "block", reason}` when the guard returns 2.
   omp runs no `.claude/settings.json` command hooks, so the Claude Stop entries are inert under omp, and omp re-fires with `stop_hook_active=true` after a block so the one-block loop guard applies.
 
 Grok and Kimi crew turn-end wakes are authorized per task rather than per checkout: one shared Firstmate-owned hook script reads a per-task authorization file from that harness's `fm-turn-end.d` directory, so no worktree hook file and no trust grant is needed.
@@ -58,7 +58,7 @@ Claude and Codex can block a Stop directly with exit status 2 and stderr.
 Both payloads carry `stop_hook_active`.
 In the default Codex mode, a true value lets the second stop finish after one forced continuation.
 
-An active [captain hold](supervision-protocols/claude.md#captain-hold) intentionally allows Claude Stop without watcher recovery.
+An active [captain hold](supervision-protocols/claude.md#captain-hold) intentionally allows Claude Stop without watcher recovery, and allows an omp Stop (`--omp`) silently so a stopped fleet never forces automatic turns.
 Claude runs the guard with `--claude`, which ignores `stop_hook_active` and cooperates with the Stop-owned auto-arm.
 Claude Code sets `stop_hook_active=true` on every stop after any stop-hook continuation, including `asyncRewake` rewakes, which re-opened the 2026-07-21 blind window under the default one-shot behavior.
 The Claude mode waits up to `FM_CLAUDE_AUTOARM_SYNC_WAIT_MS` (default 800 milliseconds) and allows the stop when the watcher is healthy, `state/.claude-autoarm.lock` has a live `autoarm` role owner whose eventual failure must exit 2, or `state/.claude-autoarm-epoch` contains a fresh actionable rewake owned by this event epoch.

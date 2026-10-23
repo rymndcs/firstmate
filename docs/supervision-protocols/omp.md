@@ -32,7 +32,7 @@ When the arm job's completion arrives:
    Re-arm attaches to an existing healthy cycle when one is already present and follows its verified successor chain.
    See [`watcher-continuity.md`](../watcher-continuity.md) for the arm-layer successor and clean-close failure contract.
 
-After the captain interrupts a turn, omp folds a later job completion into context instead of starting a turn, so drain first on the next turn.
+After the captain interrupts a turn, omp folds a later job completion into context instead of starting a turn, so drain on the next turn, after acting on any direct captain order.
 `/new` and quitting omp cancel every job this session owns; re-arm after either.
 
 The project extension `.omp/extensions/fm-primary-omp.ts` runs `bin/fm-turnend-guard.sh` on omp's `session_stop` event as a backstop, not the normal wake path.

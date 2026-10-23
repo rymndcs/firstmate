@@ -147,7 +147,7 @@ export default function (pi: ExtensionAPI) {
   // the guard's default one-block loop guard applies unchanged.
   pi.on("session_stop", async (event) => {
     const payload = JSON.stringify({ stop_hook_active: event.stop_hook_active === true });
-    const result = await run("fm-turnend-guard.sh", [], payload);
+    const result = await run("fm-turnend-guard.sh", ["--omp"], payload);
     if (result.code !== 2) return {};
     return {
       decision: "block",
