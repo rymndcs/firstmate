@@ -1617,6 +1617,33 @@ test_fm_send_exits_nonzero_on_unproven_submit() {
   pass "fm-send exits non-zero unless delivery is proven empty"
 }
 
+test_fm_send_exit_command_confirmed_by_dead_agent() {
+  local dir fakebin err
+  dir=$(make_bordered_case send-exit-command)
+  fakebin="$dir/fakebin"; err="$dir/send.err"
+  touch "$dir/.swallow"
+  PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" FM_FAKE_COMPOSER="$dir/composer" \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_SEND_SLEEP=0.05 \
+    FM_SEND_EXIT_POLLS=1 FM_SEND_SETTLE=0 \
+    "$ROOT/bin/fm-send.sh" sess:win '/quit' >/dev/null 2>"$err" \
+    || fail "fm-send failed /quit to an agent that exited: $(cat "$err")"
+  if PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" FM_FAKE_COMPOSER="$dir/composer" \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_SEND_SLEEP=0.05 \
+    FM_SEND_EXIT_POLLS=1 FM_FAKE_WINDOWS=win FM_FAKE_CURRENT_COMMAND=claude \
+    "$ROOT/bin/fm-send.sh" sess:win '/quit' >/dev/null 2>"$err"; then
+    fail "fm-send confirmed /quit while the agent is still alive"
+  fi
+  grep -F 'delivery unconfirmed' "$err" >/dev/null || fail "fm-send did not report unconfirmed /quit: $(cat "$err")"
+  if PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$dir/state" FM_FAKE_COMPOSER="$dir/composer" \
+    FM_FAKE_SWALLOW="$dir/.swallow" FM_FAKE_PERSIST_SWALLOW=1 FM_SEND_SLEEP=0.05 \
+    FM_SEND_EXIT_POLLS=1 \
+    "$ROOT/bin/fm-send.sh" sess:win '/quitx' >/dev/null 2>"$err"; then
+    fail "fm-send treated non-exit text as delivered because the agent is dead"
+  fi
+  grep -F 'delivery unconfirmed' "$err" >/dev/null || fail "fm-send did not report unconfirmed /quitx: $(cat "$err")"
+  pass "fm-send confirms /quit only by a dead agent, never for alive agents or non-exit text"
+}
+
 # --- herdr backend-awareness (fm-turnend-guard-h6-adjacent transport fix) ----
 # Discovery, busy/pending dispatch, and the full inject_msg guard chain must
 # work through the herdr backend, not just tmux. Env-var prefix assignments
@@ -1916,6 +1943,7 @@ test_inject_wedge_alarm_throttles_when_marker_cannot_be_written
 test_fm_send_exits_nonzero_on_confirmed_swallow
 test_fm_send_exits_nonzero_on_initial_send_failure
 test_fm_send_exits_nonzero_on_unproven_submit
+test_fm_send_exit_command_confirmed_by_dead_agent
 test_discover_supervisor_backend_precedence
 test_discover_supervisor_target_herdr
 test_pane_is_busy_herdr_native_busy_state

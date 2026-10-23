@@ -348,12 +348,12 @@ else
     local attempt=0
     case "$MESSAGE" in /quit|/exit) ;; *) return 1 ;; esac
     [ "$TARGET_BACKEND" != remote ] || return 1
-    while [ "$attempt" -lt "${FM_SEND_EXIT_POLLS:-10}" ]; do
+    while :; do
       [ "$(fm_backend_agent_alive "$TARGET_BACKEND" "$T")" != dead ] || return 0
-      sleep 0.5
       attempt=$((attempt + 1))
+      [ "$attempt" -lt "${FM_SEND_EXIT_POLLS:-10}" ] || return 1
+      sleep 0.5
     done
-    return 1
   }
   if [ "$verdict" != empty ] && [ "$verdict" != send-failed ] && exit_command_landed; then
     verdict=empty
