@@ -17,6 +17,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/review-policy-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/review-policy-helpers.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-brief)
 BRIEF_HOME="$TMP_ROOT/home"
@@ -212,6 +214,8 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
+    grep -F "temporary directory outside this worktree" "$brief" | grep -qF ">> '$home/state/$id.temp-targets'" \
+      || fail "$id: brief does not tell the worker to record temporary directories outside the worktree"
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
@@ -963,6 +967,10 @@ test_ship_review_step_is_appended_only_when_configured() {
   # shellcheck disable=SC2016 # The backticks are literal Markdown in the review text.
   printf '%s\n' '# Review step' \
     'Review {BRANCH} for {TASK_ID}; then append `review: passed <report>` to {STATUS_FILE}.' \
+    '   `claude -p --model opus --dangerously-skip-permissions "/adv-review-loop {BRANCH} firstmate"`' \
+    "Before launching \`claude -p /adv-review-loop\`, run the required unit tests." \
+    'Before launching claude -p /adv-review-loop, ask for approval and run all required tests.' \
+    'claude -p "/adv-review-loop main firstmate"; then run the required tests and ask for approval.' \
     'Literal & and \\ survive.' > "$home/config/ship-review.md"
 
   id="brief-review-r1"
@@ -972,8 +980,26 @@ test_ship_review_step_is_appended_only_when_configured() {
   assert_grep "Review rcs/r1-hotfix for $id; then append \`review: passed <report>\` to $home/state/$id.status." "$brief" \
     "the ship brief did not carry the configured review step with its placeholders filled"
   assert_grep 'Literal & and \\ survive.' "$brief" "the review text's literal characters were altered"
-  [ "$(tail -1 "$brief")" = 'Literal & and \\ survive.' ] \
-    || fail "the review step does not close the ship brief"
+  assert_grep 'fm-review-round.sh' "$brief" 'the brief did not carry the bundled launcher'
+  assert_grep '--init brief-review-r1' "$brief" 'the brief did not initialize fresh task files'
+  assert_grep '--path input' "$brief" 'input destination was not queried'
+  assert_grep '--path report' "$brief" 'report destination was not queried'
+  assert_no_grep '--in ' "$brief" 'removed caller input flag remains active'
+  assert_no_grep '--out ' "$brief" 'removed caller output flag remains active'
+  assert_grep '--path handoff' "$brief" 'missing task-specific new handoff destination'
+  assert_grep 'Write the new handoff ONLY to that path; this overrides shared-root handoff paths in the role definition.' "$brief" 'missing binding handoff path override'
+  assert_grep 'Include that absolute destination in every fixer input' "$brief" 'missing fixer-input handoff destination requirement'
+  assert_grep "it must be a NEW file in this task's review directory." "$brief" 'handoff destination could reuse another round or task file'
+
+  assert_grep "reviewer --task \"\$REVIEW_TASK\" --round \"\$N\"" "$brief" 'missing reviewer invocation'
+  assert_grep "fixer --task \"\$REVIEW_TASK\" --round \"\$N\"" "$brief" 'missing fixer invocation'
+  assert_grep 'full ledger' "$brief" 'missing round-input contract'
+  assert_grep 'final round' "$brief" 'missing final-round contract'
+  assert_grep '   `claude -p --model opus --dangerously-skip-permissions' "$brief" 'legacy policy data was dropped'
+  assert_grep "Before launching \`claude -p /adv-review-loop\`, run the required unit tests." "$brief" 'mixed policy prose with unit-test requirement was deleted'
+  assert_grep 'Before launching claude -p /adv-review-loop, ask for approval and run all required tests.' "$brief" 'mixed policy approval/test rules were deleted'
+  assert_grep 'claude -p "/adv-review-loop main firstmate"; then run the required tests and ask for approval.' "$brief" 'command-leading policy/test prose was deleted'
+  assert_grep 'fm-review-policy' "$brief" 'legacy policy is not structurally separated'
 
   FM_HOME="$bare" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --checks targeted --branch rcs/r1-hotfix >/dev/null 2>&1 \
     || fail "a ship scaffold without a review step exited non-zero"
@@ -1005,8 +1031,66 @@ test_ship_review_step_is_appended_only_when_configured() {
   pass "fm-brief.sh: the configured ship review step closes every ship brief and nothing else"
 }
 
+test_ship_review_launch_slot() {
+  local home style id branch brief out rc
+  home="$TMP_ROOT/review-slot-home&\\{BRANCH}"
+  mkdir -p "$home/config" "$home/data"
+  branch='fm/release&{STATUS_FILE}'
+  for style in legacy slotted slotted-first slotted-last; do
+    id="brief-slot-$style"
+    write_review_policy_fixture "$home/config/ship-review.md" "$style"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode local-only --checks targeted --branch "$branch" >/dev/null 2>&1 \
+      || fail "could not scaffold $style review policy"
+    brief="$home/data/$id/brief.md"
+    assert_review_policy_rendering "$brief" "$home/config/ship-review.md" "$id" "$branch" "$home/state/$id.status" \
+      || fail "$style brief did not preserve policy inside authoritative launch boundaries"
+  done
+  printf '%s\n' '<!-- FM_REVIEW_LAUNCH_SLOT -->' '<!-- FM_REVIEW_LAUNCH_SLOT -->' > "$home/config/ship-review.md"
+  rc=0
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-slot-duplicate some-proj --mode local-only --checks targeted 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'duplicate launch slots were accepted'
+  assert_contains "$out" 'at most one review launch slot' 'duplicate slot refusal lacks a reason'
+  assert_absent "$home/data/brief-slot-duplicate/brief.md" 'duplicate slots still wrote a brief'
+  pass 'fm-brief: legacy and explicit slots preserve all policy with one launch authority'
+}
+
+test_ship_review_round_boundaries() {
+  local home mode path review
+  home="$TMP_ROOT/round-home"
+  mkdir -p "$home/data" "$home/config"
+  for review in claude codex unconfigured; do
+    if [ "$review" != unconfigured ]; then
+      printf '# Review step\nRun the %s review loop.\n' "$review" > "$home/config/ship-review.md"
+    else
+      rm -f "$home/config/ship-review.md"
+    fi
+    for mode in local-only direct-PR no-mistakes; do
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "round-$review-$mode" some-proj --mode "$mode" --checks targeted >/dev/null 2>&1 \
+        || fail "round scaffold failed for $review/$mode"
+      path="$home/data/round-$review-$mode/brief.md"
+      assert_grep 'Stop after every review with any finding, of any severity' "$path" "missing round stop for $review/$mode"
+      assert_grep 'Commit implementation changes on the task branch' "$path" "missing committed boundary"
+      assert_grep "each open finding's likelihood, who it hurts and how badly, and what fixing it costs" "$path" "missing finding consequence summary"
+      assert_grep 'needs-decision: [key=review-round-<N>] summary at <path>' "$path" "missing keyed review-round decision"
+      assert_grep 'Never commit summaries, reports or review evidence into the project tree.' "$path" 'missing private evidence boundary'
+      assert_grep '--path summary' "$path" 'missing derived private summary destination'
+      assert_no_grep 'Commit the summary' "$path" 'boundary still commits review evidence'
+      assert_grep 'screenshots of the real screen for UI issues (before and after where applicable)' "$path" "missing UI evidence aid"
+      assert_grep 'concrete example of input and wrong result or a small diagram' "$path" "missing non-UI evidence aid"
+      assert_grep 'Save images next to the summary and link them by path' "$path" "missing local image links"
+      assert_grep 'Claude and Codex' "$path" "boundary does not cover both review paths"
+      assert_grep 'Never start the next fix round until firstmate returns the decision' "$path" "missing continuation authority"
+    done
+  done
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" round-scout some-proj --scout >/dev/null 2>&1 || fail "round scout failed"
+  assert_no_grep '# Review round boundaries' "$home/data/round-scout/brief.md" "scout got ship review boundary"
+  pass "fm-brief.sh: every ship path stops for a decision at open review boundaries"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
+test_ship_review_round_boundaries
+test_ship_review_launch_slot
 test_ship_review_step_is_appended_only_when_configured
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs

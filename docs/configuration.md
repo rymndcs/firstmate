@@ -105,7 +105,8 @@ Test cleanup must use the guarded path in [`docs/cmux-backend.md`](cmux-backend.
 
 ## Away-mode supervisor backend (FM_SUPERVISOR_BACKEND / FM_SUPERVISOR_TARGET)
 
-The `/afk` sub-supervisor injects escalation digests into firstmate's own pane independently of where new task endpoints are spawned.
+The `/afk` skill owns explicit delivery selection.
+Its terminal transport injects internal digests into firstmate's own pane independently of where new task endpoints are spawned; Desktop delivery uses the Claude Stop hook without a pane.
 It currently supports only `tmux` and `herdr` supervisor panes.
 Set `FM_SUPERVISOR_BACKEND=tmux|herdr` and `FM_SUPERVISOR_TARGET=<target>` to override both axes explicitly; for herdr the target is `"<session>:<pane-id>"`.
 Without overrides, backend detection uses `$TMUX_PANE` first, then `HERDR_ENV=1` with `HERDR_PANE_ID`, then falls back to `tmux`.
@@ -226,11 +227,12 @@ Launch mechanics, including the verified command templates, live in [`bin/fm-spa
 Enabled primary-session turn-end guard integrations are tracked as repo-level hook files and documented in [`docs/turnend-guard.md`](turnend-guard.md).
 Kimi remains outside the primary turn-end guard integrations; [`docs/turnend-guard.md`](turnend-guard.md#compatibility-limits) owns its separate captain-approved crew wake hook.
 Primary-session watcher wake protocols are rendered at session start by [`bin/fm-supervision-instructions.sh`](../bin/fm-supervision-instructions.sh) from [`docs/supervision-protocols/`](supervision-protocols/).
-Claude's Stop `asyncRewake` hook owns tokenless re-arm cycles, Grok uses background-notify cycles, Codex uses bounded foreground checkpoints, Pi and pi-signed use the same two tracked primary extensions, and OpenCode uses its TUI plugin.
+Claude's Stop `asyncRewake` hook owns tokenless re-arm cycles, Grok uses background-notify cycles, Codex uses bounded foreground checkpoints, Pi and pi-signed use the same two tracked primary extensions, OpenCode uses its TUI plugin, and omp uses tracked async bash jobs plus `.omp/extensions/fm-primary-omp.ts`.
 `config/crew-harness` is a local, gitignored file containing one adapter name for crewmate and scout launches.
 When pi-signed is selected, Firstmate launches the executable named `pi-signed` from `PATH` with `FM_PI_HARNESS=pi-signed` and refuses the launch if it is unavailable rather than falling back to pi.
 Plain Pi launches set `FM_PI_HARNESS=pi`, so a signed primary's environment cannot relabel a plain Pi worker.
 When it is absent or contains `default`, crewmates mirror the firstmate's own harness.
+omp is a primary-only seat with no `fm-spawn.sh` launch template, so a home whose primary is omp must set `config/crew-harness` and `config/secondmate-harness` to a verified crew adapter; `default` would resolve to omp and the spawn refuses.
 `config/secondmate-harness` is a separate local, gitignored file containing the adapter the primary uses to launch secondmate agents, optionally followed by model and effort tokens on the same line.
 The first non-empty, non-comment line is parsed as `<harness> [<model>] [<effort>]`.
 A bare `<harness>` preserves the previous behavior: harness only, with no model or effort launch flag.
@@ -318,10 +320,12 @@ Both files are optional, local, and gitignored, and each works on its own.
 [`bin/fm-ship-review-lib.sh`](../bin/fm-ship-review-lib.sh) is the single owner of the mechanics: placeholder substitution, the review-completion line format, the override, and its log.
 
 `config/ship-review.md` holds the review step as Markdown written to the worker.
-When it exists, `bin/fm-brief.sh` appends its text to the end of every ship brief it scaffolds, and `bin/fm-promote.sh` writes it to `data/<id>/ship-review.md` and names that file in the printed ship instructions, so a promoted scout carries the same step.
-The placeholders `{TASK_ID}`, `{BRANCH}`, and `{STATUS_FILE}` are filled for each task at scaffold time.
+When it exists, `bin/fm-brief.sh` appends its review policy with bundled role-launch instructions to every ship brief, and `bin/fm-promote.sh` writes the same instructions to `data/<id>/ship-review.md` and names that file in the printed ship instructions.
+[`bin/fm-review-round.sh`](../bin/fm-review-round.sh) owns fresh task review directories identified by non-path tokens, derived private artifact destinations, one-process role launches, safe prompt passing, the dated captain runtime rule, and failure reporting; its header and `--help` own the interface.
+The fixed launch-slot contract and automatic compatibility for existing policy are owned by the header of [`bin/fm-ship-review-lib.sh`](../bin/fm-ship-review-lib.sh).
 Scout briefs and secondmate charters never carry it.
-An absent file leaves every scaffold unchanged; a path that exists but cannot be read stops the scaffold or promotion before anything is written.
+The independent review-round boundary text owned by `bin/fm-ship-review-lib.sh` reaches both ship paths even when this file is absent.
+A configured path that exists but cannot be read stops the scaffold or promotion before anything is written.
 
 `config/ship-review-gate` makes landing depend on the review having run.
 When its first line is `required`, both landing paths, `bin/fm-merge-local.sh` and `bin/fm-pr-merge.sh`, refuse a task unless the latest `review:` line in its status log reads `review: passed <reviewed commit> <absolute report path>`, the reviewed commit's full sha is still the head being landed, and that report is a non-empty file, and the refusal says exactly which of those is missing.
@@ -632,6 +636,7 @@ FM_STALE_WORKTREE_LOCK_AGE_SECS=30       # min mtime age before fm-teardown.sh t
 FM_TREEHOUSE_RETURN_LOCK_RETRIES=3        # retries after a treehouse return fails on the transient git index.lock signature
 FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS=1 # seconds fm-teardown.sh waits before each retry after that signature
 FM_STALE_WORKTREE_LOCK_RETRY_WAIT_SECS=   # legacy alias for FM_TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS when the new variable is unset
+FM_WORKTREE_CLEANUP_STOP_GRACE_SECS=2    # seconds teardown's ignored-artifact cleanup waits after SIGTERM before SIGKILL for processes inside the returning slot (bin/fm-worktree-cleanup.sh)
 FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRIES=3        # fetch retries after fm-fleet-sync.sh hits the orphaned .git/packed-refs.lock signature
 FM_FLEET_SYNC_PACKED_REFS_LOCK_RETRY_WAIT_SECS=1 # seconds fm-fleet-sync.sh waits before each of those retries
 FM_FLEET_SYNC_PACKED_REFS_LOCK_AGE_SECS=30       # min mtime age before fm-fleet-sync.sh treats a leftover packed-refs.lock as provably stale
@@ -642,6 +647,7 @@ GROK_HOME=              # optional Grok config home for firstmate's global grok 
 FM_SEND_RETRIES=3       # fm-send Enter-retry attempts after typing the line once
 FM_SEND_SLEEP=0.4       # seconds between fm-send submit checks
 FM_SEND_SETTLE=1        # seconds fm-send waits after a successful text submit; 0 disables
+FM_SEND_EXIT_POLLS=10   # liveness checks, 0.5 s apart, before fm-send fails an unconfirmed /quit or /exit; a dead non-remote target agent counts as delivered
 FM_PENDING_REPLY_GRACE_SECS=120   # seconds after marked-request delivery before a completed turn without a correlated parent report is eligible for its one recovery repost
 # sub-supervisor (bin/fm-supervise-daemon.sh); presence-gated via /afk
 FM_SUPERVISOR_BACKEND=             # optional supervisor pane backend override; tmux/herdr only, otherwise detects $TMUX_PANE then HERDR_ENV/HERDR_PANE_ID before tmux fallback
@@ -663,6 +669,8 @@ FM_CRASH_BACKOFF=60                # seconds to wait after crossing the crash th
 FM_CRASH_NORMAL_SLEEP=5            # seconds to wait after an isolated watcher crash
 FM_LOG_MAX_BYTES=1048576           # daemon log size that triggers trimming
 FM_LOG_KEEP_LINES=2000             # daemon log lines kept when trimming
+FM_AFK_RENEW_SECS=25200            # Claude Desktop away mode: seconds after the Stop hook starts before the coordinator quietly renews, below the 28800-second hook limit
+FM_AFK_TICK_SECS=1                 # Claude Desktop away mode: coordinator poll cadence in seconds
 ```
 
 `fm-teardown.sh` retries Git's `Unable to create '...index.lock': File exists` return failure up to `FM_TREEHOUSE_RETURN_LOCK_RETRIES` times, and that signature is the only return failure these settings govern; [`bin/fm-teardown.sh`](../bin/fm-teardown.sh)'s header owns the rest of the return-failure contract.

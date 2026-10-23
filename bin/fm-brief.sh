@@ -91,10 +91,12 @@
 # Refuses to overwrite an existing brief.
 #
 # Ship review step: when this home configures config/ship-review.md, every ship
-# brief ends with that file's text, placeholders filled for this task
-# (bin/fm-ship-review-lib.sh owns the substitution; docs/configuration.md "Ship
+# brief includes the bundled role launcher and that file's review policy,
+# placeholders filled for this task
+# (bin/fm-ship-review-lib.sh owns the launch-slot contract; docs/configuration.md "Ship
 # review step" owns the file). Scout and secondmate scaffolds never carry it, and
-# without the file a ship brief is unchanged.
+# every ship carries the generated review-round boundary contract, even without
+# that file.
 #
 # Standing knowledge at the intake moment: scaffolding a ship or scout brief is
 # where a task is defined, tiered and scoped, so before the scaffold is written
@@ -295,6 +297,7 @@ shell_quote() {
 }
 
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
+TEMP_TARGETS=$(shell_quote "$STATE/$ID.temp-targets")
 DECISION_HOLD_CMD="FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-decision-hold.sh")"
 
 if [ "$KIND" = secondmate ]; then
@@ -569,6 +572,8 @@ CHECKS_SECTION=${CHECKS_SECTION%$'\n'}
 # briefs stay byte-identical to the historical Bash 5 output.
 DOD=${DOD%$'\n'}
 
+REVIEW_BOUNDARY=$'\n\n'"$(fm_ship_review_round_boundaries)"
+
 # The home's configured review step closes every ship brief. Read it before the
 # brief is written so an unreadable file stops the scaffold with nothing on disk.
 REVIEW_STATUS=0
@@ -599,6 +604,7 @@ If the top-level path is the primary checkout or not the worktree you were launc
 # Rules
 $RULE1
 2. Stay inside this worktree; modify nothing outside it.
+   If you create a temporary directory outside this worktree, record its absolute path so teardown can remove it: \`echo <absolute-path> >> $TEMP_TARGETS\`.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
@@ -630,6 +636,6 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $CHECKS_SECTION
 
-$DOD$REVIEW_SECTION
+$DOD$REVIEW_BOUNDARY$REVIEW_SECTION
 EOF
 echo "scaffolded: $BRIEF (ship, mode=$MODE, checks=$CHECKS; replace {TASK})"

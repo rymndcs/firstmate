@@ -16,6 +16,8 @@ set -u
 
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+# shellcheck source=tests/review-policy-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/review-policy-helpers.sh"
 
 SPAWN="$ROOT/bin/fm-spawn.sh"
 PROMOTE="$ROOT/bin/fm-promote.sh"
@@ -288,7 +290,7 @@ test_promote_requires_and_records_the_delivery_contract() {
 
 # A promoted scout ships like any other ship task, so a home's configured review
 # step reaches it too: written beside the task and named in the ship instructions.
-# A home without it promotes exactly as before.
+# An unconfigured home still delivers the independent round-boundary contract.
 test_promote_carries_the_configured_review_step() {
   local home bare out review
   home="$TMP_ROOT/promote-review/home"
@@ -296,7 +298,11 @@ test_promote_carries_the_configured_review_step() {
   mkdir -p "$home/state" "$home/config" "$bare/state"
   printf 'window=fm-promote-r1\nkind=scout\nworktree=/tmp/wt\n' > "$home/state/promote-r1.meta"
   printf 'window=fm-promote-r1\nkind=scout\nworktree=/tmp/wt\n' > "$bare/state/promote-r1.meta"
-  printf 'Review {BRANCH} for {TASK_ID}, then log to {STATUS_FILE}.\n' > "$home/config/ship-review.md"
+  printf '%s\n' 'Review {BRANCH} for {TASK_ID}, then log to {STATUS_FILE}.' \
+    "Before launching \`claude -p /adv-review-loop\`, run the required unit tests." \
+    'Before launching claude -p /adv-review-loop, ask for approval and run all required tests.' \
+    'claude -p "/adv-review-loop main firstmate"; then run the required tests and ask for approval.' \
+    'claude -p --model opus "/adv-review-loop {BRANCH} firstmate"' > "$home/config/ship-review.md"
 
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-r1 --mode local-only --yolo off 2>&1) \
     || fail "promotion with a review step configured failed: $out"
@@ -305,12 +311,87 @@ test_promote_carries_the_configured_review_step() {
     "promotion did not write the review step with its placeholders filled"
   assert_contains "$out" "follow the review step in $review before reporting done" \
     "the promoted ship instructions did not name the review step"
+  assert_grep 'fm-review-round.sh' "$review" 'promotion omitted the role launcher'
+  assert_grep '--init promote-r1' "$review" 'promotion omitted fresh task files'
+  assert_grep '--path input' "$review" 'input destination was not queried'
+  assert_grep '--path report' "$review" 'report destination was not queried'
+  assert_no_grep '--in ' "$review" 'removed caller input flag remains active'
+  assert_no_grep '--out ' "$review" 'removed caller output flag remains active'
+  assert_grep '--path handoff' "$review" 'missing task-specific new handoff destination'
+  assert_grep 'Write the new handoff ONLY to that path; this overrides shared-root handoff paths in the role definition.' "$review" 'missing binding handoff path override'
+  assert_grep 'Include that absolute destination in every fixer input' "$review" 'missing fixer-input handoff destination requirement'
+  assert_grep "it must be a NEW file in this task's review directory." "$review" 'handoff destination could reuse another round or task file'
+
+  assert_grep 'claude -p --model opus' "$review" 'promotion dropped legacy policy data'
+  assert_grep "Before launching \`claude -p /adv-review-loop\`, run the required unit tests." "$review" 'promotion deleted mixed policy prose with unit-test requirement'
+  assert_grep 'Before launching claude -p /adv-review-loop, ask for approval and run all required tests.' "$review" 'promotion deleted mixed policy approval/test rules'
+  assert_grep 'claude -p "/adv-review-loop main firstmate"; then run the required tests and ask for approval.' "$review" 'command-leading policy/test prose was deleted'
 
   out=$(FM_HOME="$bare" FM_STATE_OVERRIDE="$bare/state" "$PROMOTE" promote-r1 --mode local-only --yolo off 2>&1) \
     || fail "promotion without a review step failed: $out"
-  assert_absent "$bare/data/promote-r1/ship-review.md" "a home with no review config still got a review step"
+  assert_grep '# Review round boundaries' "$bare/data/promote-r1/ship-review.md" "an unconfigured promotion omitted the boundary contract"
+  assert_no_grep 'Review fm/promote-r1' "$bare/data/promote-r1/ship-review.md" "an unconfigured promotion included a configured review step"
   assert_not_contains "$out" "review step" "a home with no review config still named a review step"
   pass "fm-promote: a promoted scout carries the home's configured review step"
+}
+
+test_promote_review_launch_slot() {
+  local home style id branch out rc meta
+  home="$TMP_ROOT/promote-slot/home&\\{BRANCH}"
+  mkdir -p "$home/config" "$home/state"
+  branch='fm/release&{STATUS_FILE}'
+  for style in legacy slotted slotted-first slotted-last; do
+    id="promote-slot-$style"
+    printf 'window=fm-slot\nkind=scout\nworktree=/tmp/wt\n' > "$home/state/$id.meta"
+    write_review_policy_fixture "$home/config/ship-review.md" "$style"
+    out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode local-only --yolo off --branch "$branch" 2>&1) \
+      || fail "could not promote $style policy: $out"
+    assert_review_policy_rendering "$home/data/$id/ship-review.md" "$home/config/ship-review.md" "$id" "$branch" "$home/state/$id.status" \
+      || fail "$style promotion did not preserve policy inside authoritative launch boundaries"
+  done
+  id=promote-slot-duplicate
+  meta='window=fm-slot
+kind=scout
+worktree=/tmp/wt'
+  printf '%s\n' "$meta" > "$home/state/$id.meta"
+  printf '%s\n' '<!-- FM_REVIEW_LAUNCH_SLOT -->' '<!-- FM_REVIEW_LAUNCH_SLOT -->' > "$home/config/ship-review.md"
+  rc=0
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" "$id" --mode local-only --yolo off 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'promotion accepted duplicate launch slots'
+  assert_contains "$out" 'at most one review launch slot' 'promotion slot refusal lacks a reason'
+  [ "$(cat "$home/state/$id.meta")" = "$meta" ] || fail 'invalid slots changed scout metadata'
+  assert_absent "$home/data/$id/ship-review.md" 'invalid slots wrote promotion instructions'
+  pass 'fm-promote: legacy and explicit slots preserve all policy with one launch authority'
+}
+
+test_promote_shares_review_boundaries_with_brief() {
+  local home mode review id out file brief promoted_boundary brief_boundary
+  home="$TMP_ROOT/promote-boundary/home"
+  mkdir -p "$home/state" "$home/config"
+  for mode in local-only direct-PR no-mistakes; do
+    for review in claude codex unconfigured; do
+      id="promote-boundary-$mode-$review"
+      if [ "$review" = unconfigured ]; then
+        rm -f "$home/config/ship-review.md"
+      else
+        printf '# Review step\nRun the %s review loop.\n' "$review" > "$home/config/ship-review.md"
+      fi
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" --checks targeted >/dev/null 2>&1 \
+        || fail "ship boundary scaffold failed for $mode/$review"
+      printf 'kind=scout\nworktree=/tmp/wt\n' > "$home/state/$id.meta"
+      out=$(FM_HOME="$home" "$PROMOTE" "$id" --mode "$mode" --yolo off 2>&1) \
+        || fail "boundary promotion failed for $mode/$review: $out"
+      file="$home/data/$id/ship-review.md"
+      brief="$home/data/$id/brief.md"
+      assert_grep '# Review round boundaries' "$file" "promotion omitted round boundaries for $mode/$review"
+      assert_grep 'Stop after every review with any finding, of any severity' "$file" "promotion omitted the stop rule"
+      assert_contains "$out" "$file before reporting done" "promotion did not route the worker to its boundary contract"
+      promoted_boundary=$(awk '/^# Review round boundaries$/{copy=1} copy && /^# Review step$/{exit} copy {print}' "$file")
+      brief_boundary=$(awk '/^# Review round boundaries$/{copy=1} copy && /^# Review step$/{exit} copy {print}' "$brief")
+      [ "$promoted_boundary" = "$brief_boundary" ] || fail "promotion and briefing delivered different round boundary contracts"
+    done
+  done
+  pass "fm-promote: configured and unconfigured ships share the brief's round boundary contract"
 }
 
 # A review config that exists but cannot be read must stop the promotion with the
@@ -444,7 +525,9 @@ test_spawn_refuses_a_brief_mode_mismatch
 test_spawn_notices_a_rigor_downgrade_against_the_registry
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
+test_promote_review_launch_slot
 test_promote_carries_the_configured_review_step
+test_promote_shares_review_boundaries_with_brief
 test_promote_refuses_an_unreadable_review_step
 test_spawn_records_only_a_supplied_branch
 test_promote_records_only_a_supplied_branch

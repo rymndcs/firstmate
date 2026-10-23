@@ -72,10 +72,10 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-watch-checkpoint.sh` | Run one bounded foreground watcher checkpoint for Codex-style supervision            |
 | `fm-watch.sh`            | Singleton-safe always-on watcher: absorb benign wakes, queue and exit on actionable ones |
 | `fm-afk-start.sh`        | Run the common sourceable away-mode daemon entry in the foreground                      |
-| `fm-afk-launch.sh`       | Own away-mode entry, exit, rollback, and any backend terminal lifecycle                 |
+| `fm-afk-launch.sh`       | Own away-mode entry, delivery selection, Desktop batch acknowledgment, exit, rollback, and any backend terminal lifecycle |
 | `fm-afk-return.sh`       | Own deterministic return shutdown, catch-up evidence, and the firstmate-actionable blocker gate |
 | `fm-supervisor-target-lib.sh` | Resolve the shared supervisor target and backend for the daemon and launcher       |
-| `fm-supervise-daemon.sh` | Presence-gated away-mode sub-supervisor: self-handle routine wakes, guard injection by the detected primary harness, escalate batched digests, alert on failed delivery |
+| `fm-supervise-daemon.sh` | Presence-gated away-mode sub-supervisor: self-handle routine wakes, guard injection by the detected primary harness, escalate batched digests, alert on failed delivery; `--stop-hook` runs the Claude Desktop coordinator |
 | `fm-crew-state.sh`       | Print one deterministic current-state line for a crew                                |
 | `fm-tangle-lib.sh`       | Shared default-branch resolution and primary-checkout tangle classification          |
 | `fm-supervision-lib.sh`  | Shared in-flight-work-without-fresh-watcher-beacon predicate                         |
@@ -89,6 +89,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-wake-lib.sh`         | Shared durable wake queue, portable locks, and watcher identity/health helpers       |
 | `fm-classify-lib.sh`     | Shared captain-relevant and declared-external-wait wake classification vocabulary    |
 | `fm-ship-review-lib.sh`  | Shared configured ship-review text, landing gate, and captain-override mechanics     |
+| `fm-review-round.sh`     | Launch one fresh reviewer or fixer with the dated runtime rule and isolated task review files |
 | `fm-send.sh`             | Send one verified literal line or supported key through the target's recorded backend |
 | `fm-busy-lib.sh`         | Single owner of the semantic busy-state contract: verdicts, source attribution, and per-harness sources |
 | `fm-busy-event.sh`       | The only writer of a task's semantic busy-state record; arms an incarnation and applies lifecycle events |
@@ -103,7 +104,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-merge.sh`         | Apply the configured ship-review gate, then record PR metadata and merge a task's canonical full GitHub URL |
 | `fm-linear.sh`           | Own Linear API mechanics: move a Linear-tracked task's issue as part of the dispatch, PR-record, and merge steps |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode and its configured ship-review step |
-| `fm-teardown.sh`         | Fail-closed teardown: return landed ship worktrees, require completed scout deliverables, retire secondmate homes, and clear the landed task's attributable no-mistakes gate backup refs |
+| `fm-teardown.sh`         | Fail-closed teardown: prune and return landed ship worktrees, require completed scout deliverables, retire secondmate homes, and clear the landed task's attributable no-mistakes gate backup refs; `--clean-free-slot` prunes one available pool slot |
 | `fm-harness.sh`          | Detect the running harness and resolve crew or secondmate harness, model, and effort |
 | `fm-lock.sh`             | Per-home firstmate session lock                                                      |
 | `fm-x-lib.sh`            | Shared X-mode config, relay, and reply-threading helpers                             |

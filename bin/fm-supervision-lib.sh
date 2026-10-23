@@ -51,7 +51,8 @@ fm_supervision_status() {
   done
   if [ "$FM_SUP_IN_FLIGHT" -gt 0 ] \
     || [ -f "$state/x-watch.check.sh" ] \
-    || [ "$FM_SUP_SOURCES" -gt 0 ]; then
+    || [ "$FM_SUP_SOURCES" -gt 0 ] \
+    || fm_afk_desktop_selected "$state"; then
     FM_SUP_NEEDED=true
   fi
 
@@ -86,4 +87,14 @@ fm_supervision_needed() {
 fm_supervision_unhealthy() {
   fm_supervision_status "$@"
   [ "$FM_SUP_NEEDED" = true ] && [ "$FM_SUP_WATCHER_FRESH" = false ]
+}
+
+# Explicit Desktop away delivery selection; legacy records retain pane delivery.
+fm_afk_desktop_selected() {  # <state-dir>
+  [ -e "$1/.afk" ] && [ "$(cat "$1/.afk-daemon-terminal" 2>/dev/null)" = $'none\t-\tdesktop' ]
+}
+
+# Shared visible-output policy for every away delivery and recovery reminder.
+fm_afk_turn_policy() {
+  printf '%s' 'End every away turn with exactly · as its only visible text.'
 }

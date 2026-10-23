@@ -83,6 +83,8 @@ make_scratch_project() {  # <dir>
   local dir=$1
   mkdir -p "$dir"
   git -C "$dir" init -q
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   printf '# scratch\n' > "$dir/README.md"
   git -C "$dir" add README.md
   git -C "$dir" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial

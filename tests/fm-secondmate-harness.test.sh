@@ -369,6 +369,8 @@ test_propagate_lib() {
   # stderr warning and a skip, not a silent miss.
   guard_repo="$d/guard-repo"
   git init -q -b main "$guard_repo"
+  git -C "$guard_repo" config --local commit.gpgsign false
+  git -C "$guard_repo" config --local tag.gpgsign false
   printf 'config/crew-harness\nconfig/backlog-backend\n' > "$guard_repo/.gitignore"
   printf 'guard\n' > "$guard_repo/README.md"
   git -C "$guard_repo" add -A
@@ -894,6 +896,8 @@ new_world() {
   mkdir -p "$w/home/state" "$w/home/data" "$w/home/config"
   touch "$w/home/state/.last-watcher-beat"
   git init -q -b main "$w/main"
+  git -C "$w/main" config --local commit.gpgsign false
+  git -C "$w/main" config --local tag.gpgsign false
   {
     printf 'projects/\nstate/\ndata/\n.no-mistakes/\n'
     [ "$dispatch_ignore" = no ] || printf 'config/crew-dispatch.json\n'

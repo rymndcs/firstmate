@@ -150,6 +150,8 @@ add_origin_backed_projects() {
   while [ "$i" -le "$count" ]; do
     repo=$(printf '%s/projects/repo-%02d' "$home" "$i")
     git init -q "$repo"
+    git -C "$repo" config --local commit.gpgsign false
+    git -C "$repo" config --local tag.gpgsign false
     git -C "$repo" remote add origin "file://$home/remotes/repo-$i.git"
     i=$((i + 1))
   done
@@ -162,6 +164,8 @@ add_no_origin_projects() {
   while [ "$i" -le "$count" ]; do
     repo=$(printf '%s/projects/local-%02d' "$home" "$i")
     git init -q "$repo"
+    git -C "$repo" config --local commit.gpgsign false
+    git -C "$repo" config --local tag.gpgsign false
     i=$((i + 1))
   done
 }
@@ -732,6 +736,8 @@ make_routine_bootstrap_fixture() {
   printf '%s\n' '{"rules":[{"when":"normal work","use":{"harness":"codex"}}],"default":{"harness":"claude","effort":"low"}}' \
     > "$home/config/crew-dispatch.json"
   git init -q -b main "$root"
+  git -C "$root" config --local commit.gpgsign false
+  git -C "$root" config --local tag.gpgsign false
   {
     printf '%s\n' '.fm-secondmate-home'
     printf '%s\n' 'config/crew-harness'

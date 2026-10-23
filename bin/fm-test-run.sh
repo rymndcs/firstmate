@@ -208,10 +208,10 @@ family_for_basename() {
     fm-update.test.sh)
       printf '%s\n' session-bootstrap
       ;;
-    fm-afk-pi-herdr-return-e2e.test.sh|fm-ask-user-gate-live-e2e.test.sh|\
+    fm-afk-desktop-live-e2e.test.sh|fm-afk-desktop-policy-live-e2e.test.sh|fm-afk-pi-herdr-return-e2e.test.sh|fm-ask-user-gate-live-e2e.test.sh|\
     fm-codex-continuity-live-e2e.test.sh|fm-grok-continuity-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-harness-liveness-drift-live-e2e.test.sh|\
-    fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
+    fm-omp-herdr-live-e2e.test.sh|fm-omp-primary-live-e2e.test.sh|fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh)
       printf '%s\n' live-harness-optin
       ;;
@@ -228,7 +228,7 @@ family_for_basename() {
     fm-review-diff.test.sh|fm-teardown.test.sh|fm-x-mode.test.sh)
       printf '%s\n' pr-forge
       ;;
-    fm-afk-inject-e2e.test.sh|fm-afk-return.test.sh)
+    fm-afk-desktop.test.sh|fm-afk-fixture-isolation.test.sh|fm-afk-inject-e2e.test.sh|fm-afk-return.test.sh)
       printf '%s\n' afk
       ;;
     fm-bearings-snapshot.test.sh|fm-fleet-snapshot-view.test.sh)
@@ -432,6 +432,7 @@ tests/fm-grok-stop-live-e2e.test.sh 19
 tests/fm-guard-stale-banner.test.sh 2917
 tests/fm-herdr-session-cleanup.test.sh 4802
 tests/fm-kimi-harness.test.sh 12590
+tests/fm-omp-primary-live-e2e.test.sh 19
 tests/fm-opencode-primary-live-e2e.test.sh 18
 tests/fm-operational-input.test.sh 184
 tests/fm-pending-reply.test.sh 7328

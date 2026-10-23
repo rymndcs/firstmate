@@ -321,6 +321,8 @@ fm_remote_job_safe_child_dir() { # <canonical-parent> <single child basename>
   if [ -e "$candidate" ] || [ -L "$candidate" ]; then
     [ -d "$candidate" ] && [ ! -L "$candidate" ] || return 1
   else
+    # Workers disable creation after startup so removal cannot resurrect their queue.
+    [ "${FM_REMOTE_JOB_CREATE_STATE:-1}" -eq 1 ] || return 1
     (umask 077; mkdir "$candidate") || return 1
   fi
   chmod 700 "$candidate" 2>/dev/null || return 1

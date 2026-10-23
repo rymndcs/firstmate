@@ -2,7 +2,7 @@
 name: task-lifecycle
 description: >-
   Agent-only procedure for the ship and scout task lifecycle behind the always-loaded authority contract in AGENTS.md section 7.
-  Use at intake of every new work request, before writing a brief or spawning a worker, before steering a worker, when a worker reports a PR ready or finished, before cleaning up a landed task, when a scout finishes or is promoted, and before writing or replacing a backlog item note.
+  Use at intake of every new work request, before writing a brief or spawning a worker, when a worker reports a PR ready or finished, before cleaning up a landed task, when a scout finishes or is promoted, and before writing or replacing a backlog item note.
   Owns project resolution, secondmate routing, ship-versus-scout classification, surface classification for no-mistakes-prod-only projects, check scope, overlap and serialization judgment, brief authoring, dispatch handoff and steering, the PR-ready signal, cleanup follow-through, scout relay and promotion, and backlog note hygiene.
 user-invocable: false
 metadata:
@@ -43,6 +43,12 @@ Judge the task's check scope at the same moment and pass it as `bin/fm-brief.sh 
 Treat file or subsystem overlap as a risk signal rather than an automatic reason to wait, and dispatch isolated work immediately, up to the live worker limit `bin/fm-spawn.sh` applies, when each change can be independently implemented and validated and the selected delivery path can reconcile ordinary rebases or conflicts.
 Serialize only for a true semantic dependency, shared mutable external state, incompatible concurrent migration, or another concrete condition that makes independent progress or reconciliation unsafe; same-file editing alone is insufficient, and genuine blockers remain durable.
 Write the task-specific brief under "Briefs" below before spawning.
+
+## Review-round and model decisions
+
+At an open review-round boundary, read the worker's private summary named in its decision request, then ask the captain with your recommendation; the worker stops and does not decide continuation itself, and the captain decides.
+Standing `yolo` authority never lets firstmate decide review-round continuation; it always goes to the captain.
+For worker model selection, recommend a model and wait for the captain's selection; never select a model automatically.
 
 ## Briefs
 
@@ -99,3 +105,5 @@ Check this skill against these scenarios after any edit.
 - A captain request names no project and matches two registered projects: intake asks which project instead of guessing, and spawns nothing until answered.
 - A worker reports a PR ready while its checks are still red: the task is not treated as PR-ready, and the worker is steered to fix the checks first.
 - A scout finishes with a report: its findings are relayed, the report is recorded as the Done artifact, and the queue is re-evaluated, with no ship task started unless promotion applies.
+- A review round ends with findings: firstmate reads the worker's summary and asks the captain with its recommendation, never continuing on its own.
+- A worker-model choice comes up: firstmate recommends a model and waits for the captain's selection.

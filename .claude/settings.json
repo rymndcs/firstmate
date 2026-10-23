@@ -62,6 +62,16 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"${GROK_AGENT:-}\" ] || exit 0; exec \"$CLAUDE_PROJECT_DIR\"/bin/fm-captain-hold-prompt.sh"
+          }
+        ]
+      }
     ]
   }
 }

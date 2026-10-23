@@ -69,6 +69,8 @@ printf 'crew=2\n' > "$FM/config/crew-limit"
 printf 'wake\n' > "$FM/state/task.status"
 printf 'FM_SECRET=1\n' > "$FM/.env"
 git -C "$FM" init -q
+git -C "$FM" config --local commit.gpgsign false
+git -C "$FM" config --local tag.gpgsign false
 git -C "$FM" add -A
 git -C "$FM" commit -qm 'home initial'
 printf 'local-only rule\n' > "$FM/.git/info/exclude"

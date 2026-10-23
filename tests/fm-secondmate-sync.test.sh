@@ -49,6 +49,8 @@ new_world() {
   touch "$w/home/state/.last-watcher-beat"
 
   git init -q -b main "$w/main"
+  git -C "$w/main" config --local commit.gpgsign false
+  git -C "$w/main" config --local tag.gpgsign false
   # Mirror the real repo: the gitignored operational dirs never dirty a worktree,
   # so a secondmate home's data/state/projects can never block its fast-forward.
   printf 'projects/\nstate/\ndata/\n.no-mistakes/\nconfig/crew-harness\n' > "$w/main/.gitignore"

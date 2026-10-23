@@ -225,6 +225,8 @@ Text is typed once; only Enter is retried.
 
 On an idle or done native baseline, submit confirmation waits for `working` or `blocked` across a bounded polling window.
 On an already active or unreadable baseline, it falls back to conservative composer clearance.
+For an omp supervisor, a native status that remains idle after Enter can also be confirmed by its complete, empty composer, because omp clears its draft before Herdr necessarily observes working.
+Pending draft text never counts as acknowledgement.
 A fully unreadable target stops retrying and reports unknown.
 The poll density bounds the residual possibility of an extremely fast complete turn; a missed transition can cause only a redundant Enter on an empty composer, never duplicate message text.
 
@@ -241,6 +243,9 @@ A human-blocked permission dialog has no busy banner and still surfaces.
 Herdr has no direct cursor-row primitive.
 The adapter locates the bottom-most recognized bordered row, Claude `❯` row, Codex `›` row, or a Pi separator region admitted only when native identity is exactly Pi and state is idle, done, or blocked.
 A working Pi, pending middle row, missing identity, incomplete separator pair, or over-tall candidate remains pending or unknown.
+An omp supervisor uses a separate bottom-anchored rounded-box scan because omp puts its final draft line in the bottom border.
+Native identity must be exactly omp in idle or done state; the complete box must end the capture, typed text on any row is pending, and a clipped box or shell output beneath it is unknown.
+The real omp/Herdr regression is `FM_OMP_HERDR_LIVE_E2E=1 tests/fm-omp-herdr-live-e2e.test.sh`.
 
 ANSI capture preserves de-emphasized placeholder style.
 `bin/fm-composer-lib.sh` is the fleet-wide owner that strips dim or faint runs and dark truecolor placeholders while retaining bright typed input.

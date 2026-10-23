@@ -62,6 +62,13 @@ export GIT_CONFIG_COUNT=1
 export GIT_CONFIG_KEY_0=core.excludesFile
 export GIT_CONFIG_VALUE_0=/dev/null
 
+# Drop omp's ambient harness marker for the suite at large. omp exports
+# OMPCODE=1 into every command it runs, and bin/fm-harness.sh ranks it above
+# CLAUDECODE, so a suite launched from an omp session would resolve omp wherever
+# a test pins its harness with CLAUDECODE=1. Tests that cover omp detection set
+# OMPCODE themselves.
+unset OMPCODE
+
 # Resolve the repo root from this library's own location. Consumed by sourcing
 # test files, not by this library, so it reads as "unused" here.
 # shellcheck disable=SC2034
@@ -157,6 +164,8 @@ fm_git_init_commit() {
   local dir=$1
   mkdir -p "$dir"
   git -C "$dir" init -q
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   printf '# %s\n' "$(basename "$dir")" > "$dir/README.md"
   git -C "$dir" add README.md
   git -C "$dir" -c user.name='Firstmate Tests' -c user.email='tests@example.invalid' commit -qm initial
@@ -167,6 +176,8 @@ fm_git_init_commit() {
 fm_git_add_origin() {
   local repo=$1 remote=$2 remote_abs
   git clone --quiet --bare "$repo" "$remote"
+  git -C "$remote" config --local commit.gpgsign false
+  git -C "$remote" config --local tag.gpgsign false
   remote_abs=$(cd "$remote" && pwd)
   git -C "$repo" remote add origin "file://$remote_abs"
 }

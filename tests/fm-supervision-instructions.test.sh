@@ -108,6 +108,15 @@ test_cross_harness_ordinary_continuation_and_repair_matrix() {
   assert_contains "$out" "Grok tracked background task" "grok recovery line lost its tracked background repair"
   assert_contains "$out" "bin/fm-watch-arm.sh" "grok recovery line lost the arm command"
 
+  out=$("$RENDER" --harness omp)
+  assert_contains "$out" "primary harness: omp" "omp fell through to the unknown-harness protocol"
+  ordinary=$(printf '%s\n' "$out" | grep -F -- '- Ordinary wake:')
+  assert_contains "$ordinary" "re-arm" "omp ordinary-wake line does not tell the model to re-arm"
+  assert_contains "$ordinary" "bin/fm-watch-arm.sh" "omp ordinary-wake line lost the async arm command"
+  out=$("$RENDER" --harness omp --repair-line)
+  assert_contains "$out" "async: true and timeout: 0" "omp recovery line lost the no-deadline async job shape"
+  assert_contains "$out" "bin/fm-watch-arm.sh" "omp recovery line lost the arm command"
+
   out=$("$RENDER" --harness codex)
   ordinary=$(printf '%s\n' "$out" | grep -F -- '- Ordinary wake:')
   assert_contains "$ordinary" "next foreground" "codex ordinary-wake line lost its foreground checkpoint"
@@ -160,6 +169,17 @@ test_grok_command_sources_effective_config() {
   pass "grok rendered command sources the effective x-mode config"
 }
 
+test_omp_command_sources_effective_config() {
+  local home config out
+  home="$TMP_ROOT/omp-home"
+  config="$TMP_ROOT/omp-config"
+  mkdir -p "$home/state" "$config"
+  out=$(FM_HOME="$home" FM_CONFIG_OVERRIDE="$config" "$RENDER" --harness omp --x-mode 1)
+  assert_contains "$out" "[ -f '$config/x-mode.env' ] && . '$config/x-mode.env'; exec bin/fm-watch-arm.sh" "omp arm command did not use the effective x-mode config path"
+  assert_not_contains "$out" "__FM_X_MODE_ENV" "renderer leaked an x-mode path placeholder"
+  pass "omp rendered async arm command sources the effective x-mode config"
+}
+
 test_pi_snippet_uses_effective_extension_path() {
   local home out turnend watch
   home="$TMP_ROOT/pi-home"
@@ -184,4 +204,5 @@ test_cross_harness_ordinary_continuation_and_repair_matrix
 test_pi_signed_preserves_identity_with_pi_supervision_protocol
 test_grok_is_background_notify
 test_grok_command_sources_effective_config
+test_omp_command_sources_effective_config
 test_pi_snippet_uses_effective_extension_path

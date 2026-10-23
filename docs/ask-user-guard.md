@@ -436,6 +436,7 @@ A deny that does not tell the reader how to proceed converts a guard into a wedg
 | Grok | Not wired. Payload shape accepted, transcript unverified. |
 | OpenCode | Not wired. CLI entry form available, transcript unverified. |
 | Pi | Not wired. CLI entry form available, transcript unverified. |
+| omp | Not wired. CLI entry form available, transcript unverified. |
 | Kimi | Not wired. Crew-only harness in this fleet. |
 
 Wiring another harness requires establishing that harness's transcript path and entry format the same way the Claude record below does.

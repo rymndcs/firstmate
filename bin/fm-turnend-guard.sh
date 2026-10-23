@@ -68,6 +68,7 @@ CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
 GRACE=${FM_GUARD_GRACE:-300}
 WATCH="$SCRIPT_DIR/fm-watch.sh"
 CLAUDE_MODE=0
+OMP_MODE=0
 SYNC_WAIT_MS=${FM_CLAUDE_AUTOARM_SYNC_WAIT_MS:-800}
 EPOCH_FRESH=${FM_CLAUDE_AUTOARM_EPOCH_FRESH:-15}
 BLOCK_BUDGET=${FM_CLAUDE_TURNEND_BLOCK_BUDGET:-3}
@@ -78,7 +79,8 @@ case "$BLOCK_BUDGET" in ''|*[!0-9]*|0) BLOCK_BUDGET=3 ;; esac
 for arg in "$@"; do
   case "$arg" in
     --claude) CLAUDE_MODE=1 ;;
-    *) echo "usage: $(basename "$0") [--claude]" >&2; exit 2 ;;
+    --omp) OMP_MODE=1 ;;
+    *) echo "usage: $(basename "$0") [--claude|--omp]" >&2; exit 2 ;;
   esac
 done
 
@@ -124,6 +126,10 @@ fi
 # so this exempts them while guarding every real secondmate home.
 fm_primary_scope_matches "$FM_ROOT" "$STATE" || exit 0
 
+# omp: an active captain hold means the captain stopped work, so never force
+# an automatic continuation turn (docs/turnend-guard.md).
+[ "$OMP_MODE" -eq 0 ] || [ ! -e "$STATE/.captain-hold" ] || exit 0
+
 # --- the actual predicate ----------------------------------------------------
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
@@ -141,19 +147,36 @@ budget_reset() {
   fm_lock_release "$BUDGET_LOCK"
 }
 
+continue_stop() {
+  [ "$CLAUDE_MODE" -eq 0 ] || [ ! -e "$STATE/.captain-hold" ] || exit 0
+  if [ -n "${1:-}" ] && fm_afk_desktop_selected "$STATE"; then
+    # shellcheck source=bin/fm-operational-input.sh
+    . "$SCRIPT_DIR/fm-operational-input.sh"
+    local away_recovery=
+    fm_operational_input_encode away-supervisor "$1 $(fm_afk_turn_policy)" away_recovery
+    printf '%s\n' "$away_recovery" >&2
+  else
+    [ -z "${1:-}" ] || printf '%s\n' "$1" >&2
+  fi
+  exit 2
+}
+
 fm_supervision_status "$STATE" "$GRACE"
 if [ "$FM_SUP_NEEDED" = false ]; then
+  [ "$CLAUDE_MODE" -eq 0 ] || [ ! -e "$STATE/.captain-hold" ] || exit 0
   [ -e "$FAILURE_NOTICE" ] || budget_reset
   exit 0
 fi
 if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
   [ "$CLAUDE_MODE" -eq 1 ] || exit 0
+  [ ! -e "$STATE/.captain-hold" ] || exit 0
   fm_failure_episode_reset "$STATE" && exit 0
-  exit 2
+  continue_stop
 fi
 
 block_stop() {
-  local afk x_mode reason rule
+  [ "$CLAUDE_MODE" -eq 0 ] || [ ! -e "$STATE/.captain-hold" ] || exit 0
+  local afk x_mode reason rule banner
   afk=0
   [ -e "$STATE/.afk" ] && afk=1
   x_mode=0
@@ -161,7 +184,7 @@ block_stop() {
   reason=$("$SCRIPT_DIR/fm-supervision-instructions.sh" --afk "$afk" --x-mode "$x_mode" --repair-line 2>/dev/null \
     || printf '%s\n' 'tasks in flight, no live watcher - repair missing watcher supervision according to the session-start operating block before ending the turn')
   rule='━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
-  {
+  banner=$(
     printf '●%s\n' "$rule"
     printf '●  TURN WOULD END BLIND - SUPERVISION IS OFF\n'
     if [ "$FM_SUP_IN_FLIGHT" -gt 0 ]; then
@@ -176,8 +199,8 @@ block_stop() {
     fi
     printf '●  %s\n' "$reason"
     printf '●%s\n' "$rule"
-  } >&2
-  exit 2
+  )
+  continue_stop "$banner"
 }
 
 if [ "$CLAUDE_MODE" -eq 0 ]; then
@@ -340,25 +363,31 @@ failure_episode_verified() {
 
 i=0
 while [ "$i" -lt $((SYNC_WAIT_MS / 100)) ]; do
+  [ ! -e "$STATE/.captain-hold" ] || break
   if autoarm_owns_recovery; then
     if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
-      fm_failure_episode_reset "$STATE" || exit 2
+      fm_failure_episode_reset "$STATE" || continue_stop
     fi
     exit 0
   fi
   sleep 0.1
   i=$((i + 1))
 done
-if autoarm_owns_recovery; then
+if [ ! -e "$STATE/.captain-hold" ] && autoarm_owns_recovery; then
   if fm_watcher_healthy "$STATE" "$WATCH" "$GRACE" "$FM_HOME"; then
-    fm_failure_episode_reset "$STATE" || exit 2
+    fm_failure_episode_reset "$STATE" || continue_stop
   fi
   exit 0
 fi
 
 # The auto-arm genuinely failed to establish: consume the bounded re-block
 # budget before considering the verified one-time attended fail-open.
-budget_account_current_epoch || block_stop
+if [ -e "$STATE/.captain-hold" ]; then
+  COUNT=$(sed -n '2s/^count=//p' "$BUDGET_FILE" 2>/dev/null || true)
+  case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
+else
+  budget_account_current_epoch || block_stop
+fi
 terminal_fail_open
 terminal_status=$?
 if [ "$terminal_status" -eq 0 ]; then

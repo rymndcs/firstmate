@@ -274,6 +274,8 @@ test_home_seed_uses_treehouse_acquired_home() {
   fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/dash-alpha.git"
   printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
   git clone --quiet "$ROOT" "$acquired"
+  git -C "$acquired" config --local commit.gpgsign false
+  git -C "$acquired" config --local tag.gpgsign false
   fakebin=$(make_fake_tmux "$TMP_ROOT/dash-fake")
   log="$TMP_ROOT/dash-fake/tmux.log"
   lease="$TMP_ROOT/dash-fake/lease"
@@ -305,6 +307,8 @@ test_home_seed_returns_treehouse_acquired_home_on_assignment_failure() {
   fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/dash-fail-alpha.git"
   printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
   git clone --quiet "$ROOT" "$acquired"
+  git -C "$acquired" config --local commit.gpgsign false
+  git -C "$acquired" config --local tag.gpgsign false
   acquired_abs=$(cd "$acquired" && pwd -P)
   printf 'other\n' > "$acquired/.fm-secondmate-home"
   fakebin=$(make_fake_tmux "$TMP_ROOT/dash-fail-fake")
@@ -334,6 +338,8 @@ test_home_seed_warns_when_acquired_home_return_fails() {
   fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/dash-return-fail-alpha.git"
   printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
   git clone --quiet "$ROOT" "$acquired"
+  git -C "$acquired" config --local commit.gpgsign false
+  git -C "$acquired" config --local tag.gpgsign false
   acquired_abs=$(cd "$acquired" && pwd -P)
   printf 'other\n' > "$acquired/.fm-secondmate-home"
   fakebin=$(make_fake_tmux "$TMP_ROOT/dash-return-fail-fake")
@@ -915,6 +921,8 @@ test_home_seed_refuses_active_home_and_root() {
   root_ancestor="$TMP_ROOT/active-seed-root-ancestor"
   root_inside="$root_ancestor/nested-root"
   git clone --quiet "$ROOT" "$active_ancestor"
+  git -C "$active_ancestor" config --local commit.gpgsign false
+  git -C "$active_ancestor" config --local tag.gpgsign false
   mkdir -p "$home/projects" "$home/data" "$home/state"
   fm_git_init_commit "$home/projects/alpha"
   fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/active-alpha.git"
@@ -948,6 +956,8 @@ test_home_seed_refuses_active_home_and_root() {
     || fail "seed did not explain FM_ROOT rejection"
 
   git clone --quiet "$ROOT" "$root_clone"
+  git -C "$root_clone" config --local commit.gpgsign false
+  git -C "$root_clone" config --local tag.gpgsign false
   if FM_HOME="$home" FM_ROOT_OVERRIDE="$root_clone" "$ROOT/bin/fm-home-seed.sh" design "$root_descendant" alpha >/dev/null 2>"$err"; then
     fail "seed allowed secondmate home inside FM_ROOT"
   fi
@@ -956,7 +966,11 @@ test_home_seed_refuses_active_home_and_root() {
   [ ! -e "$root_clone/tmp" ] || fail "seed created a directory inside FM_ROOT before descendant rejection"
 
   git clone --quiet "$ROOT" "$root_ancestor"
+  git -C "$root_ancestor" config --local commit.gpgsign false
+  git -C "$root_ancestor" config --local tag.gpgsign false
   git clone --quiet "$ROOT" "$root_inside"
+  git -C "$root_inside" config --local commit.gpgsign false
+  git -C "$root_inside" config --local tag.gpgsign false
   if FM_HOME="$home" FM_ROOT_OVERRIDE="$root_inside" "$ROOT/bin/fm-home-seed.sh" design "$root_ancestor" alpha >/dev/null 2>"$err"; then
     fail "seed allowed secondmate home to contain FM_ROOT"
   fi
@@ -975,6 +989,8 @@ test_home_seed_refuses_home_marked_for_another_id() {
   fm_git_init_commit "$home/projects/alpha"
   fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/marked-alpha.git"
   git clone --quiet "$ROOT" "$subhome"
+  git -C "$subhome" config --local commit.gpgsign false
+  git -C "$subhome" config --local tag.gpgsign false
   printf 'other\n' > "$subhome/.fm-secondmate-home"
   printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
   scaffold_secondmate_charter "$home" design 'design domain' alpha || fail "charter scaffold failed for marked-home seed test"
@@ -996,6 +1012,8 @@ test_home_seed_refuses_home_registered_to_another_id() {
   fm_git_init_commit "$home/projects/alpha"
   fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/registered-alpha.git"
   git clone --quiet "$ROOT" "$subhome"
+  git -C "$subhome" config --local commit.gpgsign false
+  git -C "$subhome" config --local tag.gpgsign false
   subhome_abs=$(cd "$subhome" && pwd -P)
   printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
   printf '%s\n' '- other - other domain (home: '"$subhome_abs"'; scope: other domain; projects: beta; added 2026-06-22)' > "$home/data/secondmates.md"
@@ -1053,7 +1071,11 @@ test_home_seed_refuses_home_overlapping_registered_home() {
   fm_git_init_commit "$home/projects/alpha"
   fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/overlap-alpha.git"
   git clone --quiet "$ROOT" "$registered_parent"
+  git -C "$registered_parent" config --local commit.gpgsign false
+  git -C "$registered_parent" config --local tag.gpgsign false
   git clone --quiet "$ROOT" "$registered_child"
+  git -C "$registered_child" config --local commit.gpgsign false
+  git -C "$registered_child" config --local tag.gpgsign false
   printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
   cat > "$home/data/secondmates.md" <<EOF
 - parent - parent domain (home: $registered_parent; scope: parent domain; projects: beta; added 2026-06-22)
@@ -1102,9 +1124,13 @@ test_home_seed_refuses_existing_remote_backed_project_with_wrong_origin() {
   fm_git_init_commit "$home/projects/alpha"
   fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/wrong-alpha.git"
   git clone --quiet "$ROOT" "$subhome"
+  git -C "$subhome" config --local commit.gpgsign false
+  git -C "$subhome" config --local tag.gpgsign false
   subhome_abs=$(cd "$subhome" && pwd -P)
   mkdir -p "$subhome/projects"
   git clone --quiet "$home/projects/alpha" "$subhome/projects/alpha"
+  git -C "$subhome/projects/alpha" config --local commit.gpgsign false
+  git -C "$subhome/projects/alpha" config --local tag.gpgsign false
   printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
   scaffold_secondmate_charter "$home" design 'design domain' alpha || fail "charter scaffold failed for wrong-origin seed test"
 
@@ -1126,6 +1152,8 @@ test_home_seed_resolves_relative_source_origins() {
   mkdir -p "$home/projects" "$home/data" "$home/state" "$home/remotes"
   fm_git_init_commit "$home/projects/alpha"
   git clone --quiet --bare "$home/projects/alpha" "$home/remotes/relative-alpha.git"
+  git -C "$home/remotes/relative-alpha.git" config --local commit.gpgsign false
+  git -C "$home/remotes/relative-alpha.git" config --local tag.gpgsign false
   git -C "$home/projects/alpha" remote add origin ../../remotes/relative-alpha.git
   printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
   scaffold_secondmate_charter "$home" design 'design domain' alpha || fail "charter scaffold failed for relative origin seed test"
@@ -1154,9 +1182,13 @@ test_home_seed_skips_initialized_existing_no_mistakes_projects() {
   fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/existing-alpha.git"
   fm_git_add_origin "$home/projects/beta" "$TMP_ROOT/remotes/existing-beta.git"
   git clone --quiet "$ROOT" "$subhome"
+  git -C "$subhome" config --local commit.gpgsign false
+  git -C "$subhome" config --local tag.gpgsign false
   mkdir -p "$subhome/projects"
   origin=$(git -C "$home/projects/alpha" remote get-url origin)
   git clone --quiet "$origin" "$subhome/projects/alpha"
+  git -C "$subhome/projects/alpha" config --local commit.gpgsign false
+  git -C "$subhome/projects/alpha" config --local tag.gpgsign false
   git -C "$subhome/projects/alpha" remote add no-mistakes "$TMP_ROOT/no-mistakes-alpha.git"
   printf '%s\n' '- alpha - alpha project (added 2026-06-22)' '- beta - beta project (added 2026-06-22)' > "$home/data/projects.md"
   fakebin=$(make_recording_no_mistakes "$TMP_ROOT/existing-initialized-fake")
@@ -1187,9 +1219,13 @@ test_home_seed_refuses_uninitialized_existing_no_mistakes_project() {
   fm_git_init_commit "$home/projects/alpha"
   fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/uninitialized-alpha.git"
   git clone --quiet "$ROOT" "$subhome"
+  git -C "$subhome" config --local commit.gpgsign false
+  git -C "$subhome" config --local tag.gpgsign false
   mkdir -p "$subhome/projects"
   origin=$(git -C "$home/projects/alpha" remote get-url origin)
   git clone --quiet "$origin" "$subhome/projects/alpha"
+  git -C "$subhome/projects/alpha" config --local commit.gpgsign false
+  git -C "$subhome/projects/alpha" config --local tag.gpgsign false
   printf '%s\n' '- alpha - alpha project (added 2026-06-22)' > "$home/data/projects.md"
   fakebin=$(make_recording_no_mistakes "$TMP_ROOT/existing-uninitialized-fake")
   : > "$log"
@@ -1216,6 +1252,8 @@ test_home_seed_refuses_project_destinations_outside_subhome() {
   fm_git_init_commit "$home/projects/alpha"
   fm_git_add_origin "$home/projects/alpha" "$TMP_ROOT/remotes/symlink-alpha.git"
   git clone --quiet "$ROOT" "$subhome"
+  git -C "$subhome" config --local commit.gpgsign false
+  git -C "$subhome" config --local tag.gpgsign false
   rm -rf "$subhome/projects"
   ln -s "$sink" "$subhome/projects"
   printf '%s\n' '- alpha [direct-PR] - alpha project (added 2026-06-22)' > "$home/data/projects.md"
@@ -1246,6 +1284,8 @@ test_home_seed_refuses_operational_dirs_outside_subhome() {
     sink="$home/data/symlink-opdir-$opdir"
     rm -rf "$subhome" "$sink"
     git clone --quiet "$ROOT" "$subhome"
+    git -C "$subhome" config --local commit.gpgsign false
+    git -C "$subhome" config --local tag.gpgsign false
     mkdir -p "$sink"
     rm -rf "${subhome:?}/${opdir:?}"
     ln -s "$sink" "$subhome/$opdir"
@@ -1274,6 +1314,8 @@ test_home_seed_refuses_symlinked_leaf_files() {
     sink="$home/data/symlink-leaf-${leaf//\//-}"
     rm -rf "$subhome" "$sink"
     git clone --quiet "$ROOT" "$subhome"
+    git -C "$subhome" config --local commit.gpgsign false
+    git -C "$subhome" config --local tag.gpgsign false
     mkdir -p "$(dirname "$subhome/$leaf")" "$(dirname "$sink")"
     expected=outside
     if [ "$leaf" = ".fm-secondmate-home" ]; then

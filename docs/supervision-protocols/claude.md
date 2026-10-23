@@ -1,6 +1,6 @@
 Mode: Claude Stop-hook-owned supervision.
 
-When this session owns supervision and away mode is not active:
+When this session owns supervision and no captain hold is active, follow the selected supervision policy:
 1. Drain first with `bin/fm-wake-drain.sh`.
 2. Routine watcher arm and re-arm are owned by the Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`), never by you.
    Every turn end while supervision is needed launches or attaches one home-scoped watcher cycle with no model command and no model tokens.
@@ -19,8 +19,23 @@ When this session owns supervision and away mode is not active:
 8. The turn-end guard (`bin/fm-turnend-guard.sh --claude`) remains the final backstop.
    It uses the same live-watcher and fresh-beacon predicate as the pull guard.
    It allows the stop when a watcher is healthy or the role-verified auto-arm owns recovery, while fresh failure epochs advance the bounded one-time attended fail-open progression described in [`turnend-guard.md`](../turnend-guard.md).
-9. Waiting on the hook-owned cycle is silent: do not send idle progress while the watcher is parked.
+9. In Desktop away mode, load `/afk`; the same Stop owner runs the shared away coordinator and delivers marked internal reminders, including quiet renewal.
+   Follow `/afk`'s fixed-mark output policy until a genuine return and preserve the pending batch until consumption.
+10. Waiting on the hook-owned cycle is silent: do not send idle progress while the watcher is parked.
 
 The watcher itself remains `bin/fm-watch.sh`, and `bin/fm-watch-arm.sh` remains the verified arm wrapper that the Stop hook foregrounds.
 Re-arm attaches to an existing healthy cycle when one is already present and follows its verified successor chain.
 See [`watcher-continuity.md`](../watcher-continuity.md) for the arm-layer successor and clean-close failure contract and the Claude ownership model.
+
+## Captain hold
+
+`state/.captain-hold` intentionally stops automatic Claude turns so the captain's context reminder stays visible until the captain decides.
+The Stop auto-arm neither arms nor rewakes while held, including when the hold appears during a cycle, and the Claude turn-end guard allows Stop without a live watcher.
+The primary-only `UserPromptSubmit` hook adds context on every real captain reply while held: end the reply by asking the captain to `/stow` then `/clear`, or explicitly dismiss the hold.
+Operational injections receive no such context, and a reply alone never clears the marker.
+Only an explicit dismissal authorizes `bin/fm-captain-hold.sh clear`; `bin/fm-session-start.sh` also clears it after acquiring the session lock when a new session begins.
+Do not manually arm supervision or take automatic wake turns while held.
+Events continue to accumulate in the durable wake queue; neither setting the hold nor suppressing a rewake consumes them, and the normal drain delivers them after release.
+`bin/fm-captain-hold.sh --help` owns the marker-management commands and its script header owns the one-line reason and timestamp format.
+For the terminal failure warning contract, see [`turnend-guard.md`](../turnend-guard.md).
+The global context reminder hook is wired separately by the operator.

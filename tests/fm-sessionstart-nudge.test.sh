@@ -20,6 +20,8 @@ make_primary() {
   local dir=$1
   mkdir -p "$dir/bin" "$dir/state"
   git init -q "$dir"
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   git -C "$dir" commit -q --allow-empty -m init
   : > "$dir/AGENTS.md"
 }
@@ -63,6 +65,8 @@ test_gate_common_dir_is_silent() {
   fm_git_init_commit "$source"
   mkdir -p "$(dirname "$bare")"
   git clone --quiet --bare "$source" "$bare"
+  git -C "$bare" config --local commit.gpgsign false
+  git -C "$bare" config --local tag.gpgsign false
   git --git-dir="$bare" worktree add --quiet -b gate-test "$root" HEAD
   mkdir -p "$root/bin" "$root/state"
   : > "$root/AGENTS.md"

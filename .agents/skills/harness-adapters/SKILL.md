@@ -1,6 +1,6 @@
 ---
 name: harness-adapters
-description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, interrupting or exiting an agent, resuming an exited agent, or verifying a new harness adapter. Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, and kimi.
+description: Agent-only reference for firstmate harness operations. Use before spawning or recovering a crewmate or secondmate, handling a trust dialog, sending a harness-specific skill invocation, resuming an exited agent, or verifying a new harness adapter; interrupt and exit keys are inline in AGENTS.md section 13. Contains verified facts for claude, codex, opencode, pi, pi-signed, grok, kimi, and the primary-only omp seat.
 user-invocable: false
 metadata:
   internal: true
@@ -8,7 +8,8 @@ metadata:
 
 # harness-adapters
 
-Use this reference before any harness-specific firstmate operation: spawn, recovery, trust-dialog handling, skill invocation, interrupt, exit, resume, or adapter verification.
+Use this reference before any harness-specific firstmate operation: spawn, recovery, trust-dialog handling, skill invocation, resume, or adapter verification.
+`AGENTS.md` section 13 carries the interrupt and exit keys so stopping a worker needs no skill load; the per-adapter tables below remain their verified source.
 
 Crewmates default to the same harness firstmate is running on unless `config/crew-harness` records an adapter name.
 Optional dispatch profiles in `config/crew-dispatch.json` can override that static default for one crewmate or scout dispatch by selecting concrete harness, model, and effort axes at intake.
@@ -51,6 +52,7 @@ Dispatch only on a backend that `fm-spawn` validates as spawn-capable (selection
 
 `bin/fm-harness.sh` prints firstmate's own harness, using verified env markers first and then process ancestry.
 Within the Pi family, only the exact launch-boundary marker `FM_PI_HARNESS=pi-signed` alongside `PI_CODING_AGENT=true` selects the signed identity; unmarked shared launcher ancestry remains `pi`.
+omp exports both `OMPCODE=1` and `CLAUDECODE=1` into its bash tool, so `OMPCODE` is checked before the Claude marker.
 `bin/fm-harness.sh crew` resolves the effective crewmate harness from `config/crew-harness` (absent or `default` -> own).
 `bin/fm-harness.sh secondmate` resolves the secondmate-launch harness through the chain `config/secondmate-harness` -> `config/crew-harness` -> own, so an unset `config/secondmate-harness` matches the crew harness.
 `bin/fm-spawn.sh` uses `crew` mode for a crewmate/scout launch and `secondmate` mode for a `--secondmate` launch, re-resolving on every spawn so the split is durable across respawns; an explicit per-spawn harness arg overrides either.
@@ -63,7 +65,7 @@ Use that value for interrupt, exit, resume, and skill-invocation facts.
 
 ## Primary turn-end guard
 
-The primary integrations for `claude`, `codex`, `opencode`, `pi`, `pi-signed`, and `grok` have empirically validated hook paths for the "no turn ends blind" guard.
+The primary integrations for `claude`, `codex`, `opencode`, `pi`, `pi-signed`, and `grok` have empirically validated hook paths for the "no turn ends blind" guard, and `omp` blocks directly from its extension's `session_stop` handler.
 `claude` and `codex` block directly through Stop hooks that preserve exit status 2 and stderr from `bin/fm-turnend-guard.sh`.
 `opencode`, `pi`, and `pi-signed` expose passive lifecycle callbacks and force one bounded follow-up when the shared predicate blocks.
 Grok selects native blocking or its pre-native bounded resume fallback from the exact running Stop payload; [`docs/turnend-guard.md`](../../../docs/turnend-guard.md) owns that contract.
@@ -76,7 +78,7 @@ When changing any primary turn-end hook, validate the real harness behavior in a
 
 The primary integrations for `claude`, `codex`, `opencode`, `pi`, `pi-signed`, and `grok` also have wired PreToolUse-equivalent hooks that deny a watcher-arm anti-pattern (shell `&`, truncating pipe, bundling, broad `pkill -f fm-watch`) before it runs.
 `claude` and `codex` block directly through PreToolUse hooks; `grok` blocks the same way but requires every `$VAR` reference in its hook `command` string to carry an inline `:-default` or it fails to launch the hook entirely.
-`opencode`, `pi`, and `pi-signed` block by throwing from `tool.execute.before` / returning `{block: true}` from `tool_call`.
+`opencode`, `pi`, and `pi-signed` block by throwing from `tool.execute.before` / returning `{block: true}` from `tool_call`; `omp` returns `{block: true, reason}` from `.omp/extensions/fm-primary-omp.ts`.
 The exact hook files, commands, output-shaping quirks (Claude Code only honors the deny when stdout is empty), and validation transcripts are owned by `docs/arm-pretool-check.md`.
 When changing any watcher-arm PreToolUse hook, validate the real harness behavior in a scratch project before trusting it, then update that doc.
 ## Primary delegation-shape guard
@@ -113,6 +115,7 @@ Full mechanics, scoping, and fail-open behavior live in `docs/sessionstart-nudge
 - `opencode`: verified on 1.17.18; `session.created` plus `client.session.promptAsync` starts the nudge turn in the TUI, while `opencode run` remains fail-open headless.
 - `pi` and `pi-signed`: verified native `session_start`; the existing primary extension handles `startup`, `new`, and `resume` and uses `pi.sendMessage` to inject context without racing a positional launch prompt.
 - `grok`: the 0.2.103 project `SessionStart` event fires with `source=new`, but stdout does not reach model context; the tracked project hook remains fail-open, and a global token-guarded fallback requires a captain decision.
+- `omp`: verified on 18.12.6; the project extension handles main-agent `session_start` and queues the nudge with `deliverAs: "nextTurn"` so it rides the first prompt.
 
 ## Primary watcher supervision
 
@@ -122,6 +125,7 @@ Claude's Stop `asyncRewake` hook (`bin/fm-claude-stop-autoarm.sh`) owns tokenles
 Codex uses bounded foreground checkpoints through `bin/fm-watch-checkpoint.sh` because Codex cannot reason while a foreground tool call is running.
 OpenCode uses `.opencode/plugins/fm-primary-watch-arm.js`, which coordinates with the turn-end guard plugin and wakes the TUI with `client.session.promptAsync`.
 Pi and pi-signed use the tracked `.pi/extensions/fm-primary-turnend-guard.ts` plus the tracked `.pi/extensions/fm-primary-pi-watch.ts`, both project-local extensions the Pi engine auto-discovers once trusted.
+omp uses async bash jobs around `bin/fm-watch-arm.sh`, whose completion starts a new turn; `docs/supervision-protocols/omp.md` owns the protocol.
 When changing any primary watcher adapter, update `docs/supervision-protocols/`, `docs/turnend-guard.md` if a shared idle or turn-end hook changed, and the relevant concise fact below.
 
 ## Launch profile axes
@@ -228,6 +232,9 @@ Claude Code's primary watcher protocol is Stop-owned: the auto-arm hook fires on
 | Exit command | `/quit` (slash popup needs about 1 second between text and Enter; `fm-send` handles it) |
 | Interrupt | single Escape |
 | Skill invocation | `$<skill>` (e.g. `$no-mistakes`); `/<skill>` is claude-only and codex rejects it as "Unrecognized command" |
+
+The built-in Codex crewmate and secondmate launch templates suppress only the rate-limit model switch reminder with `-c notice.hide_rate_limit_model_nudge=true`, preventing it from capturing an automated steer and changing the chosen model.
+Other notices remain enabled, and the captain's global Codex config is untouched; `bin/fm-spawn.sh --help` owns the launch flags.
 
 A `$<skill>` invocation opens a `$`-autocomplete (skill) popup, the same hazard as the `/` slash popup: submitting too fast lets the popup swallow the Enter, so the invocation never lands.
 `fm-send` handles it the same way it handles `/` - it gives the popup a longer settle (1.2s) between typing and the first Enter, with the target backend's submit retry as the safety net - but the `$` settle is scoped to `harness=codex`, read from the target metadata for exact task ids or legacy `fm-<id>` labels.
@@ -376,6 +383,22 @@ The exact adaptive and malformed-input contract is owned by `docs/turnend-guard.
 The tracked Claude Stop hooks skip themselves under `GROK_AGENT`, because Grok also loads Claude-compatible project settings and otherwise creates a second blocking path.
 Project-local Grok hooks require folder trust, verified with launch-time `--trust`; if the primary firstmate checkout is not trusted for Grok hooks, this primary guard fails open and `fm-guard.sh` remains the next-command alarm.
 Grok's primary watcher protocol remains background-notify around `bin/fm-watch-arm.sh`; native Stop continuation does not provide Pi-like extension ownership.
+
+## omp (VERIFIED as primary seat only, omp 18.12.6)
+
+omp is supported only as the primary firstmate session; `bin/fm-spawn.sh` has no omp launch template, so it is never a crewmate or secondmate target.
+
+| Fact | Value |
+| --- | --- |
+| Env marker | `OMPCODE=1`, exported alongside `CLAUDECODE=1` into every bash-tool command; `OMPCODE` wins detection. omp's own process env lacks it, so the extension launches owner scripts with `OMPCODE=1`. `bin/fm-spawn.sh` unsets both in every worker pane before launch, and a tmux server firstmate starts excludes both, so they never reach another harness. |
+| Process name | Exact `omp`; bash-tool scripts run as direct children of the single compiled process. |
+| Hook transport | Project extension `.omp/extensions/fm-primary-omp.ts`, discovered only from the launch cwd with no trust gate: `session_start` nudge, bash `tool_call` cd-guard and seatbelt, `session_stop` turn-end guard. omp runs no `.claude/settings.json` command hooks, so the Claude hooks are inert. |
+| Launch | Interactive `omp` from the repo root, never `--no-extensions`; `bin/fm-session-start.sh` prints `OMP_EXTENSION: not loaded` when the extension marker is missing or stale. |
+| Wake shape | Async bash job (`async: true`, `timeout: 0`) on `bin/fm-watch-arm.sh`; see `docs/supervision-protocols/omp.md`. |
+| Away mode | tmux and Herdr supervisor panes, with omp-specific draft protection; see `docs/tmux-backend.md` and `docs/herdr-backend.md`. |
+| Crew dispatch | Not supported; an omp-primary home must name a verified crew adapter in `config/crew-harness` and `config/secondmate-harness`, because `default` resolves to omp and spawn refuses. |
+| Not wired | Delegation-shape guard and ask-user gate. |
+| Live guard | `tests/fm-omp-primary-live-e2e.test.sh` (`FM_OMP_LIVE_E2E=1`). |
 
 ## kimi (VERIFIED 2026-07-25, kimi 0.29.1)
 

@@ -135,6 +135,25 @@ tests/fm-tmux-submit-busy.test.sh
 Expected structural matrix: real text on any content row is pending; all-empty complete boxes are empty; unreadable, incomplete, or unsafe boxes are unknown; and non-bordered panes retain cursor-row compatibility.
 Expected submit matrix: proven pending plus busy is accepted as queued; proven pending plus idle remains pending; ambiguous pending is never converted by the busy exception; and only a proven empty composer succeeds directly.
 
+The omp supervisor-pane readers were captured from a real omp 18.12.6 TUI on tmux 3.6a on 2026-10-23, on a dedicated socket.
+omp's draft rides the composer box's bottom border row, every content row starts three columns in, and the cursor sits at the content origin when the draft is empty.
+Its loader row exists only while the agent runs and is led by the interrupt key's `key.esc` symbol (`󱊷` nerd, `⎋` unicode, `Esc` ascii) and then `Working…` or a tool's status text.
+The status line's spinner and elapsed counter stayed on after the reply while an async `sleep` job was outstanding, and a prompt submitted then was answered within 3 seconds, so the counter is not a busy signal.
+Observed bounded shapes, in order: an idle composer, a typed draft, a wrapped draft, the mid-tool and streaming loaders, and the status line with an async job outstanding after the reply:
+
+```text
+╰─                                                ─╯
+╰─ hello pending                                  ─╯
+│  hello pending and a much longer line ...        │
+╰─ exceeds one row yes                            ─╯
+  󱊷 Waiting for requested duration
+  󱊷 Working…
+╭── ⠹ 24s  󰪣 GPT-6.1 Sol ...
+```
+
+Against that TUI, `FM_COMPOSER_HARNESS=omp fm_tmux_composer_state` printed `empty`, `pending`, and `empty` for idle, typed, and cleared, while the generic reader printed `unknown`, and `fm_pane_is_busy <target> omp` read busy mid-tool and idle with the async job outstanding.
+`FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` refreshes the delivery evidence, and `tests/fm-omp-harness.test.sh` and `tests/fm-composer-ghost.test.sh` pin the readers portably.
+
 ### Cleanup endpoint identity
 
 The cleanup identity boundary was validated on 2026-07-28 with tmux 3.6a and metadata fixtures for every supported backend.
@@ -168,6 +187,20 @@ Claude, Codex, OpenCode, Pi, pi-signed, Grok, and Kimi share that backend cleanu
 The compatibility floor is protocol 14.
 The latest active verification uses Herdr 0.7.5 protocol 17 on macOS aarch64, with earlier 0.7.5 protocol-16, 0.7.4, protocol-14, and 0.7.3 evidence retained where they define current behavior or fallbacks.
 Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
+
+omp 18.12.6 away-mode delivery was verified on an isolated Herdr session on 2026-10-23 using the real `openai-codex/gpt-6.1-sol` model.
+The native pane identity reported `omp` and `idle`, and the composer reader returned `empty`, `pending`, and `empty` before typing, with a draft, and after clearing it.
+Native submit status remained idle after an accepted Enter, while the actual omp transcript already contained the submitted prompt; the omp-specific cleared-composer proof therefore also acknowledges submission.
+The regression confirmed exactly one delivered away prompt, a real completed reply, and refusal to type a second wake into the captain's intact draft.
+
+```sh
+FM_OMP_HERDR_LIVE_E2E=1 tests/fm-omp-herdr-live-e2e.test.sh
+```
+
+```text
+ok - real omp/Herdr: idle wake delivered once and acknowledged, pending draft preserved
+```
+
 
 Core read-only probes:
 
@@ -568,3 +601,42 @@ The host-tool sequence was:
 Observed guarantee: a Desktop-owned thread can write Firstmate lifecycle files when the prompt provides an authorized absolute path, and create, send, read, and archive work at the Desktop host-tool layer.
 The missing guarantee remains a supported shell-callable bridge that lets Firstmate perform those operations against the same visible Desktop endpoint.
 App-server partial methods and raw socket experiments do not satisfy that bridge contract.
+
+## Claude CLI hooks for Desktop away delivery
+
+The Stop-hook mechanism was verified on 2026-10-22 with Claude Code 2.1.296 in disposable projects and separate fixture homes.
+This is CLI evidence; actual Desktop lifecycle and UI behavior still require operator acceptance before unattended use.
+The AFK skill owns the shared policy, and `docs/watcher-continuity.md` owns delivery continuity and cancellation limits.
+
+Refresh the credentialed CLI evidence with:
+
+```sh
+FM_AFK_DESKTOP_LIVE=1 bin/fm-test-run.sh \
+  tests/fm-afk-desktop-live-e2e.test.sh \
+  tests/fm-afk-desktop-policy-live-e2e.test.sh
+```
+
+The live scripts' headers own transcript retention and fixture controls.
+The fixture helper strips inherited terminal selectors and installs fake terminal transports in copied backend code, including when PATH changes.
+`tests/fm-afk-fixture-isolation.test.sh` is the portable regression for that isolation boundary.
+
+The chain released ten separate event latches, completed ten hook continuations and emitted eleven assistant text blocks, each exactly `·`, with zero no-visible-output demands.
+Two shortened pre-expiry renewals emitted three exact marks and zero such demands.
+The stable verdicts were:
+
+```text
+ok - D1: Claude 2.1.296 (Claude Code) completed 10 silent hook continuations
+ok - D2: Claude 2.1.296 (Claude Code) completed 2 silent hook continuations
+ok - D7 CLI: concurrent Stop ownership, fixture hold suppression and dismissal
+```
+
+The policy fixture resolved one authorized fake stop, parked one unresolved choice in durable state, completed unrelated work and handled repeated internal callbacks without repeating those actions.
+Its setup turn ran before away mode began, as in production, and each measured away turn began from a marked away-supervisor input.
+Its three away text blocks were exact marks, followed by one current-state summary on real return.
+A pending completion released after return produced no late away handoff.
+UserPromptSubmit received both marked internal callbacks as well as real input, so that hook alone does not establish human presence.
+Concurrent Stop calls under the real CLI ancestry admitted one coordinator, and a fixture global hold suppressed it until explicit fixture dismissal.
+
+The local API rejection retained away state and pending evidence, emitted `StopFailure` only and started no replacement Stop cycle.
+Its non-mark assistant error record had model `<synthetic>` and `is_api_error_message: true`, matching the AFK policy's host-error exception.
+No Desktop window/session closure, app quit, machine sleep, visible-notification behavior or full configured hook lifetime is established by these CLI tests.

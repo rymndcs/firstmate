@@ -17,7 +17,12 @@ After each non-actionable arm close, the hook rechecks the identity-matched watc
 A cycle-end failure is benign when that live-watcher predicate is true, and the hook suppresses the arm output and continues silently.
 Only an exhausted failure with no verified watcher emits one last-resort notice for the continuous failure episode; later consecutive Stop cycles exit 2 to guarantee another Stop-owned retry without repeating the notice until the turn-end guard consumes the attended fail-open.
 The Claude turn-end guard owns the monotonic failure progression, one-time attended fail-open, post-alarm continuation suppression, and positive recovery reset described in [`turnend-guard.md`](turnend-guard.md#harness-integrations).
-While supervision is still needed and away mode remains inactive, an actionable close wakes the idle session through exit 2.
+While supervision is still needed, an actionable close wakes the idle session through exit 2.
+Desktop away selection uses that same owner with the shared away coordinator; pane away selection keeps the Stop owner inert.
+The `/afk` skill owns presence, away output, durable parking, and return policy for both transports.
+`bin/fm-supervise-daemon.sh --stop-hook` owns quiet renewal before the host timeout and retains pending batch evidence until explicit acknowledgment.
+A provider failure that ends through `StopFailure` does not itself start a replacement Stop cycle; durable away state survives for recovery.
+Expiry or cancellation is not a renewal mechanism; the coordinator must renew while its host-owned hook is still alive.
 
 ## Actionable wake ordering
 

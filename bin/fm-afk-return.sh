@@ -20,6 +20,12 @@
 # every live open blocker is closed and `check` succeeds. Repeated begin/check
 # calls are idempotent. `guard` never mutates state and is suitable for ordinary
 # read entrypoints such as fm-bearings-snapshot.sh.
+#
+# When the gate clears, each actionable `check:` wake, including one retained by an
+# earlier gated run, prints once as a `handling input` line before `catch-up
+# clear`. One-shot producers such as a merged PR poll or an offered X mention
+# have no other durable record, so firstmate handles these rows; they are never
+# return-summary content. Other drained rows and buffered history stay unprinted.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,19 +110,19 @@ write_gate() {  # <evidence-file> <blockers-file>
   mv "$pending" "$GATE"
 }
 
-print_evidence() {  # <file>
-  local file=$1 kind text
-  while IFS="$(printf '\t')" read -r tag kind text; do
-    [ "$tag" = evidence ] || continue
-    printf 'catch-up %s: %s\n' "$kind" "$text"
-  done < "$file"
-}
-
 print_blockers() {  # <file>
   local file=$1 tag id key summary
   while IFS="$(printf '\t')" read -r tag id key summary; do
     [ "$tag" = blocker ] || continue
     printf 'firstmate-actionable blocker: %s [key=%s] %s\n' "$id" "$key" "$summary"
+  done < "$file"
+}
+
+print_handling() {  # <file>
+  local file=$1 tag kind text
+  while IFS="$(printf '\t')" read -r tag kind text; do
+    [ "$tag" = evidence ] && [ "$kind" = handle ] || continue
+    printf 'fm-afk-return: handling input, not summary content: %s\n' "$text"
   done < "$file"
 }
 
@@ -159,6 +165,7 @@ return_reconcile() {
     drained=""
   }
   append_evidence wake "$drained" "$evidence"
+  append_evidence handle "$(printf '%s\n' "$drained" | awk -F '\t' '$3 == "check" && $4 != "away-owner" { print $5 }')" "$evidence"
 
   if [ -s "$STATE/.subsuper-inject-wedged" ]; then
     wedge=$(head -1 "$STATE/.subsuper-inject-wedged" 2>/dev/null || true)
@@ -173,14 +180,13 @@ return_reconcile() {
   if [ "$lifecycle_ok" -ne 1 ] || [ -s "$blockers" ]; then
     write_gate "$evidence" "$blockers" || { rm -f "$evidence" "$blockers"; return 1; }
     printf 'fm-afk-return: catch-up must finish before the captain request\n' >&2
-    print_evidence "$GATE" >&2
     print_blockers "$GATE" >&2
     printf 'fm-afk-return: handle each blocker now, or close it with resolved [key=...] and append a durable reclassification reason, then run bin/fm-afk-return.sh check\n' >&2
     rm -f "$evidence" "$blockers"
     return 3
   fi
 
-  print_evidence "$evidence"
+  print_handling "$evidence"
   rm -f "$GATE"
   clear_delivery_artifacts
   rm -f "$evidence" "$blockers"

@@ -52,12 +52,18 @@ make_gate_worktree() {
   local root=$1 id=016d88035d58 run=01KXC3SD5NZYMERGDS68Z1C8ER seed
   mkdir -p "$root/.no-mistakes/repos"
   git init -q --bare "$root/origin.git"
+  git -C "$root/origin.git" config --local commit.gpgsign false
+  git -C "$root/origin.git" config --local tag.gpgsign false
   seed=$(mktemp -d "$TMP/gate-seed.XXXXXX")
   git init -q -b main "$seed"
+  git -C "$seed" config --local commit.gpgsign false
+  git -C "$seed" config --local tag.gpgsign false
   git -C "$seed" commit -q --allow-empty -m init
   git -C "$seed" push -q "$root/origin.git" HEAD:refs/heads/main
   rm -rf "$seed"
   git clone -q --bare "$root/origin.git" "$root/.no-mistakes/repos/$id.git"
+  git -C "$root/.no-mistakes/repos/$id.git" config --local commit.gpgsign false
+  git -C "$root/.no-mistakes/repos/$id.git" config --local tag.gpgsign false
   git -C "$root/.no-mistakes/repos/$id.git" worktree add --detach \
     "$root/.no-mistakes/worktrees/$id/$run" main >/dev/null 2>&1
   printf '%s\n' "$root/.no-mistakes/worktrees/$id/$run"
@@ -68,6 +74,8 @@ make_gate_worktree() {
 make_normal_repo() {
   local dir=$1
   git init -q -b main "$dir"
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   git -C "$dir" commit -q --allow-empty -m init
   printf '%s\n' "$dir"
 }
@@ -306,12 +314,18 @@ exit 0
 SH
   chmod +x "$fakebin/gh-axi" "$fakebin/gh"
   git init -q --bare "$case_dir/origin.git"
+  git -C "$case_dir/origin.git" config --local commit.gpgsign false
+  git -C "$case_dir/origin.git" config --local tag.gpgsign false
   git -C "$case_dir/origin.git" symbolic-ref HEAD refs/heads/main
   git clone -q "$case_dir/origin.git" "$case_dir/_seed" 2>/dev/null
+  git -C "$case_dir/_seed" config --local commit.gpgsign false
+  git -C "$case_dir/_seed" config --local tag.gpgsign false
   git -C "$case_dir/_seed" commit -q --allow-empty -m "origin baseline"
   git -C "$case_dir/_seed" push -q origin main
   rm -rf "$case_dir/_seed"
   git clone -q "$case_dir/origin.git" "$case_dir/project"
+  git -C "$case_dir/project" config --local commit.gpgsign false
+  git -C "$case_dir/project" config --local tag.gpgsign false
   git -C "$case_dir/project" remote set-head origin main 2>/dev/null || true
   git -C "$case_dir/project" worktree add -q -b fm/task-x1 "$case_dir/wt" main
   git -C "$case_dir/wt" commit -q --allow-empty -m "shippable work"

@@ -26,8 +26,12 @@ make_case() {  # <name> [<task-branch>]
   mkdir -p "$case_dir/state"
 
   git init -q --bare "$case_dir/origin.git"
+  git -C "$case_dir/origin.git" config --local commit.gpgsign false
+  git -C "$case_dir/origin.git" config --local tag.gpgsign false
   git -C "$case_dir/origin.git" symbolic-ref HEAD refs/heads/main
   git clone -q "$case_dir/origin.git" "$case_dir/_seed" 2>/dev/null
+  git -C "$case_dir/_seed" config --local commit.gpgsign false
+  git -C "$case_dir/_seed" config --local tag.gpgsign false
   printf 'base\n' > "$case_dir/_seed/feature.txt"
   git -C "$case_dir/_seed" add feature.txt
   git -C "$case_dir/_seed" -c user.email=t@t -c user.name=t commit -qm "origin baseline"
@@ -35,6 +39,8 @@ make_case() {  # <name> [<task-branch>]
   rm -rf "$case_dir/_seed"
 
   git clone -q "$case_dir/origin.git" "$case_dir/project"
+  git -C "$case_dir/project" config --local commit.gpgsign false
+  git -C "$case_dir/project" config --local tag.gpgsign false
   git -C "$case_dir/project" remote set-head origin main 2>/dev/null || true
   git -C "$case_dir/project" worktree add -q -b "$branch" "$case_dir/wt" main
 

@@ -84,6 +84,8 @@ EOF
 chmod +x "$FAKEBIN/herdr"
 
 git clone -q --no-hardlinks "$ROOT" "$SECOND_HOME"
+git -C "$SECOND_HOME" config --local commit.gpgsign false
+git -C "$SECOND_HOME" config --local tag.gpgsign false
 git -C "$SECOND_HOME" checkout -q --detach HEAD
 mkdir -p "$SECOND_HOME/state" "$SECOND_HOME/data" "$SECOND_HOME/config" "$SECOND_HOME/projects"
 printf '%s\n' "$ID" > "$SECOND_HOME/.fm-secondmate-home"

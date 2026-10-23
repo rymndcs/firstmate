@@ -14,7 +14,10 @@ mkdir -p "$TMP_ROOT"
 # the current directory and the EXIT trap below would rm -rf this checkout.
 [ -n "$TMP_ROOT" ] || exit 1
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
-trap 'if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+# shellcheck source=tests/remote-job-helpers.sh
+. "$ROOT/tests/remote-job-helpers.sh"
+fm_test_remote_job_init "$TMP_ROOT" || exit 1
+trap 'fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"' EXIT
 LOCAL_HOME="$TMP_ROOT/local-home"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
@@ -71,6 +74,8 @@ SH
 chmod +x "$REMOTE_ROOT/bin"/*.sh
 chmod +x "$REMOTE_ROOT/bin/tasks-axi"
 git -C "$REMOTE_ROOT" init -q -b main
+git -C "$REMOTE_ROOT" config --local commit.gpgsign false
+git -C "$REMOTE_ROOT" config --local tag.gpgsign false
 git -C "$REMOTE_ROOT" config user.email test@example.com
 git -C "$REMOTE_ROOT" config user.name Test
 git -C "$REMOTE_ROOT" add AGENTS.md CLAUDE.md bin
@@ -438,7 +443,7 @@ STALL_ERR="$TMP_ROOT/stalled-writer.err"
 rm -f "$STALL_FIFO"
 mkfifo "$STALL_FIFO" || fail "could not create the stalled-writer pipe"
 # Delivers a partial payload, then holds the pipe open and sends no end of input.
-( exec 3>"$STALL_FIFO"; printf 'partial payload' >&3; sleep 120 ) &
+( exec 3>"$STALL_FIFO"; printf 'partial payload' >&3; exec sleep 120 ) &
 STALL_WRITER=$!
 FM_REMOTE_JOB_STDIN_TIMEOUT=2 FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
   FM_REMOTE_JOB_STATE_ROOT="$TMP_ROOT/remote-jobs" \

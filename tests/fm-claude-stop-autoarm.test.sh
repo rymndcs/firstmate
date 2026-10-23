@@ -39,6 +39,8 @@ make_primary_dir() {
   local dir=$1
   mkdir -p "$dir/state"
   git init -q "$dir"
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   git -C "$dir" commit -q --allow-empty -m init
   : > "$dir/AGENTS.md"
   install_autoarm_scripts "$dir"
@@ -597,3 +599,191 @@ test_need_vanished_mid_cycle_closes_quietly
 test_afk_mid_cycle_suppresses_rewake
 test_active_in_marked_secondmate_home
 test_fm_lock_status_still_works_with_shared_lib
+
+test_captain_hold() {
+  local dir out status before child command
+  dir=$(make_primary_dir "$TMP_ROOT/captain-hold")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$ROOT/bin/fm-captain-hold-prompt.sh" "$ROOT/bin/fm-operational-input.sh" "$dir/bin/"
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" actionable
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" set $'context reminder\n200k'
+  [ "$(wc -l < "$dir/state/.captain-hold" | tr -d ' ')" = 1 ] || fail "hold must be one line"
+  out=$(FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" status)
+  assert_contains "$out" 'context reminder 200k - ' 'status must show reason and timestamp'
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 0 "$status" 'held autoarm must be silent'
+  [ -z "$out" ] && [ ! -e "$dir/state/arm-ran" ] || fail 'held autoarm armed or printed'
+  before=$(cat "$dir/state/.captain-hold")
+  command=$(jq -r '.hooks.UserPromptSubmit[0].hooks[0].command' "$ROOT/.claude/settings.json")
+  out=$(printf '{"prompt":"hello"}' | env -u GROK_AGENT CLAUDE_PROJECT_DIR="$dir" FM_HOME="$dir" bash -c "$command")
+  assert_contains "$out" '/stow then /clear' 'tracked hook must deliver context'
+  out=$(printf '{"prompt":"hello"}' | GROK_AGENT=1 CLAUDE_PROJECT_DIR="$dir" FM_HOME="$dir" bash -c "$command")
+  [ -z "$out" ] || fail 'Claude-compatible Grok hook must be inert'
+  child=$(make_crewmate_worktree_dir "$dir" "$TMP_ROOT/hold-child")
+  cp "$ROOT/bin/fm-captain-hold-prompt.sh" "$ROOT/bin/fm-operational-input.sh" "$child/bin/"
+  : > "$child/state/.captain-hold"
+  out=$(printf '{"prompt":"hello"}' | FM_HOME="$child" "$child/bin/fm-captain-hold-prompt.sh")
+  [ -z "$out" ] || fail 'child task received primary hold context'
+  for prompt in 'hello' 'what is happening?'; do
+    out=$(jq -n --arg prompt "$prompt" '{prompt:$prompt}' | FM_HOME="$dir" "$dir/bin/fm-captain-hold-prompt.sh")
+    assert_contains "$out" '/stow then /clear' 'every captain reply must receive hold context'
+    [ "$(cat "$dir/state/.captain-hold")" = "$before" ] || fail 'captain reply cleared hold'
+  done
+  for prompt in $'\xE2\x81\xA3FIRSTMATE_OP: v1 watcher: heartbeat' $'\xE2\x81\xA3Supervisor escalate'; do
+    out=$(jq -n --arg prompt "$prompt" '{prompt:$prompt}' | FM_HOME="$dir" "$dir/bin/fm-captain-hold-prompt.sh")
+    [ -z "$out" ] || fail 'operational injection received captain context'
+  done
+  out=$(printf 'bad json' | FM_HOME="$dir" "$dir/bin/fm-captain-hold-prompt.sh")
+  [ -z "$out" ] || fail 'malformed payload received context'
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" clear
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" clear
+  out=$(printf '{"prompt":"hello"}' | FM_HOME="$dir" "$dir/bin/fm-captain-hold-prompt.sh")
+  [ -z "$out" ] || fail 'inactive hold received context'
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 2 "$status" 'dismissal must restore autoarm'
+  pass 'captain hold: persistent replies, operational exclusion, explicit dismissal'
+}
+
+test_captain_hold_midcycle_keeps_queue() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/hold-midcycle")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$ROOT/bin/fm-wake-drain.sh" "$dir/bin/"
+  cat > "$dir/bin/fm-guard.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+exit 0
+FIXTURE
+  cat > "$dir/bin/fm-watch-arm.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+. "$(dirname "$0")/fm-wake-lib.sh"
+fm_wake_append signal task 'done: queued during hold'
+"$FM_HOME/bin/fm-captain-hold.sh" set 'context reminder'
+printf 'signal: task done: queued during hold\n'
+FIXTURE
+  chmod +x "$dir/bin/fm-guard.sh" "$dir/bin/fm-watch-arm.sh"
+  : > "$dir/state/task.meta"
+  out=$(run_autoarm "$dir" 2>/dev/null); status=$?
+  expect_code 0 "$status" 'midcycle hold must suppress actionable rewake'
+  [ -z "$out" ] || fail 'midcycle hold printed output'
+  [ -s "$dir/state/.wake-queue" ] || fail 'hold lost queued wake'
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" clear
+  out=$(FM_HOME="$dir" "$dir/bin/fm-wake-drain.sh")
+  assert_contains "$out" 'queued during hold' 'normal drain must deliver held event'
+  [ ! -s "$dir/state/.wake-queue" ] || fail 'normal drain left delivered event queued'
+  pass 'captain hold: midcycle suppression retains event for normal drain'
+}
+
+test_captain_hold
+test_captain_hold_midcycle_keeps_queue
+
+
+test_captain_hold_operational_carriers() {
+  local dir prompt kind classified out before
+  dir=$(make_primary_dir "$TMP_ROOT/hold-operational-carriers")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$ROOT/bin/fm-captain-hold-prompt.sh" "$ROOT/bin/fm-operational-input.sh" "$dir/bin/"
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" set reminder
+  before=$(cat "$dir/state/.captain-hold")
+  . "$dir/bin/fm-operational-input.sh"
+  for kind in from-firstmate session-start watcher turn-end-guard away-supervisor launch-brief; do
+    fm_operational_input_construct "$kind" 'Handle routed work.' prompt || fail 'could not construct operational input'
+    fm_operational_input_classify "$prompt" classified || fail 'constructed input was not operational'
+    [ "$classified" = "$kind" ] || fail "wrong operational classification: $classified"
+    out=$(jq -cn --arg prompt "$prompt" '{prompt:$prompt}' | FM_HOME="$dir" "$dir/bin/fm-captain-hold-prompt.sh")
+    [ -z "$out" ] || fail "$kind operational input received captain-only reminder: $out"
+    [ "$(cat "$dir/state/.captain-hold")" = "$before" ] || fail 'operational input changed hold'
+  done
+  for prompt in "$FM_LEGACY_SESSIONSTART" "${FM_LEGACY_WATCHER_PREFIX}heartbeat${FM_LEGACY_WATCHER_SUFFIX}" "${FM_LEGACY_TURNEND_PREFIX}repair"; do
+    out=$(jq -cn --arg prompt "$prompt" '{prompt:$prompt}' | FM_HOME="$dir" "$dir/bin/fm-captain-hold-prompt.sh")
+    [ -z "$out" ] || fail 'historical operational input received captain-only reminder'
+  done
+  out=$(jq -cn --arg prompt '[fm-from-firstmate] ordinary captain text' '{prompt:$prompt}' | FM_HOME="$dir" "$dir/bin/fm-captain-hold-prompt.sh")
+  assert_contains "$out" '/stow then /clear' 'visible label without routing separator must remain captain text'
+  pass 'captain hold: all canonical operational carriers excluded, plain lookalike retained'
+}
+
+test_captain_hold_late_handoff() {
+  local kind=$1 point=$2 dir out status identity
+  dir=$(make_primary_dir "$TMP_ROOT/hold-late-$kind-$point")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$ROOT/bin/fm-wake-drain.sh" "$dir/bin/"
+  : > "$dir/state/task.meta"
+  write_arm_fixture "$dir" failed
+  case "$kind" in
+    actionable)
+      cat > "$dir/bin/fm-watch-arm.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+. "$(dirname "$0")/fm-wake-lib.sh"
+: > "$FM_HOME/state/arm-ran"
+fm_wake_append signal task 'done: queued'
+printf 'signal: task done: queued\n'
+FIXTURE
+      ;;
+    suppressed) : > "$dir/state/.claude-autoarm-failure-notified" ;;
+    recovery)
+      write_arm_fixture "$dir" benign-live
+      identity=$(watcher_identity "$dir" "$$") || fail 'could not identify test parent'
+      record_watcher_lock "$dir" "$$" "$identity"
+      touch "$dir/state/.last-watcher-beat"
+      mkdir "$dir/state/.turnend-claude-blocks.lock"
+      printf '%s\n' "$$" > "$dir/state/.turnend-claude-blocks.lock/pid"
+      ;;
+  esac
+  mkdir "$dir/latebin"
+  cat > "$dir/latebin/sed" <<'FIXTURE'
+#!/usr/bin/env bash
+if [ "$FM_TEST_LATE_HOLD_POINT" = epoch ] && [ "${1:-}" = -n ] && [ "${3:-}" = "$FM_HOME/state/.claude-autoarm-epoch" ] && [ -e "$FM_HOME/state/arm-ran" ]; then
+  "$FM_HOME/bin/fm-captain-hold.sh" set 'late hold during epoch writing'
+fi
+exec /usr/bin/sed "$@"
+FIXTURE
+  cat > "$dir/latebin/grep" <<'FIXTURE'
+#!/usr/bin/env bash
+if [ "$FM_TEST_LATE_HOLD_POINT" = banner ] && [ "${1:-}" = -E ]; then
+  "$FM_HOME/bin/fm-captain-hold.sh" set 'late hold during banner preparation'
+fi
+exec /usr/bin/grep "$@"
+FIXTURE
+  cat > "$dir/latebin/rm" <<'FIXTURE'
+#!/usr/bin/env bash
+if [ "$FM_TEST_LATE_HOLD_POINT" = cleanup ] && [ "${1:-}" = -f ]; then
+  case "${2:-}" in
+    "$FM_HOME/state/".claude-autoarm-output.*)
+      "$FM_HOME/bin/fm-captain-hold.sh" set 'late hold during output cleanup'
+      ;;
+  esac
+fi
+exec /bin/rm "$@"
+FIXTURE
+  cat > "$dir/bin/fm-guard.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+exit 0
+FIXTURE
+  chmod +x "$dir/latebin/"* "$dir/bin/fm-watch-arm.sh" "$dir/bin/fm-guard.sh"
+  out=$(FM_TEST_LATE_HOLD_POINT="$point" PATH="$dir/latebin:$PATH" FM_CLAUDE_AUTOARM_ATTEMPTS=1 run_autoarm "$dir" 2>/dev/null); status=$?
+  assert_present "$dir/state/.captain-hold" "$kind/$point did not inject the late hold"
+  expect_code 0 "$status" "$kind/$point late hold must suppress continuation"
+  [ -z "$out" ] || fail "$kind/$point late hold leaked output: $out"
+  assert_absent "$dir/state/.claude-autoarm.lock" 'late hold left autoarm owner behind'
+  if [ "$kind" = failed ]; then
+    assert_absent "$dir/state/.claude-autoarm-failure-notified" 'held handoff consumed an undelivered failure notice'
+  fi
+  if [ "$kind" = actionable ]; then
+    [ "$(wc -l < "$dir/state/.wake-queue" | tr -d ' ')" = 1 ] || fail 'late handoff lost queued event'
+    FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" clear
+    out=$(FM_HOME="$dir" "$dir/bin/fm-wake-drain.sh")
+    assert_contains "$out" 'done: queued' 'release did not deliver retained event'
+  fi
+  pass "captain hold: $kind handoff suppressed after $point"
+}
+
+test_captain_hold_late_handoffs() {
+  local late_kind
+  for late_kind in actionable failed suppressed recovery; do
+    test_captain_hold_late_handoff "$late_kind" epoch
+    test_captain_hold_late_handoff "$late_kind" cleanup
+    case "$late_kind" in
+      actionable|failed) test_captain_hold_late_handoff "$late_kind" banner ;;
+    esac
+  done
+}
+
+test_captain_hold_operational_carriers
+test_captain_hold_late_handoffs

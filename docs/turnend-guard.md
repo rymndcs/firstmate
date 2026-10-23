@@ -47,6 +47,8 @@ If `jq` is missing or hook stdin is empty, the guard exits 0 because it cannot s
 - Pi listens for `agent_settled` in `.pi/extensions/fm-primary-turnend-guard.ts`, runs once per logical agent run, and calls `pi.sendUserMessage(..., { deliverAs: "followUp" })` once when the guard returns 2.
 - Grok registers a `Stop` hook in `.grok/hooks/fm-primary-turnend-guard.json` and delegates capability selection to `bin/fm-turnend-guard-grok.sh`.
   The tracked Claude Stop entries are inert when `GROK_AGENT` is present, so Grok's Claude-compatible settings loading cannot create a second continuation path.
+- omp listens for `session_stop` in `.omp/extensions/fm-primary-omp.ts`, which fires only for the main session, runs the guard with `--omp` and `stop_hook_active`, and returns `{decision: "block", reason}` when the guard returns 2.
+  omp runs no `.claude/settings.json` command hooks, so the Claude Stop entries are inert under omp, and omp re-fires with `stop_hook_active=true` after a block so the one-block loop guard applies.
 
 Grok and Kimi crew turn-end wakes are authorized per task rather than per checkout: one shared Firstmate-owned hook script reads a per-task authorization file from that harness's `fm-turn-end.d` directory, so no worktree hook file and no trust grant is needed.
 `bin/fm-spawn.sh` writes that authorization file and records its name as the task's token under `state/<id>.grok-turnend-token` or `state/<id>.kimi-turnend-token`, and `bin/fm-teardown.sh` reads the token to delete the authorization file and then removes the token itself.
@@ -56,6 +58,7 @@ Claude and Codex can block a Stop directly with exit status 2 and stderr.
 Both payloads carry `stop_hook_active`.
 In the default Codex mode, a true value lets the second stop finish after one forced continuation.
 
+An active [captain hold](supervision-protocols/claude.md#captain-hold) intentionally allows Claude Stop without watcher recovery, and allows an omp Stop (`--omp`) silently so a stopped fleet never forces automatic turns.
 Claude runs the guard with `--claude`, which ignores `stop_hook_active` and cooperates with the Stop-owned auto-arm.
 Claude Code sets `stop_hook_active=true` on every stop after any stop-hook continuation, including `asyncRewake` rewakes, which re-opened the 2026-07-21 blind window under the default one-shot behavior.
 The Claude mode waits up to `FM_CLAUDE_AUTOARM_SYNC_WAIT_MS` (default 800 milliseconds) and allows the stop when the watcher is healthy, `state/.claude-autoarm.lock` has a live `autoarm` role owner whose eventual failure must exit 2, or `state/.claude-autoarm-epoch` contains a fresh actionable rewake owned by this event epoch.
@@ -67,8 +70,12 @@ In Claude mode, positive watcher recovery clears the block budget, failure notic
 The one loud attended fail-open is available only when the auto-arm has recorded an exhausted failure, its one notice is already consumed, the block budget is exhausted, and a final check finds neither a healthy watcher nor an automatic continuation.
 Each epoch identity is accounted at most once under the budget lock.
 Whenever both coordination locks are needed, positive auto-arm recovery and the terminal check acquire the auto-arm owner lock before the budget lock.
-After that alarm, the Stop auto-arm suppresses further exit-2 continuations until positive watcher recovery, so the final fail-open remains reachable.
-The alarm cannot repeat during that failure episode, and a later unhealthy stop blocks again.
+The terminal check exclusively claims the once-only alarm under the existing owner and budget locks before writing its warning.
+The Stop auto-arm then suppresses further exit-2 continuations until positive watcher recovery, so the final fail-open remains reachable.
+A captain hold suppresses automatic turns, but an eligible terminal supervision-failure warning still uses this same once-only path.
+A held Stop reads the existing block budget without advancing it and never emits a warning for an unverified failure or a budget that has not already been exhausted.
+The alarm remains claimed even if stdout rejects the warning, preserving the original once-only ownership and allow semantics without exit cleanup removing a later episode's alarm.
+The alarm cannot repeat during that failure episode; a later unhealthy stop blocks again unless a captain hold allows it.
 A positively verified healthy watcher clears the failure notice, alarm, and block budget for a future independent episode.
 A Claude failure notice describes the automatic mechanism as broken and does not direct a routine manual background arm.
 
@@ -107,7 +114,7 @@ That warning uses `bin/fm-supervision-instructions.sh --repair-line`, so it alwa
 
 ## Regression coverage
 
-`tests/fm-turnend-guard.test.sh` covers the predicate, main and secondmate primary scope, child-worktree exclusion, `FM_HOME` and `FM_STATE_OVERRIDE` precedence, the live-lock and fresh-beacon guard predicate, the cooperative `--claude` claim wait, monotonic failed-epoch progression, bounded attended fail-open, post-alarm continuation suppression, positive recovery reset, Pi logical-run latching, missing-`jq` behavior, all five primary registrations, Grok native and legacy selection, typed field precedence, malformed input, and exactly-one-path safety.
+`tests/fm-turnend-guard.test.sh` covers the predicate, main and secondmate primary scope, child-worktree exclusion, `FM_HOME` and `FM_STATE_OVERRIDE` precedence, the live-lock and fresh-beacon guard predicate, the cooperative `--claude` claim wait, monotonic failed-epoch progression, bounded attended fail-open, post-alarm continuation suppression, positive recovery reset, Pi logical-run latching, missing-`jq` behavior, all six primary registrations, the omp extension adapter, Grok native and legacy selection, typed field precedence, malformed input, and exactly-one-path safety.
 `tests/fm-guard-stale-banner.test.sh` covers the matching pull-guard predicate, including the fresh-leftover-beacon negative control.
 `tests/fm-kimi-harness.test.sh` covers the separate Kimi crew hook's format preservation, idempotence, refusal cases, token guard, spawn registration, and teardown cleanup.
 `tests/fm-supervision-instructions.test.sh` covers recovery-line ownership and pi-signed's identity-preserving reuse of Pi's protocol.

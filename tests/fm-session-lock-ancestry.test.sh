@@ -108,6 +108,8 @@ case "$pid:$field:${FM_TEST_PATH_SHAPE:-hookdir}" in
   810:args=:hookdir) printf '%s\n' '/home/u/.claude/hooks/notify.sh --quiet' ;;
   810:comm=:piprefix) printf '%s\n' '/opt/pipeline/bin/runner' ;;
   810:args=:piprefix) printf '%s\n' '/opt/pipeline/bin/runner --once' ;;
+  810:comm=:ompprefix) printf '%s\n' '/usr/local/bin/omptool' ;;
+  810:args=:ompprefix) printf '%s\n' '/usr/local/bin/omptool --once' ;;
   810:ppid=:*) printf '%s\n' 1 ;;
   *:comm=:*) printf '%s\n' bash ;;
   *:args=:*) printf '%s\n' 'bash /repo/bin/fm-watch-arm.sh' ;;
@@ -120,7 +122,7 @@ SH
   # Identity may be read from an executable path, but only from whole path
   # components: anything merely living under ~/.claude, and any component that
   # merely starts with a harness name, must stay outside the harness identity.
-  for shape in hookdir piprefix; do
+  for shape in hookdir piprefix ompprefix; do
     if FM_TEST_PATH_SHAPE="$shape" lib_eval "$fakebin" 'fm_harness_ancestry_pid'; then
       fail "$shape: an ordinary script path was treated as a harness process"
     fi
@@ -132,6 +134,50 @@ SH
     fi
   done
   pass "session-lock: ordinary script paths under a harness directory are not harness processes"
+}
+
+# omp is a single compiled executable, and its bash tool runs scripts as direct
+# children of that one process (verified on omp 18.12.6, macOS: comm=omp).
+test_omp_session_is_identified_on_both_platforms() {
+  local dir fakebin shape got
+  dir="$TMP_ROOT/omp-session"
+  fakebin=$(fm_fakebin "$dir")
+  mkdir -p "$dir/state"
+  cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+set -u
+field= pid=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) field=$2; shift 2 ;;
+    -p) pid=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+case "$pid:$field:${FM_TEST_OMP_SHAPE:-macos}" in
+  720:comm=:macos) printf '%s\n' 'omp' ;;
+  720:args=:macos) printf '%s\n' 'omp' ;;
+  720:comm=:linux) printf '%s\n' 'omp' ;;
+  720:args=:linux) printf '%s\n' '/home/linuxbrew/.linuxbrew/bin/omp --continue' ;;
+  720:comm=:path) printf '%s\n' '/opt/homebrew/Cellar/omp/18.12.6/bin/omp' ;;
+  720:args=:path) printf '%s\n' '/opt/homebrew/Cellar/omp/18.12.6/bin/omp' ;;
+  720:ppid=:*) printf '%s\n' 1 ;;
+  *:comm=:*) printf '%s\n' bash ;;
+  *:args=:*) printf '%s\n' 'bash /repo/bin/fm-lock.sh' ;;
+  *:ppid=:*) printf '%s\n' 720 ;;
+esac
+SH
+  chmod +x "$fakebin/ps"
+  printf '720\n' > "$dir/state/.lock"
+
+  for shape in macos linux path; do
+    got=$(FM_TEST_OMP_SHAPE="$shape" lib_eval "$fakebin" 'fm_harness_ancestry_pid') \
+      || fail "$shape: the omp session was not found in the ancestry at all"
+    [ "$got" = 720 ] || fail "$shape: ancestry resolved '$got', expected the omp session pid 720"
+    FM_TEST_OMP_SHAPE="$shape" lib_eval "$fakebin" "fm_session_lock_owned_by_self '$dir/state'" \
+      || fail "$shape: the omp session holding the lock did not recognize itself as the owner"
+  done
+  pass "session-lock: an omp session is identified as the lock-holding harness"
 }
 
 test_harness_beyond_a_gap_never_owns_the_lock() {
@@ -248,6 +294,8 @@ make_primary_home() {  # <dir>
   local dir=$1
   mkdir -p "$dir/state"
   git init -q "$dir"
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   git -C "$dir" commit -q --allow-empty -m init
   : > "$dir/AGENTS.md"
   : > "$dir/state/task.meta"
@@ -356,6 +404,7 @@ test_e2e_daemon_parented_version_named_session_keeps_its_lock() {
 
 test_version_named_session_is_identified_on_both_platforms
 test_ordinary_paths_are_never_harness_processes
+test_omp_session_is_identified_on_both_platforms
 test_harness_beyond_a_gap_never_owns_the_lock
 test_competing_version_named_session_is_seen_as_live
 test_e2e_version_named_session_claims_the_home

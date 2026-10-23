@@ -15,17 +15,20 @@
 #     the hook delegates guarded recovery to bin/fm-lock.sh and then re-verifies
 #     ownership. A live owner, missing lock, malformed lock, or unresolved
 #     ancestry remains inert, so a competing session never arms or rewakes.
-#   - AFK: while state/.afk exists the away daemon owns the watcher and triage;
-#     this hook exits 0 and NEVER rewakes the primary (checked again at
-#     translation time so a mid-cycle AFK transition is honored).
-#   - Need: arms only while work is in flight (state/*.meta) or X mode has a
-#     relay poll to run (state/x-watch.check.sh); an idle home exits 0.
+#   - AFK: explicit Desktop selection uses this same Stop owner with the shared
+#     foreground away coordinator. Pane delivery keeps this hook inert.
+#     Delivery selection is rechecked after every coordinator close; a return
+#     that deselected Desktop retires this owner cleanly, never as a failure.
+#   - Captain hold: state/.captain-hold suppresses arming and translation;
+#     pending durable wake records remain untouched until release.
+#   - Need: uses the shared metadata/X/process-source/Desktop-away predicate;
+#     a home with no supervision need exits 0.
 #   - Single-flight: Claude does not dedupe async hooks, so a home-scoped owner
 #     lock (state/.claude-autoarm.lock) admits exactly one owner; every other
 #     concurrent firing exits 0 without translating, which keeps one event
 #     epoch on exactly one recovery turn.
-#   - Foreground arm: the owner runs bin/fm-watch-arm.sh in the FOREGROUND of
-#     this hook-owned process tree (never shell &); Claude owns the process
+#   - Foreground arm: the owner runs the selected watcher arm or away coordinator
+#     in this hook-owned process tree (never shell &); Claude owns the process
 #     group, so its timeout/session teardown kills arm and watcher together.
 #   - Translation: while supervision is still needed and AFK remains inactive,
 #     an actionable arm close (signal:/stale:/check:/heartbeat) prints one
@@ -53,6 +56,9 @@
 # lock contention, it exits 0 and leaves continuity to the synchronous guard and
 # the model.
 set -u
+# The host lifetime limit counts from this invocation, so the coordinator
+# renews against it rather than against its own later start.
+HOOK_STARTED=$(date +%s)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -102,8 +108,9 @@ if ! fm_session_lock_owned_by_self "$STATE"; then
   RECOVER_SESSION_LOCK=1
 fi
 
-# --- AFK: the away daemon owns the watcher and triage; never rewake ----------
-[ -e "$STATE/.afk" ] && exit 0
+# --- AFK: pane delivery is inert here; explicit Desktop delivery uses Stop ---
+[ ! -e "$STATE/.afk" ] || fm_afk_desktop_selected "$STATE" || exit 0
+[ -e "$STATE/.captain-hold" ] && exit 0
 
 # --- need: in-flight work or an X-mode relay poll ----------------------------
 need_supervision() {
@@ -145,6 +152,7 @@ write_epoch() {  # <outcome>
   rm -f "$tmp" 2>/dev/null || true
 }
 
+[ -e "$STATE/.captain-hold" ] && exit 0
 write_epoch arming
 
 # X mode cadence: source the generated config so an X instance polls at its
@@ -159,23 +167,52 @@ write_epoch arming
 # Every non-actionable close is checked against the same identity-matched live
 # watcher and fresh-beacon predicate used by the turn-end guard before it is
 # retried or translated into an operator-visible failure.
+DESKTOP=0
+fm_afk_desktop_selected "$STATE" && DESKTOP=1
 OUT=
 ACTIONABLE=0
 HEALTHY=0
 attempt=0
 while [ "$attempt" -lt "$AUTOARM_ATTEMPTS" ]; do
+  [ -e "$STATE/.captain-hold" ] && exit 0
   attempt=$((attempt + 1))
   OUT=$(mktemp "$STATE/.claude-autoarm-output.XXXXXX") || OUT=
   if [ -n "$OUT" ]; then
-    "$SCRIPT_DIR/fm-watch-arm.sh" >"$OUT" 2>&1 || true
+    if [ "$DESKTOP" -eq 1 ]; then
+      FM_AFK_HOOK_STARTED=$HOOK_STARTED "$SCRIPT_DIR/fm-supervise-daemon.sh" --stop-hook >"$OUT" 2>&1 || true
+    else
+      "$SCRIPT_DIR/fm-watch-arm.sh" >"$OUT" 2>&1 || true
+    fi
   else
-    "$SCRIPT_DIR/fm-watch-arm.sh" >/dev/null 2>&1 || true
+    [ "$DESKTOP" -eq 1 ] || "$SCRIPT_DIR/fm-watch-arm.sh" >/dev/null 2>&1 || true
+  fi
+
+  # Return deselects Desktop and retires its coordinator: that close is the end
+  # of this owner, not a startup failure, so it records no failure episode.
+  if [ "$DESKTOP" -eq 1 ] && ! fm_afk_desktop_selected "$STATE"; then
+    write_epoch clean
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    exit 0
+  fi
+
+  if [ "$DESKTOP" -eq 0 ] && fm_afk_desktop_selected "$STATE"; then
+    DESKTOP=1
+    attempt=0
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    OUT=
+    continue
   fi
 
   # AFK may have appeared mid-cycle: the daemon owns triage now, so suppress
   # every subsequent classification and handoff.
-  if [ -e "$STATE/.afk" ]; then
+  if [ "$DESKTOP" -eq 0 ] && [ -e "$STATE/.afk" ]; then
     write_epoch afk
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    exit 0
+  fi
+
+  if [ -e "$STATE/.captain-hold" ]; then
+    write_epoch captain-hold
     [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
     exit 0
   fi
@@ -205,6 +242,28 @@ if ! need_supervision; then
   exit 0
 fi
 
+if [ -e "$STATE/.captain-hold" ]; then
+  write_epoch captain-hold
+  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+  exit 0
+fi
+
+handoff_rewake() {
+  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+  [ ! -e "$STATE/.captain-hold" ] || exit 0
+  [ "${2:-}" != notify ] || : > "$FAILURE_NOTICE" 2>/dev/null || true
+  if [ "$DESKTOP" -eq 1 ]; then
+    fm_afk_desktop_selected "$STATE" || exit 0
+    # shellcheck source=bin/fm-operational-input.sh
+    . "$SCRIPT_DIR/fm-operational-input.sh"
+    fm_operational_input_encode away-supervisor "${1:-Retry automatic away supervision.} $(fm_afk_turn_policy)" BANNER
+    printf '%s\n' "$BANNER" >&2
+  else
+    [ -z "${1:-}" ] || printf '%s\n' "$1" >&2
+  fi
+  exit 2
+}
+
 if [ "$HEALTHY" -eq 1 ]; then
   if fm_failure_episode_reset "$STATE"; then
     write_epoch clean
@@ -212,9 +271,11 @@ if [ "$HEALTHY" -eq 1 ]; then
     exit 0
   fi
   write_epoch failed-suppressed
-  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-  [ -e "$FAILURE_ALARM" ] && exit 0
-  exit 2
+  if [ -e "$FAILURE_ALARM" ]; then
+    [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
+    exit 0
+  fi
+  handoff_rewake
 fi
 
 # After the synchronous guard has consumed the episode's attended fail-open,
@@ -227,13 +288,21 @@ fi
 
 if [ "$ACTIONABLE" -eq 1 ]; then
   write_epoch rewake
-  {
+  BANNER=$(
     printf 'firstmate watcher wake - one supervision event needs a handling turn now.\n'
     [ -n "$OUT" ] && grep -E '^(signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | head -8
     printf 'Run bin/fm-wake-drain.sh first and handle the wake. This Stop hook owns watcher continuity: when the handling turn ends, the next needed cycle arms automatically - do NOT run bin/fm-watch-arm.sh after an ordinary wake.\n'
-  } >&2
-  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-  exit 2
+  )
+  if [ "$DESKTOP" -eq 1 ]; then
+    # A renewal delivers no batch, so acknowledging it would erase pending
+    # events firstmate was never shown; they stay for the next cycle's batch.
+    if grep -q '^check: away-renewal' "$OUT" 2>/dev/null; then
+      BANNER="$(cat "$OUT") Stay away: load /afk and drain with bin/fm-wake-drain.sh; this renewal delivered no batch, so skip acknowledgment. Handle authorized stops; park captain-only decisions durably and continue other work. The next Stop owns renewal."
+    else
+      BANNER="$(cat "$OUT") Stay away: load /afk, drain with bin/fm-wake-drain.sh, then run bin/fm-afk-launch.sh acknowledge. Handle authorized stops; park captain-only decisions durably and continue other work. The next Stop owns renewal."
+    fi
+  fi
+  handoff_rewake "$BANNER"
 fi
 
 # Notify only once for this continuous failure episode; every later invocation
@@ -241,15 +310,12 @@ fi
 # creating a repeated operator notice or manual-arm loop.
 if [ ! -e "$FAILURE_NOTICE" ]; then
   write_epoch failed
-  {
+  BANNER=$(
     printf 'firstmate watcher auto-arm FAILED - the Stop-owned automatic supervision mechanism is broken after %s bounded attempts, and no live watcher with a fresh beacon was verified.\n' "$attempt"
     [ -n "$OUT" ] && grep -E '^(watcher:|signal:|stale:|check:|heartbeat)' "$OUT" 2>/dev/null | head -8
     printf 'Do not launch a manual background arm from this notice; investigate the automatic Stop hook and watcher startup before ending blind.\n'
-  } >&2
-  : > "$FAILURE_NOTICE" 2>/dev/null || true
-  [ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-  exit 2
+  )
+  handoff_rewake "$BANNER" notify
 fi
 write_epoch failed-suppressed
-[ -z "$OUT" ] || rm -f "$OUT" 2>/dev/null || true
-exit 2
+handoff_rewake

@@ -91,6 +91,8 @@ run_cell() {  # <native|legacy> <exact-binary>
   umask 077
   mkdir -p "$lab"/{home,grok-home,bin,fmhome/state,fmhome/config}
   git clone -q --no-hardlinks "$ROOT" "$lab/project" || return 1
+  git -C "$lab/project" config --local commit.gpgsign false
+  git -C "$lab/project" config --local tag.gpgsign false
   # Before the candidate is committed, clone sees HEAD only. Apply the current
   # tracked diff so this opt-in gate always exercises the code under review.
   git -C "$ROOT" diff --binary HEAD -- > "$lab/candidate.patch" || return 1

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fm-afk-launch.sh - the single owner of the away-mode daemon TERMINAL lifecycle:
+# fm-afk-launch.sh - owner of away-mode delivery selection and terminal lifecycle:
 # launch it in a NON-VISIBLE tracked terminal per backend, record its exact id,
 # tear it down by that exact id, and reconcile a leaked one after a crash.
 #
@@ -29,6 +29,12 @@
 #   fm-afk-launch.sh start-native
 #                              Prepare lifecycle state for a harness-native
 #                              background job and record that no terminal exists.
+#   fm-afk-launch.sh start-desktop
+#                              Select the Claude Desktop Stop-hook coordinator;
+#                              no terminal is created. Refresh preserves pending
+#                              evidence. Stop before switching delivery paths.
+#   fm-afk-launch.sh acknowledge
+#                              Consume the Desktop batch after wake drain.
 #   fm-afk-launch.sh stop      Correct-ordered exit: SIGTERM the daemon so its
 #                              cleanup flushes WHILE state/.afk is still present,
 #                              wait for it, close the recorded terminal by exact
@@ -86,6 +92,8 @@ FM_AFK_LAUNCH_WS_LABEL="firstmate-afk-daemon"
 # shellcheck source=bin/fm-afk-start.sh
 . "$FM_AFK_LAUNCH_DIR/fm-afk-start.sh"
 set +e
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$FM_AFK_LAUNCH_DIR/fm-supervision-lib.sh"
 
 fm_afk_launch_log() { printf 'fm-afk-launch: %s\n' "$*" >&2; }
 
@@ -146,7 +154,7 @@ fm_afk_launch_lock_release() {
 }
 
 fm_afk_launch_usage() {
-  sed -n '2,34p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"
 }
 
 # The command run inside the created terminal. Real launch runs the shared
@@ -170,8 +178,8 @@ fm_afk_launch_flag_write() {
 }
 
 # Read the recorded terminal into FM_AFK_REC_BACKEND/FM_AFK_REC_TARGET. The third
-# field (a herdr workspace id, kept for the record's own documentation) is not
-# needed to close by id, so it is discarded. Returns 1 when no record exists.
+# field is a herdr workspace id, native, or desktop; none/-/desktop selects
+# Stop-hook delivery, and none/-/native retains harness-native pane delivery. Returns 1 when no record exists.
 fm_afk_launch_record_read() {
   local extra record
   FM_AFK_REC_BACKEND=""; FM_AFK_REC_TARGET=""; extra=""
@@ -187,7 +195,7 @@ fm_afk_launch_record_read() {
   case "$FM_AFK_REC_BACKEND" in
     herdr) [ -n "$extra" ] ;;
     tmux) : ;;
-    none) [ "$FM_AFK_REC_TARGET" = - ] && [ "$extra" = native ] ;;
+    none) [ "$FM_AFK_REC_TARGET" = - ] && { [ "$extra" = native ] || [ "$extra" = desktop ]; } ;;
     *) return 2 ;;
   esac || { fm_afk_launch_log "daemon terminal record is malformed; refusing to act on it"; return 2; }
 }
@@ -466,6 +474,7 @@ fm_afk_launch_start() {
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
     return 1
   fi
+  fm_afk_desktop_selected "$FM_AFK_LAUNCH_STATE" && { fm_afk_launch_log "Desktop owns away supervision; stop it before selecting pane delivery"; return 1; }
   # Capture the captain pane FIRST, before creating anything.
   captain_target=$(discover_supervisor_target) || {
     fm_afk_launch_log "could not resolve the captain supervisor pane (set FM_SUPERVISOR_TARGET)"; return 1; }
@@ -530,6 +539,7 @@ fm_afk_launch_start() {
 }
 
 fm_afk_launch_start_native() {
+  fm_afk_desktop_selected "$FM_AFK_LAUNCH_STATE" && { fm_afk_launch_log "Desktop owns away supervision; stop it before selecting pane delivery"; return 1; }
   local backup artifact had_afk=0 result=0
   mkdir -p "$FM_AFK_LAUNCH_STATE" || return 1
   if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
@@ -570,6 +580,32 @@ fm_afk_launch_start_native() {
     rm -rf "$backup" || result=1
   fi
   return "$result"
+}
+
+fm_afk_launch_start_desktop() {
+  if fm_afk_desktop_selected "$FM_AFK_LAUNCH_STATE"; then
+    fm_afk_launch_flag_write
+    return
+  fi
+  if [ -e "$FM_AFK_LAUNCH_STATE/.afk" ] || [ -e "$FM_AFK_LAUNCH_RECORD" ] || daemon_lock_held_by_live_daemon; then
+    fm_afk_launch_log "another away owner exists; stop it before selecting Desktop delivery"
+    return 1
+  fi
+  if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
+    fm_afk_launch_log "return catch-up is still pending"
+    return 1
+  fi
+  fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE" || return 1
+  fm_afk_launch_record_write none - desktop || return 1
+  if ! fm_afk_launch_flag_write; then
+    rm -f "$FM_AFK_LAUNCH_RECORD"
+    return 1
+  fi
+}
+
+fm_afk_launch_acknowledge() {
+  fm_afk_desktop_selected "$FM_AFK_LAUNCH_STATE" || return 1
+  fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE"
 }
 
 fm_afk_launch_stop() {
@@ -640,6 +676,8 @@ fm_afk_launch_main() {
   case "${1:-start}" in
     start) fm_afk_launch_start ;;
     start-native) fm_afk_launch_start_native ;;
+    start-desktop) fm_afk_launch_start_desktop ;;
+    acknowledge) fm_afk_launch_acknowledge ;;
     stop) fm_afk_launch_stop ;;
     reconcile) fm_afk_launch_reconcile ;;
     -h|--help|help) fm_afk_launch_usage ;;

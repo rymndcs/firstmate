@@ -69,6 +69,8 @@ new_bootstrap_world() {
   home="$world/home"
   mkdir -p "$home/config" "$home/data" "$home/state" "$root/bin"
   git init -q -b main "$root"
+  git -C "$root" config --local commit.gpgsign false
+  git -C "$root" config --local tag.gpgsign false
   printf '%s\n' 'config/' > "$root/.gitignore"
   printf '%s\n' '# Firstmate test root' > "$root/AGENTS.md"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$root/bin/placeholder.sh"
@@ -201,6 +203,8 @@ new_propagation_world() {
   mkdir -p "$home/config" "$home/data" "$home/state" "$root/bin"
   touch "$home/state/.last-watcher-beat"
   git init -q -b main "$root"
+  git -C "$root" config --local commit.gpgsign false
+  git -C "$root" config --local tag.gpgsign false
   printf '%s\n' 'config/' > "$root/.gitignore"
   printf '%s\n' '# Firstmate test root' > "$root/AGENTS.md"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$root/bin/placeholder.sh"

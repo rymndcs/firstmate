@@ -15,6 +15,9 @@ mkdir -p "$TMP_ROOT"
 # the current directory and the EXIT trap below would rm -rf this checkout.
 [ -n "$TMP_ROOT" ] || exit 1
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
+# shellcheck source=tests/remote-job-helpers.sh
+. "$ROOT/tests/remote-job-helpers.sh"
+fm_test_remote_job_init "$TMP_ROOT" || exit 1
 PARENT="$TMP_ROOT/parent"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
@@ -29,19 +32,11 @@ TMUX_STATE="$TMP_ROOT/remote-tmux.state"
 CLAIMS="$TMP_ROOT/claims"
 mkdir -p "$PARENT/data" "$PARENT/state" "$PARENT/config" "$PARENT/projects" "$REMOTE_ROOT" "$CLAIMS"
 cleanup() {
-  local worker_pid='' wait_attempt=0
   touch "$TMP_ROOT/provision.release" "$TMP_ROOT/seed.release" "$TMP_ROOT/handoff.release" \
     "$TMP_ROOT/inherit.release" "$TMP_ROOT/launch.release" 2>/dev/null || true
   FM_HOME="$PARENT" FM_PROCEVENT_CLAIM_ROOT="$CLAIMS" \
     "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true
-  if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then
-    worker_pid=$(cat "$TMP_ROOT/remote-jobs/worker.pid")
-    kill "$worker_pid" 2>/dev/null || true
-    while kill -0 "$worker_pid" 2>/dev/null && [ "$wait_attempt" -lt 100 ]; do
-      wait_attempt=$((wait_attempt + 1))
-      sleep 0.05
-    done
-  fi
+  fm_test_remote_job_cleanup || exit 1
   rm -rf -- "$TMP_ROOT"
 }
 trap cleanup EXIT
@@ -99,12 +94,16 @@ chmod +x "$REMOTE_ROOT/bin/tmux"
 install_remote_herdr_fixture "$REMOTE_ROOT" "$HERDR_STATE" "$HERDR_LOG" \
   "$TMP_ROOT/herdr-send-fail" "$TMP_ROOT/herdr.sock"
 git -C "$REMOTE_ROOT" init -q -b main
+git -C "$REMOTE_ROOT" config --local commit.gpgsign false
+git -C "$REMOTE_ROOT" config --local tag.gpgsign false
 git -C "$REMOTE_ROOT" config user.email test@example.com
 git -C "$REMOTE_ROOT" config user.name Test
 git -C "$REMOTE_ROOT" add .
 git -C "$REMOTE_ROOT" commit -qm 'remote fixture root'
 REMOTE_ORIGIN="$TMP_ROOT/firstmate-origin.git"
 git init -q --bare "$REMOTE_ORIGIN"
+git -C "$REMOTE_ORIGIN" config --local commit.gpgsign false
+git -C "$REMOTE_ORIGIN" config --local tag.gpgsign false
 git -C "$REMOTE_ROOT" remote add origin "file://$REMOTE_ORIGIN"
 git -C "$REMOTE_ROOT" push -q -u origin main
 git --git-dir="$REMOTE_ORIGIN" symbolic-ref HEAD refs/heads/main
@@ -112,7 +111,11 @@ git --git-dir="$REMOTE_ORIGIN" symbolic-ref HEAD refs/heads/main
 # One remote-backed direct-PR project. The remote home clones its origin, never
 # the primary working tree.
 git init -q --bare "$TMP_ROOT/alpha.git"
+git -C "$TMP_ROOT/alpha.git" config --local commit.gpgsign false
+git -C "$TMP_ROOT/alpha.git" config --local tag.gpgsign false
 git -C "$PARENT/projects" init -q -b main alpha
+git -C "$PARENT/projects/alpha" config --local commit.gpgsign false
+git -C "$PARENT/projects/alpha" config --local tag.gpgsign false
 git -C "$PARENT/projects/alpha" config user.email test@example.com
 git -C "$PARENT/projects/alpha" config user.name Test
 printf 'alpha\n' > "$PARENT/projects/alpha/README.md"
@@ -820,6 +823,8 @@ rm -f "$PARENT/state/.wake-queue"
 # and fast-forwards to that host-local commit without touching project clones.
 REMOTE_SEED="$TMP_ROOT/firstmate-seed"
 git clone -q "file://$REMOTE_ORIGIN" "$REMOTE_SEED"
+git -C "$REMOTE_SEED" config --local commit.gpgsign false
+git -C "$REMOTE_SEED" config --local tag.gpgsign false
 git -C "$REMOTE_SEED" config user.email test@example.com
 git -C "$REMOTE_SEED" config user.name Test
 printf 'remote update probe\n' > "$REMOTE_SEED/REMOTE_UPDATE_PROBE"

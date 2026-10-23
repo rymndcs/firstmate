@@ -219,12 +219,17 @@ write_composer() {
 case "${1:-}" in
   display-message)
     print=0
-    for a in "$@"; do case "$a" in *cursor_y*) printf '1\n'; exit 0 ;; esac; done
+    for a in "$@"; do
+      case "$a" in
+        *cursor_y*) printf '1\n'; exit 0 ;;
+        *pane_current_command*) printf '%s\n' "${FM_FAKE_CURRENT_COMMAND:-fakepane}"; exit 0 ;;
+      esac
+    done
     for a in "$@"; do [ "$a" = "-p" ] && print=1; done
     [ "$print" = 1 ] && printf 'fakepane\n'
     exit 0 ;;
   capture-pane) cat "$COMPOSER" 2>/dev/null; exit 0 ;;
-  list-windows) exit 0 ;;
+  list-windows) [ -z "${FM_FAKE_WINDOWS:-}" ] || printf '%s\n' "$FM_FAKE_WINDOWS"; exit 0 ;;
   send-keys)
     shift
     text=""; is_enter=0; lit=0

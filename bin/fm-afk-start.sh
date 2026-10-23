@@ -41,6 +41,8 @@ FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$FM_AFK_START_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$FM_AFK_START_DIR/fm-supervision-lib.sh"
 
 fm_afk_start_usage() {
   sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -117,6 +119,10 @@ fm_afk_start_main() {
     * ) echo "usage: $(basename "${BASH_SOURCE[1]:-fm-afk-start.sh}")" >&2; return 2 ;;
   esac
 
+  if fm_afk_desktop_selected "$FM_AFK_STATE"; then
+    echo 'afk: Desktop delivery owns away supervision; refusing pane entry' >&2
+    return 1
+  fi
   mkdir -p "$FM_AFK_STATE"
   if [ "${FM_AFK_STATE_PREPARED:-0}" = 1 ]; then
     [ -f "$FM_AFK_STATE/.afk" ] || { echo "afk: launcher-prepared state is missing" >&2; return 1; }

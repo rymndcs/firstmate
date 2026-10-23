@@ -132,6 +132,8 @@ make_primary_dir() {
   local dir=$1
   mkdir -p "$dir/state"
   git init -q "$dir"
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   git -C "$dir" commit -q --allow-empty -m init
   : > "$dir/AGENTS.md"
   install_guard_scripts "$dir"
@@ -819,6 +821,8 @@ test_codex_hook_ignores_nested_git_root_guard() {
   nested="$dir/projects/other"
   mkdir -p "$nested"
   git init -q "$nested"
+  git -C "$nested" config --local commit.gpgsign false
+  git -C "$nested" config --local tag.gpgsign false
   git -C "$nested" commit -q --allow-empty -m init
   mkdir -p "$nested/bin" "$nested/.codex"
   : > "$nested/AGENTS.md"
@@ -851,6 +855,8 @@ test_opencode_plugin_anchors_guard_to_worktree() {
   [ -f "$plugin" ] || fail "tracked OpenCode primary plugin is missing"
   parent="$TMP_ROOT/opencode-plugin-parent"
   git init -q "$parent"
+  git -C "$parent" config --local commit.gpgsign false
+  git -C "$parent" config --local tag.gpgsign false
   worktree_dir="$parent/nested/opencode-plugin-worktree"
   wrong_dir="$TMP_ROOT/opencode-plugin-cwd/subdir"
   mkdir -p "$worktree_dir/bin" "$wrong_dir"
@@ -902,6 +908,88 @@ EOF
   expect_code 0 "$status" "OpenCode plugin must run the guard from worktree even when directory is elsewhere"
   [ -z "$out" ] || fail "OpenCode plugin worktree-root test printed output: $out"
   pass ".opencode primary plugin: guard path is anchored to worktree, not directory"
+}
+
+test_omp_extension_maps_shared_owners_onto_native_events() {
+  local repo home ext log out status
+  repo="$TMP_ROOT/omp-ext-root"
+  home="$TMP_ROOT/omp-ext-home"
+  ext="$repo/.omp/extensions/fm-primary-omp.ts"
+  log="$TMP_ROOT/omp-ext.log"
+  mkdir -p "$repo/.omp/extensions" "$repo/bin" "$home/state"
+  cp "$ROOT/.omp/extensions/fm-primary-omp.ts" "$ext"
+  # Owner stubs record what the extension handed them; the guard blocks only a
+  # first stop, the way the real guard's one-block loop guard does.
+  cat > "$repo/bin/fm-turnend-guard.sh" <<'SH'
+#!/usr/bin/env bash
+payload=$(cat)
+printf 'guard ompcode=%s payload=%s\n' "${OMPCODE:-}" "$payload" >> "${FM_OMP_LOG:?}"
+case "$payload" in *'"stop_hook_active":true'*) exit 0 ;; esac
+printf 'omp guard fired\n' >&2
+exit 2
+SH
+  cat > "$repo/bin/fm-arm-pretool-check.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'arm %s\n' "$2" >> "${FM_OMP_LOG:?}"
+case "$2" in *'&') printf 'watcher-background denied\n' >&2; exit 2 ;; esac
+exit 0
+SH
+  cat > "$repo/bin/fm-cd-pretool-check.sh" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  cat > "$repo/bin/fm-sessionstart-nudge.sh" <<'SH'
+#!/usr/bin/env bash
+printf 'nudge\n' >> "${FM_OMP_LOG:?}"
+printf 'run session start\n'
+SH
+  chmod +x "$repo/bin/"*.sh
+  out=$(PLUGIN="$ext" FM_HOME="$home" FM_OMP_LOG="$log" node --input-type=module 2>&1 <<'EOF'
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const handlers = new Map();
+const sent = [];
+const pi = {
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
+  sendMessage(message, options) {
+    sent.push({ message, options });
+  },
+};
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+const log = () => readFileSync(process.env.FM_OMP_LOG, "utf8");
+
+await handlers.get("session_start")({ type: "session_start" }, { agent: { kind: "sub" } });
+if (sent.length !== 0) throw new Error("a subagent session was nudged to run session start");
+await handlers.get("session_start")({ type: "session_start" }, { agent: { kind: "main" } });
+if (sent.length !== 1) throw new Error(`main session nudge sent ${sent.length} messages`);
+if (sent[0].message.content !== "run session start") throw new Error(`nudge content: ${sent[0].message.content}`);
+if (sent[0].options?.deliverAs !== "nextTurn") throw new Error("nudge would start a turn instead of riding the first prompt");
+if (log().split("nudge").length !== 2) throw new Error("subagent session ran the nudge owner");
+
+const blocked = await handlers.get("session_stop")({ type: "session_stop", stop_hook_active: false });
+if (blocked?.decision !== "block") throw new Error(`a blind first stop was not blocked: ${JSON.stringify(blocked)}`);
+if (!blocked.reason.includes("omp guard fired")) throw new Error(`block reason lost guard stderr: ${blocked.reason}`);
+const allowed = await handlers.get("session_stop")({ type: "session_stop", stop_hook_active: true });
+if (allowed?.decision) throw new Error("the stop after a block was refused again");
+if (!log().includes('guard ompcode=1 payload={"stop_hook_active":false}')) throw new Error(`guard did not run as omp: ${log()}`);
+
+const denied = await handlers.get("tool_call")({ type: "tool_call", toolName: "bash", input: { command: "bin/fm-watch-arm.sh &" } });
+if (denied?.block !== true || !denied.reason.includes("watcher-background")) throw new Error(`shell & arm was not denied: ${JSON.stringify(denied)}`);
+const ok = await handlers.get("tool_call")({ type: "tool_call", toolName: "bash", input: { command: "exec bin/fm-watch-arm.sh" } });
+if (ok?.block) throw new Error("the blessed arm command was denied");
+const before = log();
+await handlers.get("tool_call")({ type: "tool_call", toolName: "read", input: { path: "x" } });
+if (log() !== before) throw new Error("a non-bash tool ran the seatbelt");
+EOF
+)
+  status=$?
+  expect_code 0 "$status" "omp extension must map the shared owners onto session_start, session_stop, and tool_call"
+  [ -z "$out" ] || fail "omp extension test printed output: $out"
+  pass ".omp primary extension: nudge, turn-end block, and arm seatbelt reach the shared owners"
 }
 
 test_pi_extension_injects_once_per_logical_agent_run() {
@@ -1067,10 +1155,13 @@ run_integrated_autoarm() {
   local dir=$1 home
   home=$(cd "$dir" && pwd)
   # shellcheck disable=SC2016 # the fake harness expands FM_HOME inside its child shell.
+  # The trailing exit keeps bash 5 from exec-ing the auto-arm in place of the
+  # fake harness, which must stay its live lock-owning parent.
   printf '{"session_id":"sess-claude-mode","stop_hook_active":false}\n' \
     | FM_HOME="$home" "$dir/fake-claude" -c '
         printf "%s\n" "$$" > "$FM_HOME/state/.lock"
         "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+        exit $?
       ' 2>&1
 }
 
@@ -1580,6 +1671,7 @@ test_codex_hook_ignores_nested_git_root_guard
 test_opencode_plugin_anchors_guard_to_worktree
 test_pi_extension_injects_once_per_logical_agent_run
 test_pi_extension_retries_after_followup_delivery_failure
+test_omp_extension_maps_shared_owners_onto_native_events
 test_hook_claude_mode_reblocks_stop_hook_active_when_unhealthy
 test_hook_claude_mode_reblocks_x_mode_without_tasks
 test_hook_claude_mode_allows_when_autoarm_owner_alive
@@ -1598,3 +1690,334 @@ test_hook_claude_mode_away_mode_never_uses_stop_autoarm_fail_open
 test_hook_claude_mode_allow_resets_budget
 test_hook_claude_mode_waits_for_late_claim
 test_hook_claude_mode_secondmate_reblocks_like_primary
+
+test_claude_captain_hold_allows_stop() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/guard-captain-hold")
+  : > "$dir/state/task.meta"
+  : > "$dir/state/.captain-hold"
+  out=$(printf '{"stop_hook_active":true}' | FM_HOME="$dir" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 "$dir/bin/fm-turnend-guard.sh" --claude 2>&1); status=$?
+  expect_code 0 "$status" 'Claude hold must allow Stop with no watcher'
+  [ -z "$out" ] || fail 'held Claude guard printed output'
+  [ ! -e "$dir/state/.turnend-claude-blocks" ] || fail 'held guard consumed block budget'
+  out=$(run_hook "$dir" false); status=$?
+  expect_code 2 "$status" 'hold must not disable other harness guards'
+  pass 'captain hold: Claude Stop allowed; other harnesses still guarded'
+}
+test_claude_captain_hold_allows_stop
+
+test_omp_captain_hold_allows_stop() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/guard-omp-captain-hold")
+  : > "$dir/state/task.meta"
+  out=$(printf '{"stop_hook_active":false}' | FM_HOME="$dir" "$dir/bin/fm-turnend-guard.sh" --omp 2>&1); status=$?
+  expect_code 2 "$status" 'unheld omp Stop with no watcher must block'
+  : > "$dir/state/.captain-hold"
+  out=$(printf '{"stop_hook_active":false}' | FM_HOME="$dir" "$dir/bin/fm-turnend-guard.sh" --omp 2>&1); status=$?
+  expect_code 0 "$status" 'held omp Stop must be allowed'
+  [ -z "$out" ] || fail "held omp guard printed output: $out"
+  pass 'captain hold: omp Stop allowed silently; unheld omp still guarded'
+}
+test_omp_captain_hold_allows_stop
+
+
+test_claude_captain_hold_late_repair() {
+  local mode=$1 dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/guard-hold-late-repair-$mode")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$dir/bin/"
+  : > "$dir/state/task.meta"
+  case "$mode" in
+    contention)
+      mkdir "$dir/state/.turnend-claude-blocks.lock"
+      printf '%s\n' "$$" > "$dir/state/.turnend-claude-blocks.lock/pid"
+      ;;
+    suppressed) seed_claude_failure "$dir" ;;
+    terminal)
+      seed_claude_failure "$dir"
+      seed_claude_budget "$dir" 3
+      : > "$dir/state/.claude-autoarm-failure-alarmed"
+      ;;
+  esac
+  cat > "$dir/bin/fm-supervision-instructions.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+"$FM_HOME/bin/fm-captain-hold.sh" set 'late hold during repair preparation'
+printf 'repair supervision\n'
+FIXTURE
+  chmod +x "$dir/bin/fm-supervision-instructions.sh"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  assert_present "$dir/state/.captain-hold" 'repair did not inject late hold'
+  expect_code 0 "$status" "$mode repair late hold must allow Stop"
+  [ -z "$out" ] || fail "$mode repair late hold leaked banner: $out"
+  pass "captain hold: Claude $mode repair preparation allows silent Stop"
+}
+
+test_claude_captain_hold_late_recovery() {
+  local mode=$1 dir identity out status
+  dir=$(make_primary_dir "$TMP_ROOT/guard-hold-late-recovery-$mode")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$dir/bin/"
+  : > "$dir/state/task.meta"
+  identity=$(watcher_identity "$dir" "$$") || fail 'could not identify test parent'
+  record_watcher_lock "$dir" "$$" "$identity"
+  touch "$dir/state/.last-watcher-beat"
+  if [ "$mode" != initial ]; then
+    mv "$dir/state/.watch.lock" "$dir/state/watcher-candidate"
+    mkdir "$dir/state/.claude-autoarm.lock"
+    printf '%s\n' "$$" > "$dir/state/.claude-autoarm.lock/pid"
+    printf 'autoarm\n' > "$dir/state/.claude-autoarm.lock/role"
+  fi
+  mkdir "$dir/latebin"
+  cat > "$dir/latebin/cat" <<'FIXTURE'
+#!/usr/bin/env bash
+if [ "${1:-}" = "$FM_HOME/state/.claude-autoarm.lock/pid" ] && [ -d "$FM_HOME/state/watcher-candidate" ]; then
+  mv "$FM_HOME/state/watcher-candidate" "$FM_HOME/state/.watch.lock"
+fi
+exec /bin/cat "$@"
+FIXTURE
+  cat > "$dir/latebin/rm" <<'FIXTURE'
+#!/usr/bin/env bash
+if [ "${1:-}" = -f ] && [ "${2:-}" = "$FM_HOME/state/.turnend-claude-blocks" ]; then
+  "$FM_HOME/bin/fm-captain-hold.sh" set 'late hold during failed recovery'
+  exit 1
+fi
+exec /bin/rm "$@"
+FIXTURE
+  chmod +x "$dir/latebin/"*
+  case "$mode" in
+    loop) out=$(PATH="$dir/latebin:$PATH" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=100 run_hook_claude "$dir" true); status=$? ;;
+    *) out=$(PATH="$dir/latebin:$PATH" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$? ;;
+  esac
+  assert_present "$dir/state/.captain-hold" "$mode reset did not inject late hold"
+  expect_code 0 "$status" "$mode recovery late hold must allow Stop"
+  [ -z "$out" ] || fail "$mode recovery late hold leaked output: $out"
+  pass "captain hold: Claude $mode recovery failure allows silent Stop"
+}
+
+test_claude_captain_hold_terminal_at_entry() {
+  local dir out status n
+  dir=$(make_primary_dir "$TMP_ROOT/guard-held-terminal-entry")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$dir/bin/"
+  install_integrated_autoarm "$dir"
+  write_integrated_failed_arm "$dir"
+  : > "$dir/state/task.meta"
+  seed_claude_failure "$dir"
+  seed_claude_budget "$dir" 4 3
+  cp "$dir/state/.turnend-claude-blocks" "$dir/budget-before"
+  printf 'queued-event\n' > "$dir/state/.wake-queue"
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" set 'decision pending'
+  cp "$dir/state/.captain-hold" "$dir/hold-before"
+  out=$(run_integrated_autoarm "$dir"); status=$?
+  expect_code 0 "$status" 'held auto-arm must not request a turn'
+  [ -z "$out" ] || fail 'held auto-arm emitted output'
+  for n in 1 2 3; do
+    out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+    expect_code 0 "$status" 'held terminal Stop must allow without continuation'
+    if [ "$n" = 1 ]; then
+      assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' 'held-at-entry terminal warning was hidden'
+      [ "$(printf '%s' "$out" | jq -r '.systemMessage' | wc -l | tr -d ' ')" = 1 ] || fail 'terminal warning was not one JSON message'
+    else
+      [ -z "$out" ] || fail 'held terminal warning repeated'
+    fi
+    assert_present "$dir/state/.claude-autoarm-failure-alarmed" 'held terminal alarm was not retained'
+    cmp -s "$dir/budget-before" "$dir/state/.turnend-claude-blocks" || fail 'held terminal Stop advanced its budget'
+    cmp -s "$dir/hold-before" "$dir/state/.captain-hold" || fail 'terminal warning changed the hold'
+    [ "$(cat "$dir/state/.wake-queue")" = queued-event ] || fail 'terminal warning consumed the queue'
+    assert_absent "$dir/state/.claude-autoarm.lock" 'terminal Stop retained owner lock'
+    assert_absent "$dir/state/.turnend-claude-blocks.lock" 'terminal Stop retained budget lock'
+  done
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" clear
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  expect_code 2 "$status" 'released unhealthy Stop must use its ordinary guard'
+  assert_not_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' 'dismissal repeated a delivered warning'
+  pass 'captain hold: held-at-entry terminal warning delivered once without automatic turns'
+}
+
+test_claude_captain_hold_terminal_eligibility() {
+  local dir mode out status
+  for mode in budget missing-budget malformed-budget session notice epoch rewake away owner budget-lock no-work healthy; do
+    dir=$(make_primary_dir "$TMP_ROOT/guard-held-ineligible-$mode")
+    : > "$dir/state/task.meta"
+    : > "$dir/state/.captain-hold"
+    seed_claude_failure "$dir"
+    seed_claude_budget "$dir" 4 3
+    case "$mode" in
+      budget) seed_claude_budget "$dir" 3 3 ;;
+      missing-budget) rm "$dir/state/.turnend-claude-blocks" ;;
+      malformed-budget) seed_claude_budget "$dir" invalid 3 ;;
+      session) printf 'session=other\ncount=4\nepoch=3\n' > "$dir/state/.turnend-claude-blocks" ;;
+      notice) rm "$dir/state/.claude-autoarm-failure-notified" ;;
+      epoch) rm "$dir/state/.claude-autoarm-epoch" ;;
+      rewake) seed_claude_failure "$dir" rewake ;;
+      away) : > "$dir/state/.afk" ;;
+      owner) record_autoarm_owner "$dir" "$$" ;;
+      budget-lock)
+        mkdir "$dir/state/.turnend-claude-blocks.lock"
+        printf '%s\n' "$$" > "$dir/state/.turnend-claude-blocks.lock/pid"
+        ;;
+      no-work) rm "$dir/state/task.meta" ;;
+      healthy)
+        record_watcher_lock "$dir" "$$" "$(watcher_identity "$dir" "$$")"
+        touch "$dir/state/.last-watcher-beat"
+        ;;
+    esac
+    [ ! -e "$dir/state/.turnend-claude-blocks" ] || cp "$dir/state/.turnend-claude-blocks" "$dir/budget-before"
+    out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+    expect_code 0 "$status" "$mode held Stop must not request a turn"
+    [ -z "$out" ] || fail "$mode held Stop emitted an ineligible warning: $out"
+    assert_absent "$dir/state/.claude-autoarm-failure-alarmed" "$mode held Stop claimed an ineligible alarm"
+    if [ -e "$dir/budget-before" ]; then
+      cmp -s "$dir/budget-before" "$dir/state/.turnend-claude-blocks" || fail "$mode held Stop changed budget"
+    else
+      assert_absent "$dir/state/.turnend-claude-blocks" 'held Stop created a budget'
+    fi
+  done
+  pass 'captain hold: terminal eligibility, session, ownership and budget checks preserved'
+}
+
+test_claude_captain_hold_late_terminal_output() {
+  local dir out status identity
+  dir=$(make_primary_dir "$TMP_ROOT/guard-hold-late-terminal-output")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$dir/bin/"
+  install_integrated_autoarm "$dir"
+  write_integrated_failed_arm "$dir"
+  : > "$dir/state/task.meta"
+  seed_claude_failure "$dir"
+  seed_claude_budget "$dir" 3
+  mkdir "$dir/latebin"
+  cat > "$dir/latebin/rm" <<'FIXTURE'
+#!/usr/bin/env bash
+if [ -e "$FM_HOME/state/.claude-autoarm-failure-alarmed" ] && [ ! -e "$FM_HOME/state/.captain-hold" ]; then
+  "$FM_HOME/bin/fm-captain-hold.sh" set 'late hold during terminal cleanup'
+fi
+exec /bin/rm "$@"
+FIXTURE
+  chmod +x "$dir/latebin/rm"
+  out=$(PATH="$dir/latebin:$PATH" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  assert_present "$dir/state/.captain-hold" 'terminal cleanup did not inject late hold'
+  expect_code 0 "$status" 'terminal late hold must allow Stop'
+  assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' 'late hold hid terminal warning'
+  assert_present "$dir/state/.claude-autoarm-failure-alarmed" 'late hold removed the terminal alarm'
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" 'repeated held Stop must allow silently'
+  [ -z "$out" ] || fail 'late-held terminal warning repeated'
+  FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" clear
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  expect_code 2 "$status" 'consumed terminal warning must leave later unhealthy Stops blocking'
+  assert_not_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' 'successful terminal warning repeated'
+  out=$(run_integrated_autoarm "$dir"); status=$?
+  expect_code 0 "$status" 'consumed terminal warning must suppress later auto-arm continuation'
+  [ -z "$out" ] || fail 'consumed terminal warning leaked auto-arm output'
+  identity=$(watcher_identity "$dir" "$$") || fail 'could not identify test parent'
+  record_watcher_lock "$dir" "$$" "$identity"
+  touch "$dir/state/.last-watcher-beat"
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  expect_code 0 "$status" 'positive recovery must clear the consumed failure episode'
+  assert_absent "$dir/state/.claude-autoarm-failure-alarmed" 'positive recovery retained the consumed warning'
+  assert_absent "$dir/state/.claude-autoarm-failure-notified" 'positive recovery retained the prior failure notice'
+  assert_absent "$dir/state/.turnend-claude-blocks" 'positive recovery retained the failure budget'
+  pass 'captain hold: late hold permits terminal warning once and recovery clears its episode'
+}
+
+test_claude_terminal_warning_output_failure() {
+  local dir out status
+  dir=$(make_primary_dir "$TMP_ROOT/guard-terminal-output-failure")
+  : > "$dir/state/task.meta"
+  seed_claude_failure "$dir"
+  seed_claude_budget "$dir" 3
+  printf '{"stop_hook_active":true,"session_id":"sess-claude-mode"}' \
+    | CLAUDECODE=1 FM_HOME="$dir" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 \
+      bash "$dir/bin/fm-turnend-guard.sh" --claude 1>&- 2>"$dir/output-error"
+  status=$?
+  assert_contains "$(cat "$dir/output-error")" 'Bad file descriptor' 'closed stdout did not exercise warning write failure'
+  assert_present "$dir/state/.claude-autoarm-failure-alarmed" 'stdout failure rolled back the original once-only claim'
+  expect_code 0 "$status" 'terminal stdout failure must preserve pre-hold allow semantics'
+  assert_present "$dir/state/.claude-autoarm-failure-notified" 'stdout failure reset the failure episode'
+  assert_absent "$dir/state/.claude-autoarm.lock" 'stdout failure retained auto-arm ownership'
+  assert_absent "$dir/state/.turnend-claude-blocks.lock" 'stdout failure retained budget ownership'
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  expect_code 2 "$status" 'later unhealthy Stop must use the ordinary guard'
+  assert_not_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' 'stdout failure repeated a claimed warning'
+  pass 'terminal warning: stdout failure retains original once-only claim and allow semantics'
+}
+
+test_claude_terminal_warning_replacement_alarm() {
+  local mode=$1 dir out status identity
+  dir=$(make_primary_dir "$TMP_ROOT/guard-terminal-replacement-$mode")
+  cp "$ROOT/bin/fm-captain-hold.sh" "$dir/bin/"
+  install_integrated_autoarm "$dir"
+  write_integrated_failed_arm "$dir"
+  : > "$dir/state/task.meta"
+  seed_claude_failure "$dir"
+  seed_claude_budget "$dir" 3
+  identity=$(watcher_identity "$dir" "$$") || fail 'test parent identity absent'
+  record_watcher_lock "$dir" "$$" "$identity"
+  mv "$dir/state/.watch.lock" "$dir/state/recovery-candidate"
+  cat > "$dir/recover-and-fail.sh" <<'FIXTURE'
+#!/usr/bin/env bash
+payload='{"stop_hook_active":true,"session_id":"sess-claude-mode"}'
+guard() { printf '%s' "$payload" | FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 bash "$FM_HOME/bin/fm-turnend-guard.sh" --claude; }
+auto() { printf '%s' "$payload" | "$FM_HOME/fake-claude" -c 'printf "%s\n" "$$" > "$FM_HOME/state/.lock"; "$FM_HOME/bin/fm-claude-stop-autoarm.sh"; exit $?'; }
+mv "$FM_HOME/state/recovery-candidate" "$FM_HOME/state/.watch.lock"
+touch "$FM_HOME/state/.last-watcher-beat"
+guard > "$FM_HOME/recovery.out" 2>&1 || exit 11
+[ ! -e "$FM_HOME/state/.claude-autoarm-failure-alarmed" ] || exit 12
+mv "$FM_HOME/state/.watch.lock" "$FM_HOME/state/recovered-watcher"
+for i in 0 1 2 3 4; do
+  auto > "$FM_HOME/auto-$i.out" 2>&1
+  guard > "$FM_HOME/guard-$i.out" 2>&1
+done
+grep -q 'GENUINELY DOWN' "$FM_HOME/guard-4.out" || exit 13
+[ -e "$FM_HOME/state/.claude-autoarm-failure-alarmed" ] || exit 14
+printf 'replacement-episode\n' > "$FM_HOME/state/.claude-autoarm-failure-alarmed"
+[ "$FM_REPLACEMENT_MODE" = stdout ] || "$FM_HOME/bin/fm-captain-hold.sh" set 'hold after replacement delivered'
+: > "$FM_HOME/replacement-created"
+FIXTURE
+  mkdir "$dir/latebin"
+  cat > "$dir/latebin/rm" <<'FIXTURE'
+#!/usr/bin/env bash
+if [ "${1:-}" = -f ] && [ "${2:-}" = "$FM_HOME/state/.claude-autoarm.lock" ] && [ -e "$FM_HOME/state/.claude-autoarm-failure-alarmed" ] && (set -C; : > "$FM_HOME/interleaving-once") 2>/dev/null; then
+  /bin/rm "$@" || exit "$?"
+  bash "$FM_HOME/recover-and-fail.sh" || exit "$?"
+  exit 0
+fi
+exec /bin/rm "$@"
+FIXTURE
+  chmod +x "$dir/latebin/rm" "$dir/recover-and-fail.sh"
+  if [ "$mode" = stdout ]; then
+    printf '{"stop_hook_active":true,"session_id":"sess-claude-mode"}' \
+      | PATH="$dir/latebin:$PATH" FM_REPLACEMENT_MODE="$mode" FM_HOME="$dir" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 \
+        bash "$dir/bin/fm-turnend-guard.sh" --claude 1>&- 2>"$dir/outer-error"
+    status=$?; out=
+    assert_contains "$(cat "$dir/outer-error")" 'Bad file descriptor' 'replacement stdout mode did not reach output failure'
+  else
+    out=$(PATH="$dir/latebin:$PATH" FM_REPLACEMENT_MODE="$mode" FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  fi
+  assert_present "$dir/replacement-created" 'verified recovery and replacement episode did not complete'
+  assert_present "$dir/state/.claude-autoarm-failure-alarmed" 'old terminal cleanup deleted the replacement alarm'
+  [ "$(cat "$dir/state/.claude-autoarm-failure-alarmed")" = replacement-episode ] || fail 'old terminal cleanup changed the replacement alarm'
+  expect_code 0 "$status" 'old terminal handler must preserve original allow semantics'
+  if [ "$mode" = hold ]; then
+    assert_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' 'late replacement hold hid the old claimed warning'
+    FM_HOME="$dir" "$dir/bin/fm-captain-hold.sh" clear
+  fi
+  out=$(FM_CLAUDE_AUTOARM_SYNC_WAIT_MS=0 run_hook_claude "$dir" true); status=$?
+  expect_code 2 "$status" 'replacement episode retry must use ordinary guard'
+  assert_not_contains "$out" 'FIRSTMATE SUPERVISION IS GENUINELY DOWN' 'replacement episode warning duplicated'
+  pass "terminal warning: $mode old handler retains the later episode alarm without duplicate"
+}
+
+test_claude_captain_hold_late_handoffs() {
+  local late_mode
+  for late_mode in ordinary contention suppressed terminal; do
+    test_claude_captain_hold_late_repair "$late_mode"
+  done
+  for late_mode in initial loop final; do
+    test_claude_captain_hold_late_recovery "$late_mode"
+  done
+  test_claude_captain_hold_late_terminal_output
+  test_claude_captain_hold_terminal_at_entry
+  test_claude_captain_hold_terminal_eligibility
+  test_claude_terminal_warning_replacement_alarm hold
+  test_claude_terminal_warning_replacement_alarm stdout
+  test_claude_terminal_warning_output_failure
+}
+test_claude_captain_hold_late_handoffs

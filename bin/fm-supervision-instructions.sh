@@ -8,6 +8,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$REPO_ROOT}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 CONFIG="${FM_CONFIG_OVERRIDE:-$FM_HOME/config}"
+# shellcheck source=bin/fm-supervision-lib.sh
+. "$SCRIPT_DIR/fm-supervision-lib.sh"
+STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 DOC_DIR="$REPO_ROOT/docs/supervision-protocols"
 
 HARNESS=
@@ -81,7 +84,7 @@ if [ -z "$HARNESS" ]; then
 fi
 
 case "$HARNESS" in
-  claude|codex|opencode|pi|grok) SNIPPET="$DOC_DIR/$HARNESS.md" ;;
+  claude|codex|opencode|pi|grok|omp) SNIPPET="$DOC_DIR/$HARNESS.md" ;;
   pi-signed) SNIPPET="$DOC_DIR/pi.md" ;;
   *) HARNESS=unknown; SNIPPET="$DOC_DIR/unknown.md" ;;
 esac
@@ -120,6 +123,10 @@ repair_line() {
     printf '%s\n' 'Watcher repair belongs to the session holding the fleet lock; do not drain, arm, or repair from this read-only session.'
     return 0
   fi
+  if [ "$AFK" -eq 1 ] && fm_afk_desktop_selected "$STATE"; then
+    printf '%s\n' 'Desktop away mode uses Stop-owned recovery; load /afk and inspect the Stop hook before ending blind.'
+    return 0
+  fi
   if [ "$AFK" -eq 1 ]; then
     printf '%s\n' 'Away mode owns watcher supervision; load /afk and ensure the daemon is running instead of starting normal supervision directly.'
     return 0
@@ -149,6 +156,9 @@ repair_line() {
     grok)
       printf '%s%s\n' "$prefix" 'repair missing watcher supervision with bin/fm-watch-arm.sh as its own Grok tracked background task, never shell &.'
       ;;
+    omp)
+      printf '%s%s\n' "$prefix" 'repair missing watcher supervision with bin/fm-watch-arm.sh as its own omp bash call with async: true and timeout: 0, never shell &.'
+      ;;
     *)
       printf '%s%s\n' "$prefix" 'repair missing watcher supervision according to the session-start block for this harness; do not use shell &.'
       ;;
@@ -172,6 +182,9 @@ ordinary_wake_line() {
     grok)
       printf '%s\n' '- Ordinary wake: re-arm exactly one bin/fm-watch-arm.sh Grok tracked background task as directed below.'
       ;;
+    omp)
+      printf '%s\n' '- Ordinary wake: re-arm exactly one bin/fm-watch-arm.sh omp async bash job as directed below.'
+      ;;
     *)
       printf '%s\n' '- Ordinary wake: follow the continuation in the harness protocol below; do not use shell &.'
       ;;
@@ -194,7 +207,11 @@ else
   printf '%s\n' '- Lock: held by this session; this session owns normal supervision unless away mode says otherwise.'
 fi
 if [ "$AFK" -eq 1 ]; then
-  printf '%s\n' '- Away mode: active; load /afk and keep normal harness supervision paused while the daemon owns the watcher.'
+  if fm_afk_desktop_selected "$STATE"; then
+    printf '%s\n' '- Away mode: active; load /afk, follow its output policy, and keep the Stop hook as the only supervision owner.'
+  else
+    printf '%s\n' '- Away mode: active; load /afk and keep normal harness supervision paused while the daemon owns the watcher.'
+  fi
 else
   printf '%s\n' '- Away mode: inactive.'
 fi

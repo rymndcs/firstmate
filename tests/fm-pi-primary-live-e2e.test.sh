@@ -175,6 +175,8 @@ run_native_ahoy_regressions() {
     "$first_home/state" "$first_home/config" \
     "$later_home/state" "$later_home/config"
   git init -q "$AHOY_PROJECT"
+  git -C "$AHOY_PROJECT" config --local commit.gpgsign false
+  git -C "$AHOY_PROJECT" config --local tag.gpgsign false
   cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$AHOY_PROJECT/.pi/extensions/"
   cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$AHOY_PROJECT/.pi/extensions/lib/"
   cp \
@@ -246,6 +248,8 @@ run_native_ahoy_regressions() {
 
 mkdir -p "$LAB"
 git clone -q "$ROOT" "$PROJECT"
+git -C "$PROJECT" config --local commit.gpgsign false
+git -C "$PROJECT" config --local tag.gpgsign false
 run_ahoy_transcript_regressions
 run_native_ahoy_regressions
 mkdir -p "$PROJECT/.pi/extensions/lib"

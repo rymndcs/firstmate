@@ -315,6 +315,7 @@ if [ "$LOCK_RC" -ne 0 ]; then
   }
 fi
 if [ "$READ_ONLY" -eq 0 ]; then
+  rm -f "$STATE/.captain-hold"
   fm_trace_context_session_start "$CONFIG" "$STATE/.trace-context-effective"
 fi
 
@@ -377,6 +378,12 @@ if [ "$PRIMARY_HARNESS" = pi ] || [ "$PRIMARY_HARNESS" = pi-signed ]; then
   if ! pi_extension_loaded "$PI_WATCH_MARKER" "$PI_WATCH_VERSION" "$PI_LOCK" \
     || ! pi_extension_loaded "$PI_TURNEND_MARKER" "$PI_TURNEND_VERSION" "$PI_LOCK"; then
     printf 'PI_WATCH_EXTENSION: not loaded - approve Pi project trust once per clone, then restart %s so %s and %s auto-load for turn-end guard and background wake coverage; use -e %s -e %s only if project hooks are not trusted\n' "$PI_RESTART_COMMAND" "$PI_TURNEND_EXT" "$PI_EXT" "$PI_TURNEND_EXT" "$PI_EXT"
+  fi
+fi
+if [ "$PRIMARY_HARNESS" = omp ]; then
+  OMP_EXT="$FM_ROOT/.omp/extensions/fm-primary-omp.ts"
+  if ! pi_extension_loaded "$STATE/.omp-extension-loaded" "$(hash_file "$OMP_EXT" || printf '')" "$STATE/.lock"; then
+    printf 'OMP_EXTENSION: not loaded - restart omp from %s without --no-extensions so %s auto-loads for the turn-end guard and the watcher-arm seatbelt\n' "$FM_ROOT" "$OMP_EXT"
   fi
 fi
 "$SCRIPT_DIR/fm-supervision-instructions.sh" \

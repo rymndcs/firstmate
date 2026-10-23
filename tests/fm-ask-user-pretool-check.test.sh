@@ -39,6 +39,8 @@ install_guard() {
 make_primary_home() {
   local dir=$1
   git init -q "$dir"
+  git -C "$dir" config --local commit.gpgsign false
+  git -C "$dir" config --local tag.gpgsign false
   git -C "$dir" commit -q --allow-empty -m init
   : > "$dir/AGENTS.md"
   mkdir -p "$dir/state"
@@ -442,6 +444,8 @@ test_inert_outside_a_primary_home() {
 
   nonfm="$TMP_ROOT/scope-nonfm"
   git init -q "$nonfm"
+  git -C "$nonfm" config --local commit.gpgsign false
+  git -C "$nonfm" config --local tag.gpgsign false
   git -C "$nonfm" commit -q --allow-empty -m init
   mkdir -p "$nonfm/state"
   install_guard "$nonfm"   # bin/ and state/ present, but no AGENTS.md

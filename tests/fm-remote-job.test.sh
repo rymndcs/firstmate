@@ -12,6 +12,9 @@ mkdir -p "$TMP_ROOT"
 # the current directory and the EXIT trap below would rm -rf this checkout.
 [ -n "$TMP_ROOT" ] || exit 1
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
+# shellcheck source=tests/remote-job-helpers.sh
+. "$ROOT/tests/remote-job-helpers.sh"
+fm_test_remote_job_init "$TMP_ROOT" || exit 1
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
 ACCOUNT_HOME="$TMP_ROOT/account"
@@ -22,7 +25,419 @@ REAL_GIT=$(command -v git)
 OTHER_PID=
 RECOVERY_WORKER_PID=
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
-trap 'if [ -n "$OTHER_PID" ]; then kill "$OTHER_PID" 2>/dev/null || true; fi; if [ -n "$RECOVERY_WORKER_PID" ]; then kill "$RECOVERY_WORKER_PID" 2>/dev/null || true; fi; if [ -f "$STATE_ROOT/worker.pid" ]; then kill "$(cat "$STATE_ROOT/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+trap 'if [ -n "$OTHER_PID" ]; then kill "$OTHER_PID" 2>/dev/null || true; fi; fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"' EXIT
+
+worker_fixture() {
+  local dir=$1
+  mkdir -p "$dir/root/bin" "$dir/account"
+  cp "$ROOT/bin/fm-remote-job-lib.sh" "$ROOT/bin/fm-remote-job-worker.sh" "$dir/root/bin/"
+  printf 'fixture\n' > "$dir/root/CLAUDE.md"
+}
+
+worker_wait_ready() {
+  local dir=$1 attempt=0
+  while [ "$attempt" -lt 100 ]; do
+    [ ! -f "$dir/state/worker.ready" ] || return 0
+    attempt=$((attempt + 1))
+    sleep 0.01
+  done
+  fail "lifetime fixture worker did not become ready"
+}
+
+worker_wait_gone() {
+  local pid=$1 attempt=0
+  while kill -0 "$pid" 2>/dev/null && [ "$attempt" -lt 100 ]; do
+    attempt=$((attempt + 1))
+    sleep 0.01
+  done
+  kill -0 "$pid" 2>/dev/null && fail "worker survived removal of its directories"
+  wait "$pid" || fail "worker directory removal did not exit cleanly"
+}
+
+preparation_cleanup() {
+  local pid start current
+  touch "$PREPARATION/release" "$PREPARATION/drain-release"
+  while IFS=$'\t' read -r pid start; do
+    current=$(ps -p "$pid" -o lstart= 2>/dev/null) || continue
+    [ "$current" = "$start" ] || continue
+    kill -TERM "$pid" 2>/dev/null || true
+  done < "$PREPARATION/readers"
+  if [ -n "${PREPARATION_PID:-}" ]; then
+    if fm_test_remote_job_owned_alive "$FM_TEST_REMOTE_JOB_REGISTRY/$PREPARATION_PID"; then
+      kill -TERM "$PREPARATION_PID" 2>/dev/null || true
+    fi
+    wait "$PREPARATION_PID" 2>/dev/null || true
+  fi
+}
+
+# shellcheck disable=SC2030,SC2031 # Preparation fixture settings are subshell-local.
+for PREP_PHASE in validation output output-stdout output-stderr output-drain publication; do
+  for WORKER_MODE in serve darwin-main supervisor; do
+    case "$PREP_PHASE:$WORKER_MODE" in output-*:darwin-main|output-*:supervisor) continue ;; esac
+    for MISSING_DIR in state root; do
+      (
+        PREPARATION="$TMP_ROOT/preparation-$PREP_PHASE-$WORKER_MODE-$MISSING_DIR"
+        worker_fixture "$PREPARATION"
+        mkdir -p "$PREPARATION/fakebin" "$PREPARATION/account/.local/bin"
+        : > "$PREPARATION/readers"
+        PREPARATION_PID=
+        trap preparation_cleanup EXIT
+        cat > "$PREPARATION/root/bin/fm-empty.sh" <<'SH'
+#!/bin/bash
+printf 'ran\n'
+SH
+        chmod +x "$PREPARATION/root/bin/fm-empty.sh"
+        git -C "$PREPARATION/root" init -q -b main
+        git -C "$PREPARATION/root" add bin
+        (
+          export FM_REMOTE_JOB_STATE_ROOT="$PREPARATION/state"
+          # shellcheck source=bin/fm-remote-job-lib.sh
+          . "$PREPARATION/root/bin/fm-remote-job-lib.sh"
+          fm_remote_job_stage "$PREPARATION/account" "$PREPARATION/root" "$PREPARATION/account" \
+            fm-empty.sh </dev/null >/dev/null || exit 1
+          printf '%s\n' "$FM_REMOTE_JOB_ID" > "$PREPARATION/job-id"
+        ) || fail "could not stage preparation job"
+        if [ "$PREP_PHASE" = validation ]; then
+          cat > "$PREPARATION/account/.local/bin/git" <<SH
+#!/bin/bash
+if [ "\${3:-}" = ls-files ]; then
+  : > '$PREPARATION/entered'
+  exec sleep 20
+fi
+exec '$REAL_GIT' "\$@"
+SH
+          chmod +x "$PREPARATION/account/.local/bin/git"
+        elif [ "$PREP_PHASE" = publication ]; then
+          cat > "$PREPARATION/account/.local/bin/git" <<SH
+#!/bin/bash
+if [ "\${3:-}" = ls-files ]; then
+  : > '$PREPARATION/validation-refused'
+  exit 1
+fi
+exec '$REAL_GIT' "\$@"
+SH
+          chmod +x "$PREPARATION/account/.local/bin/git"
+          cat > "$PREPARATION/fakebin/mktemp" <<'SH'
+#!/bin/bash
+case "$*" in
+  */.exit.XXXXXX)
+    : > "$PREPARATION/entered"
+    attempt=0
+    while [ ! -f "$PREPARATION/release" ] && [ "$attempt" -lt 100 ]; do
+      attempt=$((attempt + 1))
+      sleep 0.01
+    done
+    [ -f "$PREPARATION/release" ] || exit 1
+    ;;
+esac
+exec "$REAL_MKTEMP" "$@"
+SH
+          chmod +x "$PREPARATION/fakebin/mktemp"
+        else
+          cat > "$PREPARATION/fakebin/date" <<'SH'
+#!/bin/bash
+if [ -n "$(find "$FM_REMOTE_JOB_STATE_ROOT/jobs" -name .stdout.pipe -print -quit 2>/dev/null)" ] && [ ! -f "$PREPARATION/entered" ]; then
+  : > "$PREPARATION/entered"
+  attempt=0
+  while [ ! -f "$PREPARATION/release" ] && [ "$attempt" -lt 100 ]; do
+    attempt=$((attempt + 1))
+    sleep 0.01
+  done
+  [ -f "$PREPARATION/release" ] || exit 1
+fi
+exec "$REAL_DATE" "$@"
+SH
+          chmod +x "$PREPARATION/fakebin/date"
+        fi
+        if [ "$PREP_PHASE" = output-drain ]; then
+          cat > "$PREPARATION/fakebin/sleep" <<'SH'
+#!/bin/bash
+if [ -f "$PREPARATION/drain-armed" ] && [ "$PPID" = "$(cat "$FM_REMOTE_JOB_STATE_ROOT/worker.pid" 2>/dev/null)" ]; then
+  : > "$PREPARATION/drain-entered"
+  attempt=0
+  while [ ! -f "$PREPARATION/drain-release" ] && [ "$attempt" -lt 100 ]; do
+    attempt=$((attempt + 1))
+    "$REAL_SLEEP" 0.01
+  done
+  [ -f "$PREPARATION/drain-release" ] || exit 1
+fi
+exec "$REAL_SLEEP" "$@"
+SH
+          chmod +x "$PREPARATION/fakebin/sleep"
+        fi
+        WORKER_ARG=
+        PLATFORM=Linux
+        case "$WORKER_MODE" in serve) WORKER_ARG=--serve ;; darwin-main) PLATFORM=Darwin ;; esac
+        env PREPARATION="$PREPARATION" REAL_DATE="$(command -v date)" REAL_MKTEMP="$(command -v mktemp)" REAL_SLEEP="$(command -v sleep)" PATH="$PREPARATION/fakebin:$PATH" \
+          HOME="$PREPARATION/account" FM_ROOT_OVERRIDE="$PREPARATION/root" \
+          FM_REMOTE_JOB_STATE_ROOT="$PREPARATION/state" FM_REMOTE_JOB_PLATFORM_OVERRIDE="$PLATFORM" \
+          "$FM_TEST_REMOTE_JOB_LAUNCH" "$PREPARATION/root/bin/fm-remote-job-worker.sh" ${WORKER_ARG:+"$WORKER_ARG"} \
+          > "$PREPARATION/out" 2> "$PREPARATION/err" &
+        PREPARATION_PID=$!
+        PREPARATION_ATTEMPT=0
+        while [ ! -f "$PREPARATION/entered" ] && [ "$PREPARATION_ATTEMPT" -lt 100 ]; do
+          PREPARATION_ATTEMPT=$((PREPARATION_ATTEMPT + 1))
+          sleep 0.01
+        done
+        assert_present "$PREPARATION/entered" "$PREP_PHASE did not reach the removal barrier"
+        SERVE_PID=$(cat "$PREPARATION/state/worker.pid")
+        if [ "$PREP_PHASE" = publication ]; then
+          assert_present "$PREPARATION/validation-refused" "publication barrier did not follow rejected validation"
+        fi
+        if [ "${PREP_PHASE%%-*}" = output ]; then
+          CHILDREN=$(ps -A -o pid=,ppid= | awk -v parent="$SERVE_PID" '$2 == parent {print $1}')
+          for CHILD in $CHILDREN; do
+            CHILD_COMMAND=$(ps -p "$CHILD" -o command= 2>/dev/null) || continue
+            case "$CHILD_COMMAND" in
+              *"$PREPARATION/root/bin/fm-remote-job-worker.sh"*)
+                CHILD_START=$(ps -p "$CHILD" -o lstart=) || fail "capture reader vanished before removal"
+                printf '%s\t%s\n' "$CHILD" "$CHILD_START" >> "$PREPARATION/readers"
+                ;;
+            esac
+          done
+          [ "$(wc -l < "$PREPARATION/readers" | tr -d ' ')" = 2 ] || fail "output barrier did not capture both FIFO readers"
+          if [ "$PREP_PHASE" = output-drain ]; then
+            rm -f -- "$PREPARATION/state/jobs/$(cat "$PREPARATION/job-id")/stdin"
+            touch "$PREPARATION/drain-armed" "$PREPARATION/release"
+            PREPARATION_ATTEMPT=0
+            while [ ! -f "$PREPARATION/drain-entered" ] && [ "$PREPARATION_ATTEMPT" -lt 100 ]; do
+              PREPARATION_ATTEMPT=$((PREPARATION_ATTEMPT + 1))
+              sleep 0.01
+            done
+            assert_present "$PREPARATION/drain-entered" "worker did not poll its blocked output readers"
+          elif [ "$PREP_PHASE" != output ]; then
+            FINISHED_STREAM=${PREP_PHASE#output-}
+            printf 'drained\n' > "$PREPARATION/state/jobs/$(cat "$PREPARATION/job-id")/.$FINISHED_STREAM.pipe"
+            PREPARATION_ATTEMPT=0
+            while [ "$(wc -c < "$PREPARATION/state/jobs/$(cat "$PREPARATION/job-id")/$FINISHED_STREAM" | tr -d ' ')" = 0 ] && [ "$PREPARATION_ATTEMPT" -lt 100 ]; do
+              PREPARATION_ATTEMPT=$((PREPARATION_ATTEMPT + 1))
+              sleep 0.01
+            done
+            assert_grep drained "$PREPARATION/state/jobs/$(cat "$PREPARATION/job-id")/$FINISHED_STREAM" "capture reader did not drain the released stream"
+            PREPARATION_ATTEMPT=0
+            while [ "$PREPARATION_ATTEMPT" -lt 100 ]; do
+              LIVE_READERS=0
+              while IFS=$'\t' read -r CHILD CHILD_START; do
+                CURRENT_START=$(ps -p "$CHILD" -o lstart= 2>/dev/null || true)
+                [ "$CURRENT_START" != "$CHILD_START" ] || LIVE_READERS=$((LIVE_READERS + 1))
+              done < "$PREPARATION/readers"
+              [ "$LIVE_READERS" != 1 ] || break
+              PREPARATION_ATTEMPT=$((PREPARATION_ATTEMPT + 1))
+              sleep 0.01
+            done
+            [ "$LIVE_READERS" = 1 ] || fail "released stream did not leave exactly one blocked reader"
+          fi
+        elif [ "$PREP_PHASE" = validation ]; then
+          VALIDATION_GROUP=$(cat "$PREPARATION/state/jobs/$(cat "$PREPARATION/job-id")/.claim/group")
+        fi
+        # Rename, not rm -rf: a heartbeat written mid-traversal makes rm -rf fail
+        # with "Directory not empty" and leaves the directory in place.
+        mv -- "${PREPARATION:?}/$MISSING_DIR" "$PREPARATION/removed-$MISSING_DIR"
+        touch "$PREPARATION/release" "$PREPARATION/drain-release"
+        worker_wait_gone "$PREPARATION_PID"
+        PREPARATION_PID=
+        if [ "$PREP_PHASE" = validation ]; then
+          kill -0 -- "-$VALIDATION_GROUP" 2>/dev/null && fail "validation command survived directory removal"
+        elif [ "${PREP_PHASE%%-*}" = output ]; then
+          while IFS=$'\t' read -r CHILD CHILD_START; do
+            CURRENT_START=$(ps -p "$CHILD" -o lstart= 2>/dev/null || true)
+            [ "$CURRENT_START" != "$CHILD_START" ] || fail "capture reader survived directory removal"
+          done < "$PREPARATION/readers"
+        fi
+        assert_absent "${PREPARATION:?}/$MISSING_DIR" "preparation recreated the removed directory"
+        pass "$WORKER_MODE exits cleanly after $MISSING_DIR removal during $PREP_PHASE preparation"
+      ) || fail "$PREP_PHASE preparation removal failed for $WORKER_MODE ($MISSING_DIR)"
+    done
+  done
+done
+
+HEALTHY="$TMP_ROOT/healthy"
+worker_fixture "$HEALTHY"
+HOME="$HEALTHY/account" FM_ROOT_OVERRIDE="$HEALTHY/root" \
+  FM_REMOTE_JOB_STATE_ROOT="$HEALTHY/state" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+  "$FM_TEST_REMOTE_JOB_LAUNCH" "$HEALTHY/root/bin/fm-remote-job-worker.sh" \
+  > "$HEALTHY/out" 2> "$HEALTHY/err" &
+HEALTHY_PID=$!
+worker_wait_ready "$HEALTHY"
+
+# shellcheck disable=SC2030,SC2031 # Lifetime fixture settings are subshell-local.
+for WORKER_MODE in serve supervisor; do
+  for MISSING_DIR in root state; do
+    LIFETIME="$TMP_ROOT/lifetime-$WORKER_MODE-$MISSING_DIR"
+    worker_fixture "$LIFETIME"
+    (
+      FM_REMOTE_JOB_STATE_ROOT="$LIFETIME/state"
+      # shellcheck source=bin/fm-remote-job-lib.sh
+      . "$LIFETIME/root/bin/fm-remote-job-lib.sh"
+      fm_remote_job_prepare_state "$LIFETIME/account" || exit 1
+    ) || fail "could not prepare the lifetime fixture state"
+    mkdir -p "$LIFETIME/fakebin"
+    if [ "$MISSING_DIR" = state ]; then
+      cat > "$LIFETIME/fakebin/dirname" <<'SH'
+#!/bin/bash
+if [ "$*" = "$FM_REMOTE_JOB_STATE_ROOT" ] && [ -f "$FM_REMOTE_JOB_STATE_ROOT/worker.ready" ]; then
+  printf 'entered\n' > "$LIFETIME/maintenance-entered"
+  attempt=0
+  while [ ! -f "$LIFETIME/maintenance-release" ] && [ "$attempt" -lt 100 ]; do
+    attempt=$((attempt + 1))
+    sleep 0.01
+  done
+  [ -f "$LIFETIME/maintenance-release" ] || exit 1
+fi
+exec "$REAL_DIRNAME" "$@"
+SH
+      chmod +x "$LIFETIME/fakebin/dirname"
+    fi
+    WORKER_ARG=
+    [ "$WORKER_MODE" != serve ] || WORKER_ARG=--serve
+    env LIFETIME="$LIFETIME" REAL_DIRNAME="$(command -v dirname)" PATH="$LIFETIME/fakebin:$PATH" \
+    HOME="$LIFETIME/account" FM_ROOT_OVERRIDE="$LIFETIME/root" \
+      FM_REMOTE_JOB_STATE_ROOT="$LIFETIME/state" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+      "$FM_TEST_REMOTE_JOB_LAUNCH" "$LIFETIME/root/bin/fm-remote-job-worker.sh" ${WORKER_ARG:+"$WORKER_ARG"} \
+      > "$LIFETIME/out" 2> "$LIFETIME/err" &
+    LIFETIME_PID=$!
+    worker_wait_ready "$LIFETIME"
+    if [ "$MISSING_DIR" = state ]; then
+      MAINTENANCE_ATTEMPT=0
+      while [ ! -f "$LIFETIME/maintenance-entered" ] && [ "$MAINTENANCE_ATTEMPT" -lt 100 ]; do
+        MAINTENANCE_ATTEMPT=$((MAINTENANCE_ATTEMPT + 1))
+        sleep 0.01
+      done
+      assert_present "$LIFETIME/maintenance-entered" "queue maintenance did not reach the deletion barrier"
+    fi
+    mv -- "${LIFETIME:?}/$MISSING_DIR" "$LIFETIME/removed-$MISSING_DIR"
+    touch "$LIFETIME/maintenance-release"
+    worker_wait_gone "$LIFETIME_PID"
+    assert_absent "${LIFETIME:?}/$MISSING_DIR" "worker recreated its removed directory"
+    kill -0 "$HEALTHY_PID" 2>/dev/null || fail "directory removal disturbed a healthy worker"
+    pass "$WORKER_MODE exits cleanly when $MISSING_DIR disappears"
+  done
+done
+
+
+# shellcheck disable=SC2030,SC2031 # Active fixture settings are subshell-local.
+for MISSING_DIR in root state; do
+  ACTIVE="$TMP_ROOT/active-$MISSING_DIR"
+  worker_fixture "$ACTIVE"
+  cat > "$ACTIVE/root/bin/fm-block.sh" <<'SH'
+#!/bin/bash
+printf 'started\n' > "$1"
+exec sleep 20
+SH
+  chmod +x "$ACTIVE/root/bin/fm-block.sh"
+  git -C "$ACTIVE/root" init -q -b main
+  git -C "$ACTIVE/root" config --local commit.gpgsign false
+  git -C "$ACTIVE/root" -c user.name=Test -c user.email=test@example.com add CLAUDE.md bin
+  git -C "$ACTIVE/root" -c user.name=Test -c user.email=test@example.com commit -qm fixture
+  (
+    export FM_REMOTE_JOB_STATE_ROOT="$ACTIVE/state" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux
+    # shellcheck source=bin/fm-remote-job-lib.sh
+    . "$ACTIVE/root/bin/fm-remote-job-lib.sh"
+    fm_remote_job_stage "$ACTIVE/account" "$ACTIVE/root" "$ACTIVE/account" \
+      fm-block.sh "$ACTIVE/started" </dev/null || exit 1
+    printf '%s\n' "$FM_REMOTE_JOB_ID" > "$ACTIVE/job-id"
+  ) || fail "could not stage active lifetime job"
+  HOME="$ACTIVE/account" FM_ROOT_OVERRIDE="$ACTIVE/root" \
+    FM_REMOTE_JOB_STATE_ROOT="$ACTIVE/state" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux \
+    "$FM_TEST_REMOTE_JOB_LAUNCH" "$ACTIVE/root/bin/fm-remote-job-worker.sh" \
+    > "$ACTIVE/out" 2> "$ACTIVE/err" &
+  ACTIVE_PID=$!
+  ACTIVE_ATTEMPT=0
+  while [ ! -f "$ACTIVE/started" ] && [ "$ACTIVE_ATTEMPT" -lt 100 ]; do
+    ACTIVE_ATTEMPT=$((ACTIVE_ATTEMPT + 1))
+    sleep 0.01
+  done
+  assert_present "$ACTIVE/started" "active lifetime job did not start"
+  ACTIVE_GROUP=$(cat "$ACTIVE/state/jobs/$(cat "$ACTIVE/job-id")/.claim/group")
+  mv -- "${ACTIVE:?}/$MISSING_DIR" "$ACTIVE/removed-$MISSING_DIR"
+  worker_wait_gone "$ACTIVE_PID"
+  kill -0 -- "-$ACTIVE_GROUP" 2>/dev/null && fail "directory removal left an active command group"
+  assert_absent "${ACTIVE:?}/$MISSING_DIR" "active worker recreated a removed directory"
+  pass "active worker stops its command and exits cleanly when $MISSING_DIR disappears"
+done
+
+for EXIT_MODE in launch-race immediate success failure HUP INT TERM; do
+  REAP_FIXTURE="$TMP_ROOT/reap-$EXIT_MODE"
+  worker_fixture "$REAP_FIXTURE"
+  mkdir -p "$REAP_FIXTURE/fakebin"
+  cat > "$REAP_FIXTURE/fakebin/ps" <<'SH'
+#!/bin/bash
+printf 'started\n' > "$REAP_FIXTURE/ps-started"
+attempt=0
+while [ ! -f "$REAP_FIXTURE/ps-release" ] && [ "$attempt" -lt 100 ]; do
+  attempt=$((attempt + 1))
+  sleep 0.01
+done
+[ -f "$REAP_FIXTURE/ps-release" ] || exit 1
+exec "$REAL_PS" "$@"
+SH
+  chmod +x "$REAP_FIXTURE/fakebin/ps"
+  cat > "$REAP_FIXTURE/test.sh" <<'SH'
+#!/bin/bash
+set -eu
+. "$ROOT/tests/remote-job-helpers.sh"
+fm_test_remote_job_init "$REAP_FIXTURE"
+trap 'fm_test_remote_job_cleanup || exit 1' EXIT
+export HOME="$REAP_FIXTURE/account" FM_ROOT_OVERRIDE="$REAP_FIXTURE/root"
+export FM_REMOTE_JOB_STATE_ROOT="$REAP_FIXTURE/state" FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux
+. "$REAP_FIXTURE/root/bin/fm-remote-job-lib.sh"
+if [ "$EXIT_MODE" = launch-race ]; then export PATH="$REAP_FIXTURE/fakebin:$PATH"; fi
+fm_remote_job_start_linux_worker "$FM_ROOT_OVERRIDE" "$HOME"
+if [ "$EXIT_MODE" = launch-race ]; then
+  attempt=0
+  while [ ! -f "$REAP_FIXTURE/ps-started" ] && [ "$attempt" -lt 100 ]; do
+    attempt=$((attempt + 1))
+    sleep 0.01
+  done
+  [ -f "$REAP_FIXTURE/ps-started" ] || exit 1
+  exit 0
+fi
+[ "$EXIT_MODE" != immediate ] || exit 0
+fm_remote_job_wait_for_probe "$FM_ROOT_OVERRIDE" "$HOME"
+printf '\n' >> "$REAP_FIXTURE/root/bin/fm-remote-job-worker.sh"
+fm_remote_job_start_linux_worker "$FM_ROOT_OVERRIDE" "$HOME"
+fm_remote_job_wait_for_probe "$FM_ROOT_OVERRIDE" "$HOME"
+if [ "$EXIT_MODE" = success ]; then
+  printf '%s\n' "$HEALTHY_PID" > "$REAP_FIXTURE/state/worker.pid"
+else
+  rm -f "$REAP_FIXTURE/state/worker.pid"
+fi
+case "$EXIT_MODE" in
+  success) exit 0 ;;
+  failure) exit 7 ;;
+  *) kill -"$EXIT_MODE" "$$" ;;
+esac
+SH
+  REAP_SCRIPT="$REAP_FIXTURE/test.sh"
+  ROOT="$ROOT" REAP_FIXTURE="$REAP_FIXTURE" EXIT_MODE="$EXIT_MODE" HEALTHY_PID="$HEALTHY_PID" REAL_PS="$(command -v ps)" \
+    FM_TEST_REMOTE_JOB_REAL_NOHUP="$FM_TEST_REMOTE_JOB_REAL_NOHUP" \
+    PATH="${PATH#"$FM_TEST_REMOTE_JOB_BIN:"}" /bin/bash "$REAP_SCRIPT"
+  REAP_RC=$?
+  touch "$REAP_FIXTURE/ps-release"
+  case "$EXIT_MODE" in
+    launch-race|immediate|success) expect_code 0 "$REAP_RC" "normal cleanup failed" ;;
+    failure) expect_code 7 "$REAP_RC" "cleanup changed the failure status" ;;
+    HUP) expect_code 129 "$REAP_RC" "HUP cleanup failed" ;;
+    INT) expect_code 130 "$REAP_RC" "INT cleanup failed" ;;
+    TERM) expect_code 143 "$REAP_RC" "TERM cleanup failed" ;;
+  esac
+  REGISTRY_COUNT=$(find "$REAP_FIXTURE/worker-registry" -type f -name '[0-9]*' | wc -l | tr -d ' ')
+  [ "$EXIT_MODE" = launch-race ] || [ "$EXIT_MODE" = immediate ] || [ "$REGISTRY_COUNT" -ge 2 ] || fail "replacement launches were not registered"
+  REAP_ATTEMPT=0
+  while [ "$REAP_ATTEMPT" -lt 100 ]; do
+    PROCESS_COMMANDS=$(ps -A -o command=)
+    LEFTOVER=$(printf '%s\n' "$PROCESS_COMMANDS" | awk -v worker="$REAP_FIXTURE/root/bin/fm-remote-job-worker.sh" 'index($0, worker) {print}')
+    [ -n "$LEFTOVER" ] || break
+    REAP_ATTEMPT=$((REAP_ATTEMPT + 1))
+    sleep 0.01
+  done
+  [ -z "$LEFTOVER" ] || fail "test-owned worker survived $EXIT_MODE cleanup"
+  kill -0 "$HEALTHY_PID" 2>/dev/null || fail "cleanup signalled a worker it did not start"
+  pass "shared cleanup reaps replaced workers independently of worker.pid on $EXIT_MODE"
+done
+
+kill -TERM "$HEALTHY_PID"
+wait "$HEALTHY_PID" || fail "healthy worker did not shut down cleanly"
 
 cp "$ROOT/bin/fm-remote-job-lib.sh" "$ROOT/bin/fm-remote-job-worker.sh" "$REMOTE_ROOT/bin/"
 printf 'fixture\n' > "$REMOTE_ROOT/CLAUDE.md"
@@ -74,6 +489,8 @@ SH
 chmod +x "$RUNTIME_BIN/perl"
 
 git -C "$REMOTE_ROOT" init -q -b main
+git -C "$REMOTE_ROOT" config --local commit.gpgsign false
+git -C "$REMOTE_ROOT" config --local tag.gpgsign false
 git -C "$REMOTE_ROOT" config user.email test@example.com
 git -C "$REMOTE_ROOT" config user.name Test
 git -C "$REMOTE_ROOT" add AGENTS.md CLAUDE.md bin
@@ -101,6 +518,7 @@ pass "default queue and execution bounds independently cover long polls"
 
 # shellcheck disable=SC2031 # The earlier assignment was confined to DEFAULT_BOUNDS.
 export FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT"
+# shellcheck disable=SC2031 # Lifetime fixture overrides did not escape their subshells.
 export FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux
 # shellcheck disable=SC2031 # The sourced defaults above were confined to DEFAULT_BOUNDS.
 export FM_REMOTE_JOB_QUEUE_TIMEOUT=5
@@ -158,7 +576,7 @@ pass "operator PATH resolves the authorized Nix profile bin link"
 HOME="$ACCOUNT_HOME" PATH="$RUNTIME_BIN:/usr/bin:/bin:/usr/sbin:/sbin" FM_FAKE_PERL_LOG="$FAKE_PERL_LOG" \
   FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux FM_REMOTE_JOB_TIMEOUT=5 \
-  "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" > "$TMP_ROOT/worker.out" 2> "$TMP_ROOT/worker.err" &
+  "$FM_TEST_REMOTE_JOB_LAUNCH" "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" > "$TMP_ROOT/worker.out" 2> "$TMP_ROOT/worker.err" &
 for _ in $(seq 1 100); do
   [ -f "$STATE_ROOT/worker.ready" ] && break
   sleep 0.05
@@ -347,7 +765,7 @@ done
 kill -0 "$WORKER_PID" 2>/dev/null && fail "the worker did not finish its TERM shutdown"
 HOME="$ACCOUNT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
   FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux FM_REMOTE_JOB_TIMEOUT=1 \
-  "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" >> "$TMP_ROOT/worker.out" 2>> "$TMP_ROOT/worker.err" &
+  "$FM_TEST_REMOTE_JOB_LAUNCH" "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" >> "$TMP_ROOT/worker.out" 2>> "$TMP_ROOT/worker.err" &
 for _ in $(seq 1 100); do
   [ -f "$STATE_ROOT/worker.ready" ] && break
   sleep 0.05
@@ -471,7 +889,7 @@ assert_present "$STATE_ROOT/worker.lock/quarantine" "failed shutdown released wo
 fm_remote_job_probe "$ACCOUNT_HOME" && fail "quarantined worker ownership still reported ready"
 set +e
 HOME="$ACCOUNT_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$STATE_ROOT" \
-  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$FM_TEST_REMOTE_JOB_LAUNCH" "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
   >> "$TMP_ROOT/worker.out" 2>> "$TMP_ROOT/worker.err"
 REPLACEMENT_RC=$?
 set -e
@@ -508,7 +926,7 @@ chmod 600 "$RECOVERY_STATE/worker.lock"/* "$RECOVERY_JOB/state" "$RECOVERY_JOB/.
 touch -t 200001010000 "$RECOVERY_STATE/worker.lock"
 set +e
 HOME="$RECOVERY_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$RECOVERY_STATE" \
-  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$FM_TEST_REMOTE_JOB_LAUNCH" "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
   > "$TMP_ROOT/recovery-refused.out" 2> "$TMP_ROOT/recovery-refused.err"
 RECOVERY_REFUSED_RC=$?
 set -e
@@ -517,7 +935,7 @@ assert_present "$RECOVERY_STATE/worker.lock/quarantine" "a live recorded process
 kill "$QUARANTINED_PROCESS_PID" 2>/dev/null || true
 wait "$QUARANTINED_PROCESS_PID" 2>/dev/null || true
 HOME="$RECOVERY_HOME" FM_ROOT_OVERRIDE="$REMOTE_ROOT" FM_REMOTE_JOB_STATE_ROOT="$RECOVERY_STATE" \
-  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
+  FM_REMOTE_JOB_PLATFORM_OVERRIDE=Linux "$FM_TEST_REMOTE_JOB_LAUNCH" "$REMOTE_ROOT/bin/fm-remote-job-worker.sh" \
   > "$TMP_ROOT/recovery-worker.out" 2> "$TMP_ROOT/recovery-worker.err" &
 RECOVERY_WORKER_PID=$!
 for _ in $(seq 1 300); do

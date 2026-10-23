@@ -32,6 +32,11 @@ set -u
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DAEMON="$ROOT/bin/fm-supervise-daemon.sh"
 
+# The daemon detects the primary harness from its environment, and this test's
+# supervisor pane is a generic composer, so drop omp's ambient marker the way
+# tests/lib.sh does for the suites that source it.
+unset OMPCODE
+
 # Skip gracefully if tmux is not installed.
 command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found"; exit 0; }
 

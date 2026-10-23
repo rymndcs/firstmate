@@ -2688,6 +2688,52 @@ fm_backend_herdr_agent_identity_raw() {  # <session> <pane> -> <agent>\t<status>
   printf '%s' "$out" | jq -r '[.result.agent.agent // "", .result.agent.agent_status // ""] | @tsv' 2>/dev/null
 }
 
+# omp puts its last draft line in the rounded bottom border, not a │…│ row.
+# With no cursor primitive, require native idle omp identity at the caller and
+# a complete bottom-anchored box; stale tool-output boxes never authorize input.
+fm_backend_herdr_omp_composer_state() {  # <styled capture>
+  local cap=$1 line plain content opened=0 closed=0 rows=0 pending=0
+  while IFS= read -r line; do
+    plain=$(printf '%s\n' "$line" | fm_composer_strip_ansi)
+    plain="${plain#"${plain%%[![:space:]]*}"}"
+    plain="${plain%"${plain##*[![:space:]]}"}"
+    case "$plain" in
+      '╭'*'─╮')
+        opened=1 closed=0 rows=0 pending=0
+        continue
+        ;;
+    esac
+    [ -n "$plain" ] || continue
+    if [ "$opened" -ne 1 ] || [ "$closed" -eq 1 ]; then
+      opened=0
+      continue
+    fi
+    case "$plain" in
+      '╰─'*'─╯') closed=1 ;;
+      '│'*'│') : ;;
+      *) opened=0; continue ;;
+    esac
+    rows=$((rows + 1))
+    content=$(printf '%s\n' "$line" | fm_composer_strip_ghost)
+    content="${content#"${content%%[![:space:]]*}"}"
+    content="${content%"${content##*[![:space:]]}"}"
+    content=${content#│}
+    content=${content#╰─}
+    content=${content%│}
+    content=${content%─╯}
+    case "$content" in *[![:space:]]*) pending=1 ;; esac
+  done < <(printf '%s\n' "$cap")
+  if [ "$opened" -ne 1 ] || [ "$closed" -ne 1 ]; then
+    printf 'unknown'
+  elif [ "$pending" -eq 1 ]; then
+    printf 'pending'
+  elif [ "$rows" -eq 1 ]; then
+    printf 'empty'
+  else
+    printf 'unknown'
+  fi
+}
+
 fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
   local target=$1 session pane cap line trimmed found=0 shape="" raw_match="" bordered=0 stripped
   local identity agent agent_status row=0 generic_line=0
@@ -2696,6 +2742,14 @@ fm_backend_herdr_composer_state() {  # <target> -> empty|pending|unknown
   pane=$FM_BACKEND_HERDR_PANE
   cap=$(fm_backend_herdr_capture_ansi "$target" "$FM_BACKEND_HERDR_COMPOSER_LINES" 2>/dev/null \
     || fm_backend_herdr_capture "$target" "$FM_BACKEND_HERDR_COMPOSER_LINES") || { printf 'unknown'; return 0; }
+  if [ "${FM_COMPOSER_HARNESS:-}" = omp ]; then
+    identity=$(fm_backend_herdr_agent_identity_raw "$session" "$pane" 2>/dev/null || true)
+    case "$identity" in
+      $'omp\tidle'|$'omp\tdone') fm_backend_herdr_omp_composer_state "$cap" ;;
+      *) printf 'unknown' ;;
+    esac
+    return 0
+  fi
   # Structural scan: locate the bottom-most composer row and remember its RAW
   # (styled) bytes. Shape detection runs on the plain row (fm_backend_herdr_strip_ansi
   # keeps ghost text so the border/prompt glyph is still visible); the raw row is
@@ -2864,6 +2918,12 @@ fm_backend_herdr_send_text_submit() {  # <target> <text> <retries> <enter-sleep>
     if [ "$baseline" = idle ]; then
       verdict=$(fm_backend_herdr_wait_for_working "$FM_BACKEND_HERDR_SESSION" "$FM_BACKEND_HERDR_PANE" \
         "$confirm_sleep" "$FM_BACKEND_HERDR_SUBMIT_POLLS")
+      # omp can accept Enter and clear its draft before Herdr observes a
+      # working state. Its native-idle, bottom-anchored editor proof is also
+      # valid acknowledgement; a swallowed Enter still reads pending.
+      if [ "$verdict" = idle ] && [ "${FM_COMPOSER_HARNESS:-}" = omp ]; then
+        verdict=$(fm_backend_herdr_composer_state "$target")
+      fi
     else
       sleep "$sleep_s"
       verdict=$(fm_backend_herdr_composer_state "$target")
