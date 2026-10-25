@@ -21,6 +21,8 @@
 # An unregistered project prints an explicit unregistered notice, a missing
 # registry prints an explicit diagnostic, and neither aborts the recording or
 # the arming that already succeeded.
+# Automatic GitHub discovery is owned by fm-pr-auto-register.sh, called by
+# wake drain and spawn; explicit registration remains available here.
 # Usage: fm-pr-check.sh <task-id> <pr-url>
 set -eu
 

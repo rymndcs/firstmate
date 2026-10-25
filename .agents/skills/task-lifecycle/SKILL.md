@@ -78,7 +78,7 @@ For the parent-owned correlation, recovery, and escalation contract on marked se
 
 For PR-based ship tasks, the ready signal depends on mode: `no-mistakes` reports `done: PR <url> checks green` after CI is green, while `direct-PR` reports `done: PR <url>` after opening the PR.
 Under the brief's recorded-intent reconciliation contract, a no-mistakes worker that could not reconcile an accepted mid-run requirement ends at a keyed `needs-decision` wake over its durable hold instead of `done:`, green CI included; treat that as firstmate's call on follow-up work versus re-validation, not as a finished ship.
-Run `bin/fm-pr-check.sh <id> <PR url>` to record the PR and arm the watcher's merge poll.
+PR discovery and CI/merge notifications are automatic under the [event-driven supervision contract](../../../docs/architecture.md#event-driven-supervision); `bin/fm-pr-check.sh` remains the explicit registration entry point.
 Tell the captain the PR's full URL, a concise outcome summary, and the no-mistakes risk level when applicable.
 Any custom `state/<id>.check.sh` you write yourself follows the authoring contract in `bin/fm-check-register.sh`'s header and must be bound with that script before the watcher may execute it.
 

@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
 # Atomically drain durable watcher wake records, optionally annotate validated
-# signal status keys after raw consumption commits, then assert liveness.
+# signal status keys after raw consumption commits, register task PRs, then assert liveness.
+# Usage: fm-wake-drain.sh [--help]
+# PR discovery is best-effort through fm-pr-auto-register.sh --all, including
+# empty drains, and always runs outside the durable wake queue lock.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+
+if [ "${1:-}" = --help ]; then
+  sed -n '2,/^set /{ /^#/s/^# \{0,1\}//p; }' "$0"
+  exit 0
+fi
 
 DRAIN_TMP=
 DRAIN_LOCK_HELD=false
@@ -47,6 +55,9 @@ DRAIN_LOCK_HELD=true
 
 if [ ! -s "$FM_WAKE_QUEUE" ]; then
   : > "$FM_WAKE_QUEUE"
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  DRAIN_LOCK_HELD=false
+  "$SCRIPT_DIR/fm-pr-auto-register.sh" --all || true
   assert_watcher_liveness
   exit 0
 fi
@@ -75,5 +86,6 @@ DRAIN_LOCK_HELD=false
 # Raw output and queue deletion are authoritative. Everything below is
 # best-effort and cannot restore, duplicate, hide, or fail the consumed rows.
 (fm_wake_print_annotations "$RAW_ROWS") || true
+"$SCRIPT_DIR/fm-pr-auto-register.sh" --all || true
 assert_watcher_liveness
 exit 0

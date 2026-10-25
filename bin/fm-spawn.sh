@@ -190,6 +190,8 @@
 # a firstmate-owned global hook and registry, and a gitignored per-task pointer.
 # grok uses a firstmate-owned global hook under ${GROK_HOME:-$HOME/.grok}/hooks
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
+# Successful launches and resumes discover backlog/status PR links through
+# bin/fm-pr-auto-register.sh <task-id>; registration failure never fails spawn.
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
@@ -2399,6 +2401,10 @@ else
   fi
 fi
 
+SPAWN_PR_RECORD=
+if fm_pr_metadata_identity_parse "$STATE/$ID.meta"; then
+  SPAWN_PR_RECORD=$(awk '/^pr=|^pr_head=/' "$STATE/$ID.meta")
+fi
 META_WINDOW=$T
 [ "$BACKEND" = orca ] && META_WINDOW=$W
 # Ship and scout dispatches take one unavoidable dispatch snapshot at the spawn
@@ -2460,6 +2466,7 @@ esac
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
+  [ -z "$SPAWN_PR_RECORD" ] || printf '%s\n' "$SPAWN_PR_RECORD"
 } > "$STATE/$ID.meta" || exit 1
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0
 
@@ -2571,6 +2578,7 @@ fi
 SPAWN_DELIVERY=
 [ -z "$MODE" ] || SPAWN_DELIVERY=" mode=$MODE yolo=$YOLO"
 echo "spawned $ID harness=$HARNESS kind=$KIND$SPAWN_DELIVERY window=$META_WINDOW worktree=$WT"
+"$SCRIPT_DIR/fm-pr-auto-register.sh" "$ID" || true
 
 # Dispatching Linear-tracked work IS the In Progress transition, so it happens
 # here rather than as a step an agent has to remember afterwards. A secondmate
