@@ -13,6 +13,14 @@
 #   fm-test-run.sh --proven-isolated
 #   fm-test-run.sh tests/<name>.test.sh [more scripts...]
 #
+# Temporary directories:
+#   Test execution refuses TMPDIR (default /tmp) or a runner-created temp root
+#   at or inside the physical repository, resolving directory symlinks first.
+#   Refusal keeps the configuration explicit and prevents recursive tree copies.
+#   Set TMPDIR to an existing directory outside the repository, for example:
+#     TMPDIR=/tmp fm-test-run.sh --all
+#   Outside TMPDIR values are passed to serial tests unchanged.
+#
 # Inspection (no execution):
 #   fm-test-run.sh --list --all
 #   fm-test-run.sh --list --family <name>
@@ -70,7 +78,7 @@
 # under-selecting, and never expands to the complete suite unless --all.
 set -eu
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$ROOT" || exit 1
 
 # Runner-level floor for the dispatch reading (bin/fm-dispatch-axi-lib.sh):
@@ -136,6 +144,16 @@ usage() {
 die() {
   printf 'fm-test-run: %s\n' "$*" >&2
   exit 2
+}
+
+require_outside_temp_dir() {
+  local physical
+  physical=$(cd -- "$1" && pwd -P)
+  case "$physical" in
+    "$ROOT"|"$ROOT"/*)
+      die "temporary directory $physical is inside repository $ROOT; set TMPDIR to a directory outside the repository (for example /tmp) and retry"
+      ;;
+  esac
 }
 
 log() {
@@ -1434,6 +1452,8 @@ if [ "$LIST_ONLY" -eq 1 ]; then
   exit 0
 fi
 
+require_outside_temp_dir "${TMPDIR:-/tmp}"
+
 if [ "${#SCRIPTS[@]}" -eq 0 ]; then
   log "nothing to run"
   printf 'FM_TEST_SUMMARY total=0 failed=0 skipped_gate=0 duration_ms=0\n'
@@ -1466,10 +1486,11 @@ if [ "$JOBS" -gt 1 ]; then
 fi
 
 RUN_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run.XXXXXX")
+trap 'rm -rf "${RUN_TMP:?}"' EXIT
+require_outside_temp_dir "$RUN_TMP"
 RECORDS="$RUN_TMP/records.tsv"
 FAMILIES_TSV="$RUN_TMP/families.tsv"
 : >"$RECORDS"
-trap 'rm -rf "$RUN_TMP"' EXIT
 
 RUN_STARTED_ISO=$(now_iso)
 RUN_STARTED_MS=$(now_ms)

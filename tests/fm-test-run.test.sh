@@ -15,6 +15,58 @@ RUNNER="$ROOT/bin/fm-test-run.sh"
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
 
+test_tmpdir_boundary() {
+  local tmp repo candidate rc expected
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-tmpdir.XXXXXX")
+  tmp=$(cd "$tmp" && pwd -P)
+  repo="$tmp/repo"
+  mkdir -p "$repo/bin" "$repo/tests" "$repo/tmp" "$tmp/repo-sibling" "$tmp/fakebin"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cat >"$repo/tests/probe.test.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$TMPDIR" >"$PROBE_OUTPUT"
+SH
+  ln -s "$repo/tmp" "$tmp/into-tree"
+  ln -s "$repo" "$tmp/repo-link"
+  for candidate in "$repo/tmp" "$repo" "$tmp/into-tree" "$tmp/repo-link/tmp"; do
+    expected=$(cd "$candidate" && pwd -P)
+    rc=0
+    TMPDIR="$candidate" PROBE_OUTPUT="$tmp/probe" \
+      "$tmp/repo-link/bin/fm-test-run.sh" tests/probe.test.sh \
+      >"$tmp/out" 2>"$tmp/err" || rc=$?
+    [ "$rc" -eq 2 ] || fail "in-tree TMPDIR $candidate must refuse with exit 2, got $rc"
+    [ ! -e "$tmp/probe" ] || fail "unsafe TMPDIR must refuse before executing tests"
+    [ ! -s "$tmp/out" ] || fail "unsafe TMPDIR must not emit run markers"
+    [ "$(wc -l <"$tmp/err" | tr -d ' ')" -eq 1 ] || fail "refusal must be one line"
+    [ "$(cat "$tmp/err")" = "fm-test-run: temporary directory $expected is inside repository $repo; set TMPDIR to a directory outside the repository (for example /tmp) and retry" ] \
+      || fail "refusal must name the exact resolved temporary path: $(cat "$tmp/err")"
+    assert_contains "$(cat "$tmp/err")" "set TMPDIR to a directory outside" "refusal names the fix"
+  done
+  for candidate in "$tmp/repo-sibling" "$tmp" /tmp; do
+    TMPDIR="$candidate" PROBE_OUTPUT="$tmp/probe" \
+      "$tmp/repo-link/bin/fm-test-run.sh" tests/probe.test.sh \
+      >"$tmp/out" 2>"$tmp/err" || fail "outside TMPDIR $candidate must pass"
+    [ "$(cat "$tmp/probe")" = "$candidate" ] || fail "outside TMPDIR must reach test unchanged"
+    [ ! -s "$tmp/err" ] || fail "outside TMPDIR must not add diagnostics"
+    rm -f "$tmp/probe"
+  done
+  cat >"$tmp/fakebin/mktemp" <<'SH'
+#!/usr/bin/env bash
+mkdir -p "$FORCED_RUN_TMP"
+printf '%s\n' "$FORCED_RUN_TMP"
+SH
+  chmod +x "$tmp/fakebin/mktemp"
+  rc=0
+  PATH="$tmp/fakebin:$PATH" TMPDIR="$tmp" FORCED_RUN_TMP="$repo/runner-tmp" \
+    PROBE_OUTPUT="$tmp/probe" "$repo/bin/fm-test-run.sh" tests/probe.test.sh \
+    >"$tmp/out" 2>"$tmp/err" || rc=$?
+  [ "$rc" -eq 2 ] || fail "in-tree runner temp root must refuse, got $rc"
+  [ ! -e "$tmp/probe" ] || fail "unsafe runner temp root must refuse before tests"
+  assert_contains "$(cat "$tmp/err")" "$repo/runner-tmp" "refusal names runner temp root"
+  rm -rf "${tmp:?}"
+  pass "temporary directories stay outside the physical repository and outside TMPDIR is unchanged"
+}
+
 test_list_all_exact_suite_coverage() {
   local listed expected missing extra f
   listed=$("$RUNNER" --list --all | LC_ALL=C sort)
@@ -787,6 +839,7 @@ assert len(doc["scripts"])==3
   pass "aggregate-json merges lane timing artifacts"
 }
 
+test_tmpdir_boundary
 test_list_all_exact_suite_coverage
 test_family_selection
 test_single_script_selection
