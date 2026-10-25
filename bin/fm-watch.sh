@@ -989,21 +989,26 @@ EOF
     fi
     backend=$(window_backend "$w")
     agent_alive=unknown
-    if [ "$kind" != secondmate ] && ! afk_present && ! status_is_paused_or_captain_held "$last"; then
+    if [ "$kind" != secondmate ]; then
       case "$backend" in
         tmux|herdr)
-          agent_alive=$(fm_backend_agent_alive "$backend" "$w" 2>/dev/null) || agent_alive=unknown
-          if [ "$agent_alive" = dead ]; then
-            if [ ! -e "$STATE/.dead-since-$key" ] || [ "$STATE/$task.meta" -nt "$STATE/.dead-since-$key" ]; then
-              : > "$STATE/.dead-since-$key"
-              rm -f "${STATE:?}/.dead-resurfaced-$key"
+          # Any live or inconclusive read ends a death episode, even while away
+          # mode, a pause or a captain hold owns this worker's alerts.
+          liveness=$(fm_backend_agent_alive "$backend" "$w" 2>/dev/null) || liveness=unknown
+          [ "$liveness" = dead ] || rm -f "${STATE:?}/.dead-since-$key"
+          if ! afk_present && ! status_is_paused_or_captain_held "$last"; then
+            agent_alive=$liveness
+            if [ "$agent_alive" = dead ]; then
+              if [ ! -e "$STATE/.dead-since-$key" ] || [ "$STATE/$task.meta" -nt "$STATE/.dead-since-$key" ]; then
+                : > "$STATE/.dead-since-$key"
+                rm -f "${STATE:?}/.dead-resurfaced-$key"
+              fi
+              if [ "$(age_of "$STATE/.dead-since-$key")" -ge "$POLL" ]; then
+                handle_bounded_stale "$w" "$task" agent-dead dead
+              fi
+              continue
             fi
-            if [ "$(age_of "$STATE/.dead-since-$key")" -ge "$POLL" ]; then
-              handle_bounded_stale "$w" "$task" agent-dead dead
-            fi
-            continue
           fi
-          rm -f "${STATE:?}/.dead-since-$key" "${STATE:?}/.dead-resurfaced-$key"
           ;;
       esac
     fi

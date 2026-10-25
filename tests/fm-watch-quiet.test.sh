@@ -23,7 +23,8 @@ case "$1" in
   display-message)
     [ "$live" != missing ] || exit 1
     case "$*" in
-      *pane_current_command*) [ "$live" = alive ] && printf 'claude\n' || printf 'zsh\n' ;;
+      *pane_current_command*)
+        case "$live" in alive) printf 'claude\n' ;; ambiguous) printf 'make\n' ;; *) printf 'zsh\n' ;; esac ;;
       *pane_tty*) : ;;
       *) printf '%%1\n' ;;
     esac ;;
@@ -400,6 +401,71 @@ test_busy_after_quiet() {
   pass 'busy activity after quiet keeps the busy-turn bound and reclassifies the idle pane'
 }
 
+# Away mode, a declared pause or a captain hold owns a worker's alerts, but a
+# live or inconclusive read there still ends an earlier death episode, so a
+# recovered worker that dies again surfaces promptly once ordinary polling resumes.
+test_second_death_after_skip() {  # <backend> <pause|hold|away> [liveness while skipped]
+  local backend=$1 mode=$2 between=${3:-alive} d label
+  label="$backend $mode ($between)"
+  d=$(quiet_case "second-death-$backend-$mode-$between" "$backend")
+  printf 'working: implementing\n' > "$d/state/quiet.status"
+  printf 'dead\n' > "$d/liveness"
+  printf '$ \n' > "$d/pane"
+  : > "$d/static"
+  quiet_run "$d"
+  grep -F 'agent exited or endpoint gone' "$d/out" >/dev/null || fail "$label: first death did not surface: $(cat "$d/out")"
+  quiet_run "$d"
+  [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "$label: first death did not keep its long cadence: $(cat "$d/out")"
+  rm -f "${d:?}/static"
+  printf '%s\n' "$between" > "$d/liveness"
+  case "$mode" in
+    pause) printf 'paused: waiting on upstream release\n' >> "$d/state/quiet.status" ;;
+    hold) printf 'captain-held [key=choice]: waiting for the captain\n' >> "$d/state/quiet.status" ;;
+    away) : > "$d/state/.afk"; touch "$d/state/.last-heartbeat" ;;
+  esac
+  quiet_run "$d"
+  case "$mode" in
+    away) rm -f "${d:?}/state/.afk" ;;
+    *) printf 'working: resuming\n' >> "$d/state/quiet.status" ;;
+  esac
+  printf 'dead\n' > "$d/liveness"
+  printf 'Segmentation fault\n$ \n' > "$d/pane"
+  : > "$d/static"
+  quiet_run "$d"
+  grep -F 'agent exited or endpoint gone' "$d/out" >/dev/null || fail "$label: second death was hidden by the first: $(cat "$d/out")"
+  [ "$(grep -c 'agent exited or endpoint gone' "$d/state/.wake-queue")" -eq 2 ] || fail "$label: second death was not queued"
+  pass "$label: a recovered worker's second death surfaces promptly"
+}
+
+# Away mode keeps owning idle stale wakes: neither the quiet cadence nor the
+# death alert replaces its one-shot stale wake for a live done worker or a dead one.
+test_away_owns_stale() {
+  local d
+  d=$(quiet_case away-owns tmux)
+  printf 'done: ready for review\n' > "$d/state/quiet.status"
+  : > "$d/state/.afk"
+  touch "$d/state/.last-heartbeat"
+  quiet_run "$d"
+  [ "$(cat "$d/out")" = 'stale: test:fm-quiet' ] || fail "away mode lost a live done worker's stale wake: $(cat "$d/out")"
+  printf 'working: implementing\n' >> "$d/state/quiet.status"
+  printf 'dead\n' > "$d/liveness"
+  printf '$ \n' > "$d/pane"
+  quiet_run "$d"
+  [ "$(cat "$d/out")" = 'stale: test:fm-quiet' ] || fail "away mode lost a dead worker's stale wake: $(cat "$d/out")"
+  pass 'away mode keeps its own stale wake for live quiet and dead workers'
+}
+
+test_second_death_cases() {
+  local backend mode failures=0
+  for backend in tmux herdr; do
+    for mode in pause hold away; do
+      (test_second_death_after_skip "$backend" "$mode") || failures=$((failures + 1))
+    done
+  done
+  (test_second_death_after_skip tmux pause ambiguous) || failures=$((failures + 1))
+  [ "$failures" -eq 0 ]
+}
+
 case "${FM_QUIET_TEST:-all}" in
   all) ;;
   healthy) test_healthy_quiet tmux parked grok; exit ;;
@@ -415,6 +481,8 @@ case "${FM_QUIET_TEST:-all}" in
   reads) test_validating_reads_bounded; exit ;;
   busy) test_busy_after_quiet; exit ;;
   unknown-all) for b in zellij cmux orca; do (test_unknown_liveness "$b") || exit 1; done; exit ;;
+  second-death) test_second_death_cases; exit ;;
+  away) test_away_owns_stale; exit ;;
   *) fail 'unknown FM_QUIET_TEST selection' ;;
 esac
 
@@ -435,7 +503,8 @@ for backend in zellij cmux orca; do
   if ! (test_unknown_liveness "$backend"); then failures=$((failures + 1)); fi
 done
 for check in test_long_cadence test_quiet_resume test_quiet_cache_expiry test_steer_clears_quiet \
-  test_lifecycle_gaps test_validating_reads_bounded test_busy_after_quiet; do
+  test_lifecycle_gaps test_validating_reads_bounded test_busy_after_quiet test_second_death_cases \
+  test_away_owns_stale; do
   if ! ("$check"); then failures=$((failures + 1)); fi
 done
 [ "$failures" -eq 0 ]
