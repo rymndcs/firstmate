@@ -34,16 +34,14 @@ make_case() {
   local name=$1 case_dir fakebin
   case_dir="$TMP_ROOT/$name"
   fakebin="$case_dir/fakebin"
-  mkdir -p "$case_dir/state" "$fakebin"
+  mkdir -p "$case_dir/state" "$case_dir/data" "$case_dir/projects" "$fakebin"
   fm_write_meta "$case_dir/state/task-x1.meta" \
     "window=fm-task-x1" \
     "worktree=$case_dir/wt" \
-    "project=$case_dir/project" \
+    "project=$case_dir/firstmate-project" \
     "kind=ship" \
     "mode=no-mistakes"
-  # No worktree/project on disk; fm-pr-check.sh tolerates a worktree it cannot
-  # stat and simply skips the pr_head lookup via `gh` in that case, so give it
-  # one that resolves for cases that want pr_head recorded.
+  fm_test_register_firstmate_project "$case_dir"
   printf '%s\n' "$case_dir"
 }
 
@@ -91,6 +89,7 @@ SH
 
 run_pr_merge() {
   local case_dir=$1 rc; shift
+  FM_HOME="$case_dir" FM_PROJECTS_OVERRIDE="$case_dir/projects" \
   FM_ROOT_OVERRIDE="$ROOT" \
   FM_STATE_OVERRIDE="$case_dir/state" \
   FM_CONFIG_OVERRIDE="$case_dir/config" \

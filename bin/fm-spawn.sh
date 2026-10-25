@@ -2115,6 +2115,10 @@ if [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   fi
 fi
 
+if [ "$KIND" = ship ]; then
+  "$SCRIPT_DIR/fm-protected-paths.sh" install "$WT" "$ID" "${BRIEF_BRANCH:-fm/$ID}" || exit 1
+fi
+
 # Per-task temp root: /tmp/fm-<id>/ with Go's build temp nested at gotmp/. Go won't
 # create GOTMPDIR, so mkdir before it is used; fm-teardown removes the whole root.
 # Nested (not a bare /tmp/fm-<id>/gotmp) so other per-task temp can live alongside

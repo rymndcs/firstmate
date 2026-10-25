@@ -110,6 +110,8 @@ fi
 pr_head_commit() { gh pr view "$URL" --json headRefOid -q .headRefOid; }
 fm_ship_review_gate "$ID" "$STATE/$ID.status" "$DATA" fm-pr-merge.sh pr_head_commit || exit 1
 
+"$SCRIPT_DIR/fm-protected-paths.sh" land-pr "$ID" "$PR_NUMBER" || exit 1
+
 "$SCRIPT_DIR/fm-pr-check.sh" "$ID" "$URL"
 grep -qxF "pr=$URL" "$META" || {
   echo "error: PR metadata recording failed" >&2

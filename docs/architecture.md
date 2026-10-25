@@ -282,8 +282,9 @@ The [X mode configuration reference](configuration.md#promised-public-replies-st
 
 ## Project memory belongs to projects
 
-Durable project-intrinsic agent knowledge lives in each project's committed `CLAUDE.md`, with `AGENTS.md` as a symlink.
-Changes to project instruction files follow the per-change permission boundary in [`AGENTS.md`](../AGENTS.md) section 6; `data/projects.md` stays a thin private registry.
+Project instruction changes require the captain's per-change approval under [`AGENTS.md`](../AGENTS.md) section 6; discovering project knowledge never authorizes a worker to edit those files.
+[`bin/fm-protected-paths.sh`](../bin/fm-protected-paths.sh) owns the protected-path check, approval-file format, shared push hook and landing enforcement; its `--help` documents the interfaces.
+`data/projects.md` stays a thin private registry and identifies the exempt `ai-workspace` project.
 The full ownership rule - what is project-intrinsic versus fleet-private, and how firstmate keeps the two apart without writing into project clones - is owned by [`AGENTS.md`](../AGENTS.md) (project and knowledge management).
 
 ## Operational memory routing
