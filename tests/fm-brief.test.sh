@@ -1234,20 +1234,23 @@ test_local_rules_follow_projects_override() {
 }
 
 test_firstmate_alias_checks_clone_under_projects_override() {
-  local fixture_home override brief
+  local fixture_home override code_root brief
   fixture_home="$TMP_ROOT/override-firstmate home"
   override="$TMP_ROOT/override-firstmate alt/projects"
+  code_root="$TMP_ROOT/override-firstmate code root"
   mkdir -p "$fixture_home/data" "$fixture_home/projects/firstmate" "$override/firstmate"
   printf 'HOME_ALIAS_RULE: wrong source.\n' > "$fixture_home/CLAUDE.local.md"
   printf 'DEFAULT_CLONE_RULE: wrong source.\n' > "$fixture_home/projects/firstmate/CLAUDE.local.md"
   printf 'OVERRIDE_CLONE_RULE: configured clone.\n' > "$override/firstmate/CLAUDE.local.md"
-  FM_PROJECTS_OVERRIDE="$override" FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" override-alias firstmate --scout >/dev/null 2>&1
+  FM_ROOT_OVERRIDE="$code_root" FM_PROJECTS_OVERRIDE="$override" FM_HOME="$fixture_home" \
+    "$ROOT/bin/fm-brief.sh" override-alias firstmate --scout >/dev/null 2>&1
   brief="$fixture_home/data/override-alias/brief.md"
   assert_grep "source: \`$override/firstmate/CLAUDE.local.md\`" "$brief" 'firstmate clone check ignored FM_PROJECTS_OVERRIDE'
   assert_no_grep 'DEFAULT_CLONE_RULE' "$brief" 'firstmate clone check used the default projects dir'
   assert_no_grep 'HOME_ALIAS_RULE' "$brief" 'existing override clone lost to the firstmate alias'
   rm -rf "${override:?}/firstmate"
-  FM_PROJECTS_OVERRIDE="$override" FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" override-alias-home firstmate --scout >/dev/null 2>&1
+  FM_ROOT_OVERRIDE="$code_root" FM_PROJECTS_OVERRIDE="$override" FM_HOME="$fixture_home" \
+    "$ROOT/bin/fm-brief.sh" override-alias-home firstmate --scout >/dev/null 2>&1
   brief="$fixture_home/data/override-alias-home/brief.md"
   assert_grep 'HOME_ALIAS_RULE:' "$brief" 'missing override clone did not fall back to the firstmate alias'
   assert_no_grep 'DEFAULT_CLONE_RULE' "$brief" 'default projects clone shadowed the firstmate alias under an override'
@@ -1255,12 +1258,13 @@ test_firstmate_alias_checks_clone_under_projects_override() {
 }
 
 test_registered_project_name_wins_over_firstmate_alias() {
-  local fixture_home brief
+  local fixture_home code_root brief
   fixture_home="$TMP_ROOT/registered-firstmate"
+  code_root="$TMP_ROOT/registered-firstmate code root"
   mkdir -p "$fixture_home/data"
   printf '%s\n' '- firstmate [no-mistakes] - registered project with a missing clone' > "$fixture_home/data/projects.md"
   printf 'UNRELATED_HOME_RULE\n' > "$fixture_home/CLAUDE.local.md"
-  FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" registered-alias firstmate --scout >/dev/null 2>&1
+  FM_ROOT_OVERRIDE="$code_root" FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" registered-alias firstmate --scout >/dev/null 2>&1
   brief="$fixture_home/data/registered-alias/brief.md"
   assert_grep "ABSENT: $fixture_home/projects/firstmate/CLAUDE.local.md" "$brief" 'registered project silently used home rules'
   assert_no_grep 'UNRELATED_HOME_RULE' "$brief" 'home rules replaced registered project rules'
