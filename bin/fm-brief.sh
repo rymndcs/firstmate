@@ -87,7 +87,7 @@
 # This script owns per-brief CLAUDE.local.md discovery: project names and
 # projects/<name> resolve under FM_PROJECTS_OVERRIDE or FM_HOME/projects, and
 # absolute clone paths also work.
-# The code-root basename and absolute home/code-root paths name Firstmate itself,
+# The FM_HOME directory name and absolute home/code-root paths name Firstmate itself,
 # including when its own posture is registered. The firstmate alias also names it
 # unless that name belongs to a registered project or an existing project clone.
 # Project-less charters read the home's rules; other charters read every listed
@@ -312,7 +312,7 @@ DECISION_HOLD_CMD="FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin
 project_local_rules() {
   local project=$1 clone path contents
   case "$project" in
-    "$FM_ROOT"|"${FM_ROOT##*/}") clone=$FM_HOME ;;
+    "$FM_ROOT"|"${FM_HOME##*/}") clone=$FM_HOME ;;
     /*) clone=$project ;;
     projects/*) clone="$PROJECTS/${project#projects/}" ;;
     *)

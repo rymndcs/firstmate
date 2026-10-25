@@ -1237,7 +1237,7 @@ test_firstmate_alias_checks_clone_under_projects_override() {
   local fixture_home override code_root brief
   fixture_home="$TMP_ROOT/override-firstmate home"
   override="$TMP_ROOT/override-firstmate alt/projects"
-  code_root="$TMP_ROOT/override-firstmate code root"
+  code_root="$TMP_ROOT/override-firstmate checkout/firstmate"
   mkdir -p "$fixture_home/data" "$fixture_home/projects/firstmate" "$override/firstmate"
   printf 'HOME_ALIAS_RULE: wrong source.\n' > "$fixture_home/CLAUDE.local.md"
   printf 'DEFAULT_CLONE_RULE: wrong source.\n' > "$fixture_home/projects/firstmate/CLAUDE.local.md"
@@ -1260,7 +1260,7 @@ test_firstmate_alias_checks_clone_under_projects_override() {
 test_registered_project_name_wins_over_firstmate_alias() {
   local fixture_home code_root brief
   fixture_home="$TMP_ROOT/registered-firstmate"
-  code_root="$TMP_ROOT/registered-firstmate code root"
+  code_root="$TMP_ROOT/registered-firstmate checkout/firstmate"
   mkdir -p "$fixture_home/data"
   printf '%s\n' '- firstmate [no-mistakes] - registered project with a missing clone' > "$fixture_home/data/projects.md"
   printf 'UNRELATED_HOME_RULE\n' > "$fixture_home/CLAUDE.local.md"
@@ -1268,13 +1268,20 @@ test_registered_project_name_wins_over_firstmate_alias() {
   brief="$fixture_home/data/registered-alias/brief.md"
   assert_grep "ABSENT: $fixture_home/projects/firstmate/CLAUDE.local.md" "$brief" 'registered project silently used home rules'
   assert_no_grep 'UNRELATED_HOME_RULE' "$brief" 'home rules replaced registered project rules'
-  pass 'registered projects take precedence over firstmate aliases even without a clone'
+  mkdir -p "$fixture_home/projects/firstmate"
+  printf 'REGISTERED_CLONE_RULE: project clone rules.\n' > "$fixture_home/projects/firstmate/CLAUDE.local.md"
+  FM_ROOT_OVERRIDE="$code_root" FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" registered-alias-clone firstmate --scout >/dev/null 2>&1
+  brief="$fixture_home/data/registered-alias-clone/brief.md"
+  assert_grep "source: \`$fixture_home/projects/firstmate/CLAUDE.local.md\`" "$brief" 'registered clone named like the code root used home rules'
+  assert_grep 'REGISTERED_CLONE_RULE:' "$brief" 'registered clone named like the code root omitted its rules'
+  assert_no_grep 'UNRELATED_HOME_RULE' "$brief" 'home rules replaced the registered clone named like the code root'
+  pass 'registered projects named like the code root take precedence over firstmate aliases'
 }
 
 test_registered_operational_home_uses_home_rules() {
   local fixture_home brief name
   fixture_home="$TMP_ROOT/registered-operational-home"
-  name=${ROOT##*/}
+  name=${fixture_home##*/}
   mkdir -p "$fixture_home/data"
   printf -- '- %s [no-mistakes] - the operational home itself\n' "$name" > "$fixture_home/data/projects.md"
   printf 'REGISTERED_HOME_RULE: preserve captain instructions.\n' > "$fixture_home/CLAUDE.local.md"
