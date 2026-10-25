@@ -1,25 +1,35 @@
 #!/usr/bin/env bash
 # Resolve the review base: origin's default after fetching, or the local default
-# for repositories without origin. --default reports only the branch name.+# Usage: fm-diff-base.sh <repo> [--default]
+# for repositories without origin. Origin's default is origin/HEAD, else origin's
+# advertised HEAD, else origin/main, else origin/master.
+# Usage: fm-diff-base.sh <repo>
 set -eu
-REPO=${1:?usage: fm-diff-base.sh <repo> [--default]}
-DEFAULT=$(git -C "$REPO" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
-if [ -n "$DEFAULT" ]; then
+REPO=${1:?usage: fm-diff-base.sh <repo>}
+if git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
+  DEFAULT=$(git -C "$REPO" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
   DEFAULT=${DEFAULT#origin/}
-else
-  for branch in main master; do
-    if git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch"; then
-      DEFAULT=$branch
-      break
-    fi
-  done
-fi
-[ -n "$DEFAULT" ] || { echo "error: cannot determine default branch for $REPO; expected origin/HEAD, main, or master" >&2; exit 1; }
-if [ "${2:-}" = --default ]; then
-  printf '%s\n' "$DEFAULT"
-elif git -C "$REPO" remote get-url origin >/dev/null 2>&1; then
+  if [ -z "$DEFAULT" ]; then
+    DEFAULT=$(git -C "$REPO" ls-remote --symref origin HEAD 2>/dev/null \
+      | awk '$1 == "ref:" && $3 == "HEAD" { sub("^refs/heads/", "", $2); print $2 }' || true)
+  fi
+  if [ -z "$DEFAULT" ]; then
+    for branch in main master; do
+      if git -C "$REPO" show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        DEFAULT=$branch
+        break
+      fi
+    done
+  fi
+  [ -n "$DEFAULT" ] || { echo "error: cannot determine origin's default branch for $REPO; run 'git -C $REPO remote set-head origin <branch>' and retry" >&2; exit 1; }
   git -C "$REPO" fetch origin "+refs/heads/$DEFAULT:refs/remotes/origin/$DEFAULT" --quiet
   printf 'origin/%s\n' "$DEFAULT"
-else
-  printf '%s\n' "$DEFAULT"
+  exit 0
 fi
+for branch in main master; do
+  if git -C "$REPO" show-ref --verify --quiet "refs/heads/$branch"; then
+    printf '%s\n' "$branch"
+    exit 0
+  fi
+done
+echo "error: cannot determine default branch for $REPO; expected main or master" >&2
+exit 1

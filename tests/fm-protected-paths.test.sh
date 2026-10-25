@@ -85,6 +85,10 @@ test_layer_one() {
   printf 'CLAUDE.md\nCONCEPTS.md\n' > "$HOME_DIR/data/task-x1/agent-file-approval.md"
   refused_push HEAD:refs/heads/fm/task-x1
   assert_grep '  CLAUDE.md' "$C/push.log" 'approval without captain quotation must refuse'
+  printf '> \nCLAUDE.md\nCONCEPTS.md\n' > "$HOME_DIR/data/task-x1/agent-file-approval.md"
+  refused_push HEAD:refs/heads/fm/task-x1
+  assert_grep '  CLAUDE.md' "$C/push.log" 'empty captain quotation must refuse CLAUDE.md'
+  assert_grep '  CONCEPTS.md' "$C/push.log" 'empty captain quotation must refuse CONCEPTS.md'
   approve '*'
   refused_push HEAD:refs/heads/fm/task-x1
   assert_grep '  CLAUDE.md' "$C/push.log" 'glob must not authorize a path'
@@ -127,6 +131,13 @@ test_all_protected_paths_and_refs() {
   make_case paths
   spawn_task
   local path
+  for path in nested/.claude/tool nested/.codex/tool nested/docs/solutions/note; do
+    mkdir -p "$WT/$(dirname "$path")"
+    printf 'ordinary\n' > "$WT/$path"
+  done
+  commit_change 'nested ordinary names'
+  git -C "$WT" push -q origin HEAD:refs/heads/nested-ordinary || fail 'nested directories outside the root-anchored set were gated'
+  git -C "$C/origin.git" show-ref --verify --quiet refs/heads/nested-ordinary || fail 'nested ordinary names did not publish'
   for path in nested/CLAUDE.md nested/CLAUDE.local.md nested/CONCEPTS.md .CoDeX/tool .claude/new docs/SoLuTiOnS/new; do
     mkdir -p "$WT/$(dirname "$path")"
     printf 'instructions\n' > "$WT/$path"
@@ -200,14 +211,18 @@ test_pipeline_gate() {
   local bare pwt head
   bare="$C/.no-mistakes/repos/016d88035d58.git"
   mkdir -p "$(dirname "$bare")"
-  git clone -q --bare "$C/origin.git" "$bare"
+  # Real gates track origin under refs/remotes/origin/* only: no local main or
+  # master, and no origin/HEAD.
+  git init -q --bare "$bare"
+  git -C "$bare" symbolic-ref HEAD refs/heads/main
   git -C "$bare" config --local commit.gpgsign false
   git -C "$bare" config --local tag.gpgsign false
+  git -C "$bare" remote add origin "$C/origin.git"
+  git -C "$bare" fetch -q origin '+refs/heads/*:refs/remotes/origin/*'
   git -C "$bare" config extensions.worktreeConfig true
   git -C "$bare" config --worktree core.hooksPath "$bare/hooks"
   git -C "$bare" config --worktree core.bare true
   git -C "$bare" config --local --unset core.bare
-  git -C "$bare" remote set-url origin "$C/origin.git"
   git -C "$PROJ" remote add no-mistakes "$bare"
   spawn_task
   printf 'ordinary\n' > "$WT/ordinary.txt"
@@ -215,6 +230,10 @@ test_pipeline_gate() {
   git -C "$WT" push -q no-mistakes HEAD:refs/heads/fm/task-x1 || fail 'ordinary submission to gate refused'
   pwt="$C/.no-mistakes/worktrees/016d88035d58/run"
   git -C "$bare" worktree add -q --detach "$pwt" fm/task-x1
+  head=$(git -C "$pwt" rev-parse HEAD)
+  git -C "$pwt" push -q "$C/origin.git" "$head:refs/heads/fm/task-x1" > "$C/push.log" 2>&1 \
+    || fail "ordinary pipeline push refused: $(cat "$C/push.log")"
+  [ "$(git -C "$C/origin.git" rev-parse refs/heads/fm/task-x1)" = "$head" ] || fail 'ordinary pipeline push did not reach upstream'
   printf 'pipeline change\n' >> "$pwt/CLAUDE.md"
   git -C "$pwt" commit -qam 'pipeline added change'
   head=$(git -C "$pwt" rev-parse HEAD)
@@ -234,7 +253,33 @@ test_pipeline_gate() {
   assert_grep '  CLAUDE.md' "$C/push.log" 'other task should require its own approval'
   "$GATE" remove "$WT" task-x2
   "$GATE" install "$WT" task-x1 fm/task-x1
-  pass 'bare gate hook checks the pipeline-added commit, including immutable-SHA pushes'
+  pass 'real-layout bare gate publishes ordinary pipeline pushes and checks pipeline-added commits, including immutable-SHA pushes'
+}
+
+# A protected edit already on unpublished local main rides along in every
+# push, so the push still needs approval, but local landing compares with the
+# local branch it fast-forwards.
+test_inherited_main_change() {
+  make_case inherited
+  printf 'captain edit\n' >> "$PROJ/CLAUDE.md"
+  git -C "$PROJ" commit -qam 'captain edit on unpublished local main'
+  git -C "$WT" merge -q --ff-only main
+  spawn_task
+  printf 'ordinary\n' > "$WT/ordinary.txt"
+  commit_change 'unrelated task change'
+  refused_push HEAD:refs/heads/fm/task-x1
+  assert_grep '  CLAUDE.md' "$C/push.log" 'push must refuse the unpublished protected edit it would publish'
+  fm_write_meta "$HOME_DIR/state/task-x1.meta" "window=firstmate:fm-task-x1" "worktree=$WT" "project=$PROJ" "kind=ship" "mode=local-only"
+  "$ROOT/bin/fm-merge-local.sh" task-x1 > "$C/merge.log" 2>&1 || fail "unrelated task landing refused: $(cat "$C/merge.log")"
+  [ "$(git -C "$PROJ" rev-parse main)" = "$(git -C "$WT" rev-parse HEAD)" ] || fail 'unrelated task did not land on local main'
+  pass 'push refuses an inherited unpublished protected edit; local landing of an unrelated task passes'
+}
+
+assert_no_comparison_ref() {
+  if git -C "$PROJ" show-ref --verify --quiet refs/fm-protected/pull/9; then
+    fail "$1 left its comparison ref behind"
+  fi
+  git -C "$PROJ" show-ref --verify --quiet refs/fm-protected/pull/10 || fail "$1 removed another PR's ref"
 }
 
 test_landing() {
@@ -248,6 +293,7 @@ test_landing() {
   assert_grep '  CLAUDE.md' "$C/merge.log" 'local landing refusal did not name protected change'
   git -C "$PROJ" diff --exit-code main origin/main >/dev/null || fail 'refused merge changed main'
   git -C "$WT" push -q origin HEAD:refs/pull/9/head
+  git -C "$PROJ" update-ref refs/fm-protected/pull/10 main
   git -C "$PROJ" show main:CLAUDE.md > "$WT/CLAUDE.md"
   commit_change 'local branch restored while PR remains protected'
   cat > "$C/fakebin/gh-axi" <<'SH'
@@ -261,10 +307,12 @@ SH
   fi
   assert_grep '  CLAUDE.md' "$C/merge.log" 'PR landing refusal did not name protected change'
   assert_absent "$HOME_DIR/gh-axi.log" 'refused PR called merge'
+  assert_no_comparison_ref 'refused PR check'
   approve CLAUDE.md
   PATH="$C/fakebin:$PATH" "$ROOT/bin/fm-pr-merge.sh" task-x1 https://github.com/example/repo/pull/9 > "$C/merge.log" 2>&1 \
     || fail "approved PR merge refused: $(cat "$C/merge.log")"
   assert_grep 'pr merge 9 --repo example/repo' "$HOME_DIR/gh-axi.log" 'approved PR never reached merge'
+  assert_no_comparison_ref 'approved PR check'
   printf "approved local change\n" >> "$WT/CLAUDE.md"
   commit_change "approved local change"
   "$ROOT/bin/fm-merge-local.sh" task-x1 > "$C/merge.log" 2>&1 || fail "approved local merge refused: $(cat "$C/merge.log")"
@@ -305,6 +353,45 @@ test_install_refusals() {
   pass 'installer refuses inactive hook placement and preserves an existing hook backup'
 }
 
-for test in ${FM_PROTECTED_TESTS:-test_layer_one test_net_changes test_rename_and_case test_all_protected_paths_and_refs test_existing_hooks_and_unmarked_pushes test_exempt_project test_pipeline_gate test_landing test_teardown test_install_refusals}; do
+# An installer copy whose hook source is a FIFO stops inside the install lock until the test writes it.
+start_held_install() {
+  set -m
+  "$C/bin/fm-protected-paths.sh" install "$WT" task-x1 fm/task-x1 > "$C/held.log" 2>&1 &
+  HELD_PID=$!
+  set +m
+  exec 8> "$C/bin/fm-protected-pre-push.py"
+}
+
+test_install_lock_recovery() {
+  make_case install-lock
+  cp -R "$ROOT/bin" "$C/bin"
+  rm "${C:?}/bin/fm-protected-pre-push.py"
+  mkfifo "$C/bin/fm-protected-pre-push.py"
+  start_held_install
+  kill -KILL -- "-$HELD_PID"
+  exec 8>&-
+  wait "$HELD_PID" 2>/dev/null || true
+  "$GATE" install "$WT" task-x1 fm/task-x1 > "$C/install.log" 2>&1 \
+    || fail "install after a killed installer refused: $(cat "$C/install.log")"
+  "$GATE" install "$WT" task-x1 fm/task-x1 > "$C/install.log" 2>&1 \
+    || fail "repeated install refused: $(cat "$C/install.log")"
+  start_held_install
+  if "$GATE" install "$WT" task-x1 fm/task-x1 > "$C/install.log" 2>&1; then
+    fail 'install ran while a live installer held the lock'
+  fi
+  assert_grep 'retry after it finishes' "$C/install.log" 'live lock refusal must say how to recover'
+  cat "$ROOT/bin/fm-protected-pre-push.py" >&8
+  exec 8>&-
+  wait "$HELD_PID" || fail "live installer lost its lock: $(cat "$C/held.log")"
+  "$GATE" install "$WT" task-x1 fm/task-x1 > "$C/install.log" 2>&1 \
+    || fail "install after the live installer finished refused: $(cat "$C/install.log")"
+  [ -z "$(find "$PROJ/.git/hooks" -name '.fm-protected-install.lock*')" ] || fail 'install left its lock behind'
+  printf 'changed\n' >> "$WT/CLAUDE.md"
+  commit_change change
+  refused_push HEAD:refs/heads/fm/task-x1
+  pass 'a killed installer leaves no lasting block; a live installer keeps its lock; repeated installs pass'
+}
+
+for test in ${FM_PROTECTED_TESTS:-test_layer_one test_net_changes test_rename_and_case test_all_protected_paths_and_refs test_existing_hooks_and_unmarked_pushes test_exempt_project test_pipeline_gate test_inherited_main_change test_landing test_teardown test_install_refusals test_install_lock_recovery}; do
   "$test"
 done

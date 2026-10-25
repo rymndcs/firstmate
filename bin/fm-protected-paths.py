@@ -3,8 +3,10 @@
 
 Protected paths are case-insensitive: CLAUDE.md, CLAUDE.local.md, AGENTS.md and
 CONCEPTS.md at any depth, and root .claude/, .codex/ and docs/solutions/.
-Both sides of a rename count; only net changes against the branch's merge-base
-count. Branch deletions and tags are ignored.
+Both sides of a rename count; only net changes against the merge-base count.
+Pushes and land-pr use the merge-base with origin's default branch, because a
+push publishes everything that remote lacks; land-local uses the merge-base
+with the local branch it fast-forwards. Branch deletions and tags are ignored.
 
 Approval files are <FM_HOME>/data/<task>/agent-file-approval.md. At least one
 line must start '> ' and quote the captain; every other nonblank line names
@@ -17,17 +19,23 @@ is preserved as pre-push.firstmate-original and chained with its arguments and
 stdin. Other hooks and Git configuration are untouched. If no-mistakes is
 configured, the same dispatcher checks that task's destination branch in its
 bare gate, including commits the pipeline adds. An unregistered gate branch
-cannot borrow any task's approval. remove deletes task markers
-and gate entries; shared dispatchers remain inert without them.
+cannot borrow any task's approval. Installs into one hooks directory take
+turns through the owner-PID lock in fm-wake-lib.sh: a dead installer's lock is
+recovered, and a live one makes a second install refuse with a retry hint.
+remove deletes task markers and gate entries; shared dispatchers remain inert
+without them.
 
 check --repo <repo> --task <task> --approval <absolute-file> reads standard
 pre-push input, or accepts --head <commit> for landing. Only unlisted protected
 paths are printed on refusal. land-pr <task> <number> fetches the current PR
-head from the task project; land-local <task> <commit> checks a pinned head.
+head from the task project into a comparison ref it deletes after the check,
+whatever the outcome; land-local <task> <commit> <base> checks a pinned
+head against the local branch it lands on.
 The registered ai-workspace entry in data/projects.md identifies the exemption
 through the home itself or projects/ai-workspace, never a directory basename.
 """
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -39,6 +47,9 @@ import sys
 BIN = Path(__file__).resolve().parent
 MARKER = "fm-agent-file-task.json"
 REFUSAL = "Append needs-decision [key=agent-file-approval] to the status file and stop."
+HOLD_LOCK = ('. "$1"; fm_lock_try_acquire "$2" || { echo "another install holds $2'
+             ' (pid ${FM_LOCK_HELD_PID:-unknown}); retry after it finishes" >&2; exit 1; }; '
+             'echo held; read -r _; fm_lock_release "$2"')
 
 
 def git(repo, *args):
@@ -103,10 +114,11 @@ def approval_paths(path):
     return {line for line in lines if line.strip() and not line.startswith("> ")}
 
 
-def check(repo, task, approval, heads):
-    if not heads:
-        return
-    base_ref = subprocess.check_output([str(BIN / "fm-diff-base.sh"), str(repo)], text=True).strip()
+def remote_default(repo):
+    return subprocess.check_output([str(BIN / "fm-diff-base.sh"), str(repo)], text=True).strip()
+
+
+def check(repo, task, approval, heads, base_ref):
     changed = set()
     for head in heads:
         base = git_text(repo, "merge-base", base_ref, head)
@@ -140,23 +152,37 @@ def write_json(path, record):
     temporary.replace(path)
 
 
+@contextlib.contextmanager
+def install_lock(hooks):
+    """Hold fm-wake-lib.sh's owner-PID lock through a bash child that releases it when stdin closes."""
+    lock = hooks / ".fm-protected-install.lock"
+    holder = subprocess.Popen(["bash", "-c", HOLD_LOCK, "protected-paths", str(BIN / "fm-wake-lib.sh"), str(lock)],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    try:
+        if holder.stdout.readline() != b"held\n":
+            raise ValueError(f"install lock {lock} is held")
+        yield
+    finally:
+        holder.stdin.close()
+        holder.wait()
+
+
 def install_hook(repo):
     hooks = common_dir(repo) / "hooks"
     configured = optional_git(repo, "config", "--get", "core.hooksPath")
     if configured and Path(git_text(repo, "rev-parse", "--git-path", "hooks")).resolve() != hooks:
         raise ValueError("needs-decision [key=gate-install]: project uses a different hooks directory")
     hooks.mkdir(exist_ok=True)
-    lock = hooks / ".fm-protected-install.lock"
-    lock.touch(exist_ok=False)
-    try:
+    with install_lock(hooks):
         hook = hooks / "pre-push"
         template = b'#!/bin/sh\n# firstmate-protected-pre-push-v1\nexec python3 -I "$(dirname "$0")/fm-protected-pre-push.py" "$@"\n'
         managed = hook.exists() and hook.read_bytes() == template
         helper = hooks / "fm-protected-pre-push.py"
         if helper.exists() and not managed:
             raise ValueError("existing hook helper needs reconciliation")
+        # Only the lock holder writes this file, so an existing one is a dead installer's.
         helper_tmp = hooks / "fm-protected-pre-push.py.lock"
-        with helper_tmp.open("xb") as stream:
+        with helper_tmp.open("wb") as stream:
             stream.write((BIN / "fm-protected-pre-push.py").read_bytes())
         helper_tmp.replace(helper)
         if hook.exists() or hook.is_symlink():
@@ -169,8 +195,6 @@ def install_hook(repo):
         with hook.open("xb") as stream:
             stream.write(template)
         hook.chmod(0o755)
-    finally:
-        lock.unlink()
     return hooks
 
 
@@ -221,18 +245,23 @@ def remove(repo, task):
     marker.unlink()
 
 
-def landing(task, head=None, number=None):
+def landing(task, head=None, number=None, base=None):
     valid_task(task)
     state = Path(os.environ.get("FM_STATE_OVERRIDE") or home() / "state")
     meta = dict(line.split("=", 1) for line in (state / (task + ".meta")).read_text().splitlines() if "=" in line)
     repo = Path(meta["project"])
     if exempt(repo):
         return
-    if number is not None:
-        ref = "refs/fm-protected/pull/" + number
+    approval = home() / "data" / task / "agent-file-approval.md"
+    if number is None:
+        check(repo, task, approval, [head], base)
+        return
+    ref = "refs/fm-protected/pull/" + number
+    try:
         git(repo, "fetch", "--quiet", "origin", "+refs/pull/" + number + "/head:" + ref)
-        head = git_text(repo, "rev-parse", ref + "^{commit}")
-    check(repo, task, home() / "data" / task / "agent-file-approval.md", [head])
+        check(repo, task, approval, [git_text(repo, "rev-parse", ref + "^{commit}")], remote_default(repo))
+    finally:
+        git(repo, "update-ref", "-d", ref)
 
 
 def main():
@@ -249,10 +278,11 @@ def main():
     child.add_argument("--task", required=True)
     child.add_argument("--approval", type=Path)
     child.add_argument("--head")
-    for command, arg in (("land-pr", "number"), ("land-local", "head")):
+    for command, names in (("land-pr", ("number",)), ("land-local", ("head", "base"))):
         child = sub.add_parser(command)
         child.add_argument("task")
-        child.add_argument(arg)
+        for name in names:
+            child.add_argument(name)
     args = parser.parse_args()
     if args.command == "install":
         install(args.repo.resolve(), args.task, args.branch)
@@ -268,11 +298,12 @@ def main():
                 local_ref, sha, remote_ref, remote_sha = line.split()
                 if remote_ref.startswith("refs/heads/") and set(sha) != {"0"}:
                     heads.append(sha)
-        check(args.repo, args.task, args.approval, heads)
+        if heads:
+            check(args.repo, args.task, args.approval, heads, remote_default(args.repo))
     elif args.command == "land-pr":
         landing(args.task, number=args.number)
     else:
-        landing(args.task, head=args.head)
+        landing(args.task, head=args.head, base=args.base)
 
 
 if __name__ == "__main__":

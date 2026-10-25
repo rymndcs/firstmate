@@ -95,7 +95,7 @@ fi
 # The review gate runs last among the refusals and compares the review pass
 # with the exact commit about to land.
 BRANCH_HEAD=$(git -C "$PROJ" rev-parse --verify --quiet "refs/heads/$BRANCH^{commit}")
-"$SCRIPT_DIR/fm-protected-paths.sh" land-local "$ID" "$BRANCH_HEAD" || exit 1
+"$SCRIPT_DIR/fm-protected-paths.sh" land-local "$ID" "$BRANCH_HEAD" "$DEFAULT" || exit 1
 # shellcheck disable=SC2329 # Invoked by name from fm_ship_review_gate.
 task_branch_head() { printf '%s\n' "$BRANCH_HEAD"; }
 fm_ship_review_gate "$ID" "$STATE/$ID.status" "$DATA" fm-merge-local.sh task_branch_head || exit 1
