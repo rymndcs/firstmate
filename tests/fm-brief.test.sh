@@ -1208,6 +1208,52 @@ test_local_rules_project_path_forms() {
   pass 'projects/<name>, absolute clone and code-root project arguments read the right local rules'
 }
 
+test_local_rules_follow_projects_override() {
+  local fixture_home override form id brief rules
+  fixture_home="$TMP_ROOT/projects-override home"
+  override="$TMP_ROOT/projects-override alt/projects"
+  mkdir -p "$fixture_home/data" "$fixture_home/projects/sample" "$override/sample"
+  printf '%s\n' '- sample [no-mistakes] - fixture project' > "$fixture_home/data/projects.md"
+  printf 'DEFAULT_LOCATION_RULE: wrong clone.\n' > "$fixture_home/projects/sample/CLAUDE.local.md"
+  printf 'OVERRIDE_LOCATION_RULE: configured clone.\n' > "$override/sample/CLAUDE.local.md"
+  rules="$override/sample/CLAUDE.local.md"
+  for form in bare prefixed; do
+    id="projects-override-$form"
+    case "$form" in
+      bare) FM_PROJECTS_OVERRIDE="$override" FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" sample --scout >/dev/null 2>&1 ;;
+      prefixed) FM_PROJECTS_OVERRIDE="$override" FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" projects/sample --scout >/dev/null 2>&1 ;;
+    esac
+    brief="$fixture_home/data/$id/brief.md"
+    assert_present "$brief" "$form override brief missing"
+    assert_grep "source: \`$rules\`" "$brief" "$form brief ignored FM_PROJECTS_OVERRIDE"
+    assert_grep 'OVERRIDE_LOCATION_RULE:' "$brief" "$form brief omitted the configured clone's rules"
+    assert_no_grep 'DEFAULT_LOCATION_RULE' "$brief" "$form brief read the default projects dir under an override"
+    assert_no_grep 'ABSENT:' "$brief" "$form brief reported configured rules as absent"
+  done
+  pass 'bare and projects/<name> arguments read local rules from FM_PROJECTS_OVERRIDE'
+}
+
+test_firstmate_alias_checks_clone_under_projects_override() {
+  local fixture_home override brief
+  fixture_home="$TMP_ROOT/override-firstmate home"
+  override="$TMP_ROOT/override-firstmate alt/projects"
+  mkdir -p "$fixture_home/data" "$fixture_home/projects/firstmate" "$override/firstmate"
+  printf 'HOME_ALIAS_RULE: wrong source.\n' > "$fixture_home/CLAUDE.local.md"
+  printf 'DEFAULT_CLONE_RULE: wrong source.\n' > "$fixture_home/projects/firstmate/CLAUDE.local.md"
+  printf 'OVERRIDE_CLONE_RULE: configured clone.\n' > "$override/firstmate/CLAUDE.local.md"
+  FM_PROJECTS_OVERRIDE="$override" FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" override-alias firstmate --scout >/dev/null 2>&1
+  brief="$fixture_home/data/override-alias/brief.md"
+  assert_grep "source: \`$override/firstmate/CLAUDE.local.md\`" "$brief" 'firstmate clone check ignored FM_PROJECTS_OVERRIDE'
+  assert_no_grep 'DEFAULT_CLONE_RULE' "$brief" 'firstmate clone check used the default projects dir'
+  assert_no_grep 'HOME_ALIAS_RULE' "$brief" 'existing override clone lost to the firstmate alias'
+  rm -rf "${override:?}/firstmate"
+  FM_PROJECTS_OVERRIDE="$override" FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" override-alias-home firstmate --scout >/dev/null 2>&1
+  brief="$fixture_home/data/override-alias-home/brief.md"
+  assert_grep 'HOME_ALIAS_RULE:' "$brief" 'missing override clone did not fall back to the firstmate alias'
+  assert_no_grep 'DEFAULT_CLONE_RULE' "$brief" 'default projects clone shadowed the firstmate alias under an override'
+  pass 'the firstmate alias checks for a clone under FM_PROJECTS_OVERRIDE'
+}
+
 test_registered_project_name_wins_over_firstmate_alias() {
   local fixture_home brief
   fixture_home="$TMP_ROOT/registered-firstmate"
@@ -1241,6 +1287,8 @@ test_registered_project_name_wins_over_firstmate_alias
 test_local_rules_in_every_brief
 test_local_rules_absent_and_unreadable_briefs
 test_local_rules_project_path_forms
+test_local_rules_follow_projects_override
+test_firstmate_alias_checks_clone_under_projects_override
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_ship_review_round_boundaries

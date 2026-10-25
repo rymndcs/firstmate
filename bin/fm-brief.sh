@@ -84,8 +84,9 @@
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
 # All scaffolds carry the project-instruction boundary from AGENTS.md section 6.
-# This script owns per-brief CLAUDE.local.md discovery: project names resolve to
-# FM_HOME/projects/<name>, and projects/<name> or absolute clone paths also work.
+# This script owns per-brief CLAUDE.local.md discovery: project names and
+# projects/<name> resolve under FM_PROJECTS_OVERRIDE or FM_HOME/projects, and
+# absolute clone paths also work.
 # The code-root basename and absolute home/code-root paths name Firstmate itself,
 # including when its own posture is registered. The firstmate alias also names it
 # unless that name belongs to a registered project or an existing project clone.
@@ -162,6 +163,7 @@ if [ -n "${FM_STATE_OVERRIDE:-}" ]; then
 else
   STATE="$FM_HOME/state"
 fi
+PROJECTS="${FM_PROJECTS_OVERRIDE:-$FM_HOME/projects}"
 KIND=ship
 HERDR_LAB=0
 NO_PROJECTS=0
@@ -312,9 +314,9 @@ project_local_rules() {
   case "$project" in
     "$FM_ROOT"|"${FM_ROOT##*/}") clone=$FM_HOME ;;
     /*) clone=$project ;;
-    projects/*) clone="$FM_HOME/$project" ;;
+    projects/*) clone="$PROJECTS/${project#projects/}" ;;
     *)
-      clone="$FM_HOME/projects/$project"
+      clone="$PROJECTS/$project"
       if [ ! -d "$clone" ] && ! { [ -f "$DATA/projects.md" ] &&
         awk -v name="$project" '$1 == "-" && $2 == name { found=1 } END { exit !found }' "$DATA/projects.md"; }; then
         case "$project" in
