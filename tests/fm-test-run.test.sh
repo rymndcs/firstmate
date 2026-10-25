@@ -18,6 +18,7 @@ assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 test_tmpdir_boundary() {
   local tmp repo candidate rc expected
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-tmpdir.XXXXXX")
+  tmp=$(cd "$tmp" && pwd -P)
   repo="$tmp/repo"
   mkdir -p "$repo/bin" "$repo/tests" "$repo/tmp" "$tmp/repo-sibling" "$tmp/fakebin"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
