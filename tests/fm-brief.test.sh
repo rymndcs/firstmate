@@ -435,20 +435,27 @@ test_pr_description_summarize_wiring() {
 }
 
 test_ship_project_memory_wording() {
-  local home id brief
-  home="$TMP_ROOT/project-memory-home"
-  mkdir -p "$home/data"
-  id="brief-memory-c1"
-  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes --checks targeted >/dev/null 2>&1
-  brief="$home/data/$id/brief.md"
-  assert_present "$brief" "brief was not scaffolded"
-  assert_grep "Record only project knowledge useful to almost every future session." "$brief" \
-    "project-memory contract lost the durable-knowledge bar"
-  assert_grep "prefer a pointer to the authoritative file, command, or doc over copying the detail" "$brief" \
-    "project-memory contract lost pointer-over-copy guidance"
-  assert_grep "lacks \`## Maintaining this file\`, add that short self-governance section" "$brief" \
-    "project-memory contract lost the self-governance add-in-same-pass rule"
-  pass "fm-brief.sh: ship project-memory wording carries the AGENTS.md authoring bar"
+  local fixture_home id brief kind protected
+  fixture_home="$TMP_ROOT/project-memory-home"
+  mkdir -p "$fixture_home/data"
+  for kind in ship scout secondmate; do
+    id="brief-memory-$kind"
+    case "$kind" in
+      ship) FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode no-mistakes --checks targeted >/dev/null 2>&1 ;;
+      scout) FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --scout >/dev/null 2>&1 ;;
+      secondmate) FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" --secondmate some-proj >/dev/null 2>&1 ;;
+    esac
+    brief="$fixture_home/data/$id/brief.md"
+    assert_present "$brief" 'brief was not scaffolded'
+    assert_no_grep '# Project memory' "$brief" 'obsolete project-memory step remains'
+    assert_no_grep 'fm-ensure-agents-md.sh' "$brief" 'brief still orders project instruction edits'
+    for protected in CLAUDE.md AGENTS.md CONCEPTS.md docs/solutions/ .claude/ .codex/; do
+      assert_grep "$protected" "$brief" "$kind brief omitted protected $protected"
+    done
+    assert_grep "captain's per-change permission" "$brief" "$kind brief omitted per-change authority"
+    assert_grep "Firstmate's own repo" "$brief" "$kind brief omitted firstmate exception"
+  done
+  pass 'all briefs protect project instruction files without the old memory step'
 }
 
 test_herdr_lab_contract_is_explicit_and_complete() {
@@ -1087,6 +1094,212 @@ test_ship_review_round_boundaries() {
   pass "fm-brief.sh: every ship path stops for a decision at open review boundaries"
 }
 
+test_local_rules_in_every_brief() {
+  local fixture_home kind id brief rules
+  fixture_home="$TMP_ROOT/local rules home"
+  mkdir -p "$fixture_home/data" "$fixture_home/projects/sample" "$fixture_home/projects/other"
+  printf '%s\n' '- sample [no-mistakes] - fixture project' '- other [local-only] - another fixture' > "$fixture_home/data/projects.md"
+  printf '%s\n' 'PROJECT_RULE: do not edit tracked agent instructions.' > "$fixture_home/projects/sample/CLAUDE.local.md"
+  printf '%s\n' 'OTHER_RULE: preserve original inputs.' > "$fixture_home/projects/other/CLAUDE.local.md"
+  printf '%s\n' 'HOME_RULE: firstmate shared material uses its normal review path.' > "$fixture_home/CLAUDE.local.md"
+  for kind in ship scout secondmate firstmate projectless; do
+    id="local-rules-$kind"
+    rules="$fixture_home/projects/sample/CLAUDE.local.md"
+    case "$kind" in
+      ship) FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" sample --mode local-only --checks targeted >/dev/null 2>&1 ;;
+      scout) FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" sample --scout >/dev/null 2>&1 ;;
+      secondmate) FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" --secondmate sample other >/dev/null 2>&1 ;;
+      firstmate)
+        rules="$fixture_home/CLAUDE.local.md"
+        FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode local-only --checks targeted >/dev/null 2>&1 ;;
+      projectless)
+        rules="$fixture_home/CLAUDE.local.md"
+        FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" --secondmate --no-projects >/dev/null 2>&1 ;;
+    esac
+    brief="$fixture_home/data/$id/brief.md"
+    assert_present "$brief" "$kind brief missing"
+    assert_grep "$rules" "$brief" "$kind brief omitted absolute local-rules path"
+    assert_grep 'Read in full before starting work' "$brief" "$kind local rules are not mandatory"
+    assert_grep "$(cat "$rules")" "$brief" "$kind brief omitted full local rules"
+    assert_grep 'Never copy these files into a worktree or commit them.' "$brief" "$kind omitted private-file boundary"
+    if [ "$kind" = secondmate ]; then
+      assert_grep "$fixture_home/projects/other/CLAUDE.local.md" "$brief" 'charter dropped its second project rules'
+    fi
+  done
+  pass 'ship, scout and secondmate briefs point mandatorily at main-clone local rules'
+}
+
+test_local_rules_absent_and_unreadable_briefs() {
+  local fixture_home out rc kind shape brief
+  fixture_home="$TMP_ROOT/local-rules-errors"
+  mkdir -p "$fixture_home/data" "$fixture_home/projects/sample"
+  printf '%s\n' '- sample [no-mistakes] - fixture project' > "$fixture_home/data/projects.md"
+  FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" absent-rules sample --mode local-only --checks targeted >/dev/null 2>&1
+  brief="$fixture_home/data/absent-rules/brief.md"
+  assert_grep "ABSENT: $fixture_home/projects/sample/CLAUDE.local.md" "$brief" 'missing rules silently dropped'
+  for shape in directory dangling permission fifo; do
+    case "$shape" in
+      directory) mkdir "$fixture_home/projects/sample/CLAUDE.local.md" ;;
+      dangling) ln -s "$fixture_home/missing-rules" "$fixture_home/projects/sample/CLAUDE.local.md" ;;
+      fifo) mkfifo "$fixture_home/projects/sample/CLAUDE.local.md" ;;
+      permission)
+        printf 'PRIVATE_RULE\n' > "$fixture_home/projects/sample/CLAUDE.local.md"
+        chmod 000 "$fixture_home/projects/sample/CLAUDE.local.md"
+        [ ! -r "$fixture_home/projects/sample/CLAUDE.local.md" ] || fail 'unreadable fixture is readable'
+        ;;
+    esac
+    for kind in ship scout secondmate; do
+      rc=0
+      [ "$shape" != fifo ] || fm_fifo_feed "$fixture_home/projects/sample/CLAUDE.local.md" 'FIFO_RULE'
+      case "$kind" in
+        ship) out=$(FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "bad-$shape-$kind" sample --mode local-only --checks targeted 2>&1) || rc=$? ;;
+        scout) out=$(FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "bad-$shape-$kind" sample --scout 2>&1) || rc=$? ;;
+        secondmate) out=$(FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "bad-$shape-$kind" --secondmate sample 2>&1) || rc=$? ;;
+      esac
+      [ "$shape" != fifo ] || fm_fifo_release "$fixture_home/projects/sample/CLAUDE.local.md"
+      [ "$rc" -ne 0 ] || fail "$kind accepted $shape local rules"
+      assert_contains "$out" 'unreadable' "$kind did not explain refusal"
+      assert_contains "$out" "$fixture_home/projects/sample/CLAUDE.local.md" "$kind omitted unreadable path"
+      assert_absent "$fixture_home/data/bad-$shape-$kind/brief.md" "$kind left a launchable brief after refusal"
+    done
+    if [ "$shape" = directory ]; then
+      rmdir "$fixture_home/projects/sample/CLAUDE.local.md"
+    else
+      chmod 600 "$fixture_home/projects/sample/CLAUDE.local.md" 2>/dev/null || true
+      rm -f "${fixture_home:?}/projects/sample/CLAUDE.local.md"
+    fi
+  done
+  pass 'missing brief rules are explicit and unreadable rules stop every scaffold'
+}
+
+test_local_rules_project_path_forms() {
+  local fixture_home elsewhere code_root form id brief rules text
+  fixture_home="$TMP_ROOT/path-forms home"
+  elsewhere="$TMP_ROOT/path-forms elsewhere/sample-clone"
+  code_root="$TMP_ROOT/path-forms code root"
+  mkdir -p "$fixture_home/data" "$fixture_home/projects/sample" "$elsewhere" "$code_root"
+  printf 'PREFIXED_RULE: sample clone rules.\n' > "$fixture_home/projects/sample/CLAUDE.local.md"
+  printf 'ELSEWHERE_RULE: absolute clone rules.\n' > "$elsewhere/CLAUDE.local.md"
+  printf 'HOME_RULE: active home rules.\n' > "$fixture_home/CLAUDE.local.md"
+  printf 'CODE_ROOT_RULE: code root rules.\n' > "$code_root/CLAUDE.local.md"
+  for form in prefixed absolute code-root; do
+    id="path-form-$form"
+    case "$form" in
+      prefixed)
+        rules="$fixture_home/projects/sample/CLAUDE.local.md"
+        FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" projects/sample --scout >/dev/null 2>&1 ;;
+      absolute)
+        rules="$elsewhere/CLAUDE.local.md"
+        FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" "$elsewhere" --scout >/dev/null 2>&1 ;;
+      code-root)
+        rules="$fixture_home/CLAUDE.local.md"
+        FM_ROOT_OVERRIDE="$code_root" FM_HOME="$fixture_home" \
+          "$ROOT/bin/fm-brief.sh" "$id" "$code_root" --scout >/dev/null 2>&1 ;;
+    esac
+    brief="$fixture_home/data/$id/brief.md"
+    assert_present "$brief" "$form brief missing"
+    text=$(cat "$rules")
+    assert_grep "source: \`$rules\`" "$brief" "$form brief named the wrong local-rules source"
+    assert_grep "$text" "$brief" "$form brief omitted its local rules"
+    assert_no_grep 'ABSENT:' "$brief" "$form brief reported existing rules as absent"
+  done
+  assert_no_grep 'CODE_ROOT_RULE' "$fixture_home/data/path-form-code-root/brief.md" \
+    'code-root alias read the code root instead of the active home'
+  pass 'projects/<name>, absolute clone and code-root project arguments read the right local rules'
+}
+
+test_local_rules_follow_projects_override() {
+  local fixture_home override form id brief rules
+  fixture_home="$TMP_ROOT/projects-override home"
+  override="$TMP_ROOT/projects-override alt/projects"
+  mkdir -p "$fixture_home/data" "$fixture_home/projects/sample" "$override/sample"
+  printf '%s\n' '- sample [no-mistakes] - fixture project' > "$fixture_home/data/projects.md"
+  printf 'DEFAULT_LOCATION_RULE: wrong clone.\n' > "$fixture_home/projects/sample/CLAUDE.local.md"
+  printf 'OVERRIDE_LOCATION_RULE: configured clone.\n' > "$override/sample/CLAUDE.local.md"
+  rules="$override/sample/CLAUDE.local.md"
+  for form in bare prefixed; do
+    id="projects-override-$form"
+    case "$form" in
+      bare) FM_PROJECTS_OVERRIDE="$override" FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" sample --scout >/dev/null 2>&1 ;;
+      prefixed) FM_PROJECTS_OVERRIDE="$override" FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" projects/sample --scout >/dev/null 2>&1 ;;
+    esac
+    brief="$fixture_home/data/$id/brief.md"
+    assert_present "$brief" "$form override brief missing"
+    assert_grep "source: \`$rules\`" "$brief" "$form brief ignored FM_PROJECTS_OVERRIDE"
+    assert_grep 'OVERRIDE_LOCATION_RULE:' "$brief" "$form brief omitted the configured clone's rules"
+    assert_no_grep 'DEFAULT_LOCATION_RULE' "$brief" "$form brief read the default projects dir under an override"
+    assert_no_grep 'ABSENT:' "$brief" "$form brief reported configured rules as absent"
+  done
+  pass 'bare and projects/<name> arguments read local rules from FM_PROJECTS_OVERRIDE'
+}
+
+test_firstmate_alias_checks_clone_under_projects_override() {
+  local fixture_home override code_root brief
+  fixture_home="$TMP_ROOT/override-firstmate home"
+  override="$TMP_ROOT/override-firstmate alt/projects"
+  code_root="$TMP_ROOT/override-firstmate checkout/firstmate"
+  mkdir -p "$fixture_home/data" "$fixture_home/projects/firstmate" "$override/firstmate"
+  printf 'HOME_ALIAS_RULE: wrong source.\n' > "$fixture_home/CLAUDE.local.md"
+  printf 'DEFAULT_CLONE_RULE: wrong source.\n' > "$fixture_home/projects/firstmate/CLAUDE.local.md"
+  printf 'OVERRIDE_CLONE_RULE: configured clone.\n' > "$override/firstmate/CLAUDE.local.md"
+  FM_ROOT_OVERRIDE="$code_root" FM_PROJECTS_OVERRIDE="$override" FM_HOME="$fixture_home" \
+    "$ROOT/bin/fm-brief.sh" override-alias firstmate --scout >/dev/null 2>&1
+  brief="$fixture_home/data/override-alias/brief.md"
+  assert_grep "source: \`$override/firstmate/CLAUDE.local.md\`" "$brief" 'firstmate clone check ignored FM_PROJECTS_OVERRIDE'
+  assert_no_grep 'DEFAULT_CLONE_RULE' "$brief" 'firstmate clone check used the default projects dir'
+  assert_no_grep 'HOME_ALIAS_RULE' "$brief" 'existing override clone lost to the firstmate alias'
+  rm -rf "${override:?}/firstmate"
+  FM_ROOT_OVERRIDE="$code_root" FM_PROJECTS_OVERRIDE="$override" FM_HOME="$fixture_home" \
+    "$ROOT/bin/fm-brief.sh" override-alias-home firstmate --scout >/dev/null 2>&1
+  brief="$fixture_home/data/override-alias-home/brief.md"
+  assert_grep 'HOME_ALIAS_RULE:' "$brief" 'missing override clone did not fall back to the firstmate alias'
+  assert_no_grep 'DEFAULT_CLONE_RULE' "$brief" 'default projects clone shadowed the firstmate alias under an override'
+  pass 'the firstmate alias checks for a clone under FM_PROJECTS_OVERRIDE'
+}
+
+test_registered_project_name_wins_over_firstmate_alias() {
+  local fixture_home code_root brief
+  fixture_home="$TMP_ROOT/registered-firstmate"
+  code_root="$TMP_ROOT/registered-firstmate checkout/firstmate"
+  mkdir -p "$fixture_home/data"
+  printf '%s\n' '- firstmate [no-mistakes] - registered project with a missing clone' > "$fixture_home/data/projects.md"
+  printf 'UNRELATED_HOME_RULE\n' > "$fixture_home/CLAUDE.local.md"
+  FM_ROOT_OVERRIDE="$code_root" FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" registered-alias firstmate --scout >/dev/null 2>&1
+  brief="$fixture_home/data/registered-alias/brief.md"
+  assert_grep "ABSENT: $fixture_home/projects/firstmate/CLAUDE.local.md" "$brief" 'registered project silently used home rules'
+  assert_no_grep 'UNRELATED_HOME_RULE' "$brief" 'home rules replaced registered project rules'
+  mkdir -p "$fixture_home/projects/firstmate"
+  printf 'REGISTERED_CLONE_RULE: project clone rules.\n' > "$fixture_home/projects/firstmate/CLAUDE.local.md"
+  FM_ROOT_OVERRIDE="$code_root" FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" registered-alias-clone firstmate --scout >/dev/null 2>&1
+  brief="$fixture_home/data/registered-alias-clone/brief.md"
+  assert_grep "source: \`$fixture_home/projects/firstmate/CLAUDE.local.md\`" "$brief" 'registered clone named like the code root used home rules'
+  assert_grep 'REGISTERED_CLONE_RULE:' "$brief" 'registered clone named like the code root omitted its rules'
+  assert_no_grep 'UNRELATED_HOME_RULE' "$brief" 'home rules replaced the registered clone named like the code root'
+  pass 'registered projects named like the code root take precedence over firstmate aliases'
+}
+
+test_registered_operational_home_uses_home_rules() {
+  local fixture_home brief name
+  fixture_home="$TMP_ROOT/registered-operational-home"
+  name=${fixture_home##*/}
+  mkdir -p "$fixture_home/data"
+  printf -- '- %s [no-mistakes] - the operational home itself\n' "$name" > "$fixture_home/data/projects.md"
+  printf 'REGISTERED_HOME_RULE: preserve captain instructions.\n' > "$fixture_home/CLAUDE.local.md"
+  FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" own-home "$name" --scout >/dev/null 2>&1
+  brief="$fixture_home/data/own-home/brief.md"
+  assert_grep "$fixture_home/CLAUDE.local.md" "$brief" 'registered operational home lost its own local rules'
+  assert_grep 'REGISTERED_HOME_RULE:' "$brief" 'registered operational home omitted full personal rules'
+  assert_no_grep "$fixture_home/projects/$name/CLAUDE.local.md" "$brief" 'operational home was treated as a project clone'
+  pass 'the registered operational home reads its own rules rather than a nonexistent project clone'
+}
+
+test_registered_operational_home_uses_home_rules
+test_registered_project_name_wins_over_firstmate_alias
+test_local_rules_in_every_brief
+test_local_rules_absent_and_unreadable_briefs
+test_local_rules_project_path_forms
+test_local_rules_follow_projects_override
+test_firstmate_alias_checks_clone_under_projects_override
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_ship_review_round_boundaries
