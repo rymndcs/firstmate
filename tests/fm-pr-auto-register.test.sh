@@ -231,6 +231,31 @@ assert_absent "$FM_HOME/state/task-resume.check.sh" 'the registration record mus
 ! grep -q '^pr=' "$FM_HOME/state/task-resume.meta" || fail 'fixture: resume must drop the unparseable PR metadata'
 pass 'a merged and retired PR is never polled again after explicit registration'
 
+promoted="$FM_HOME/state/task-promoted"
+fm_write_meta "$promoted.meta" "worktree=$PR_TMP" 'kind=scout'
+printf 'working: reproducing\ndone: PR https://github.com/owner/repo/pull/20 introduced the regression; report at data/task-promoted/report.md\n' > "$promoted.status"
+drain_pr > /dev/null
+"$PR_CODE/bin/fm-promote.sh" task-promoted --mode no-mistakes --yolo off > /dev/null || fail 'promotion failed'
+drain_pr > /dev/null
+! grep -q '^pr=' "$promoted.meta" || fail 'a PR cited while the task was a scout must not register after promotion'
+cp "$FM_HOME/data/task-spawn/brief.md" "$FM_HOME/data/task-promoted/brief.md"
+spawn_pr task-promoted || { cat "$PR_TMP/spawn.err"; fail 'resume failed'; }
+drain_pr > /dev/null
+! grep -q '^pr=' "$promoted.meta" || fail 'a PR cited while the task was a scout must not register after resume'
+printf 'working: implementing fix\ndone: PR https://github.com/owner/repo/pull/77\n' >> "$promoted.status"
+drain_pr > /dev/null
+[ "$(grep '^pr=' "$promoted.meta")" = 'pr=https://github.com/owner/repo/pull/77' ] \
+  || fail 'the PR reported after promotion must be the only PR recorded'
+[ "$(cat "$promoted.pr-registered" 2>/dev/null)" = 'https://github.com/owner/repo/pull/77' ] \
+  || fail 'the registration record must name the PR reported after promotion'
+[ "$(FM_TEST_GH_MERGED_URL=https://github.com/owner/repo/pull/20 bash "$promoted.check.sh" 2>/dev/null)" != merged ] \
+  || fail 'the merge poll must not report the scout-cited PR as this task merging'
+spawn_pr task-promoted || fail 'resume after registration failed'
+assert_grep 'pr=https://github.com/owner/repo/pull/77' "$promoted.meta" 'resume must keep the PR registered after promotion'
+retire_merged task-promoted
+assert_absent "$promoted.check.sh" 'the registered PR must retire through the watcher after resume'
+pass 'a promoted task registers only PRs reported after promotion, across resume'
+
 write_pr_task task-link
 printf 'done: PR %s\n' "$url" > "$PR_TMP/other.status"
 ln -s "$PR_TMP/other.status" "$FM_HOME/state/task-link.status"

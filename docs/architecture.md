@@ -26,7 +26,7 @@ Fresh stale panes use the same current-state read before trusting the status log
 No-change heartbeats are also benign.
 Absorbed wakes advance their suppression markers, log to `state/.watch-triage.log`, and keep the watcher blocking without a queue record or LLM turn.
 After each drain, `fm-wake-drain.sh` discovers task PR links through `bin/fm-pr-auto-register.sh` outside the queue lock, then runs the same liveness guard as the supervision scripts.
-The same discovery owner runs after spawn or resume, considers only ship tasks and GitHub PR URLs, reads only each task's own status log, never the backlog, and delegates registration to `bin/fm-pr-check.sh`.
+The same discovery owner runs after spawn or resume, considers only ship tasks and GitHub PR URLs, reads only each task's own status log, and only from promotion onward for a promoted scout, never the backlog, and delegates registration to `bin/fm-pr-check.sh`.
 Discovery never replaces an existing registration, and the registration record that `bin/fm-pr-check.sh` writes survives merge-poll retirement, so repeated discovery never re-arms a retired poll.
 Registration failures report a task-specific diagnostic and leave draining or spawning successful so the next discovery can retry, and the registration's GitHub head lookup is time-bounded so a slow forge cannot stall either.
 The registered GitHub poll additionally reads the PR's required checks, or all of its checks when it has none, against a stable head and delegates CI publication to `bin/fm-pr-ci.sh`, which validates the canonical task registration, appends a durable wake before recording each URL/head/outcome receipt, and returns the observation to wake the watcher.

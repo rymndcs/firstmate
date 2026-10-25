@@ -192,6 +192,7 @@
 # plus a gitignored .fm-grok-turnend worktree pointer and a state token.
 # Successful launches and resumes discover the task's own status PR link through
 # bin/fm-pr-auto-register.sh <task-id>; registration failure never fails spawn.
+# A resume keeps a promoted task's promoted_status_offset= metadata line.
 # On success prints: spawned <id> harness=<name> kind=<ship|scout|secondmate> [mode=<mode> yolo=<on|off>] window=<backend-target> worktree=<path>
 # A ship task records the explicit mode/yolo it was passed; a secondmate spawn records
 # mode=secondmate, yolo=off, home=, and projects=; a scout records neither, and both the
@@ -2401,6 +2402,7 @@ else
   fi
 fi
 
+SPAWN_PROMOTED_STATUS=$(awk '/^promoted_status_offset=/ { line = $0 } END { if (line != "") print line }' "$STATE/$ID.meta" 2>/dev/null || true)
 SPAWN_PR_RECORD=
 if fm_pr_metadata_identity_parse "$STATE/$ID.meta"; then
   SPAWN_PR_RECORD=$(awk '/^pr=|^pr_head=/' "$STATE/$ID.meta")
@@ -2466,6 +2468,7 @@ esac
     echo "home=$PROJ_ABS"
     echo "projects=$SECONDMATE_PROJECTS"
   fi
+  [ -z "$SPAWN_PROMOTED_STATUS" ] || printf '%s\n' "$SPAWN_PROMOTED_STATUS"
   [ -z "$SPAWN_PR_RECORD" ] || printf '%s\n' "$SPAWN_PR_RECORD"
 } > "$STATE/$ID.meta" || exit 1
 [ "$BACKEND" = orca ] && ORCA_ABORT_CLEANUP=0

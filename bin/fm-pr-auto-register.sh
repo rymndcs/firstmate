@@ -5,6 +5,10 @@
 # form `done: PR <url> ...` or `pushed ... to PR <url>`. Other status URLs are
 # references, never registrations. The backlog is never a source: it stores a
 # linked PR and a cited PR as the same bytes.
+# A promoted scout's status lines from before promotion never count:
+# fm-promote.sh records the status log's byte length as promoted_status_offset=
+# in the metadata, and discovery reads only after it. A task spawned as a ship
+# has no offset and reads its whole status log.
 # On those own-PR lines the URL may be bare, `backticked`, <angled>, a Markdown
 # link [text](url), or followed by : . , or ;.
 # Discovery is GitHub-only; register a GitLab merge request with fm-pr-check.sh.
@@ -34,6 +38,7 @@ candidates() {
   perl -MFcntl=:DEFAULT -e '
     sysopen(my $f, $ARGV[0], O_RDONLY | O_NOFOLLOW) or exit;
     exit unless -f $f;
+    seek($f, $ARGV[1], 0);
     while (<$f>) {
       next unless /^done: PR (\S+)/ || /^pushed (?:.* )?to PR (\S+)/;
       my $token = $1;
@@ -43,19 +48,20 @@ candidates() {
         : $token =~ s/[:.,;]+$//r;
       print "$url\n" if $url =~ m{^https://github\.com/};
     }
-  ' "$STATE/$1.status"
+  ' "$STATE/$1.status" "$2"
 }
 
 register_one() {
-  local id=$1 meta="$STATE/$1.meta" url='' candidate
+  local id=$1 meta="$STATE/$1.meta" url='' candidate offset
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 0
   [ "$(awk '/^kind=/ { kind = substr($0, 6) } END { print kind }' "$meta")" = ship ] || return 0
+  offset=$(awk '/^promoted_status_offset=/ { offset = substr($0, 24) } END { print offset + 0 }' "$meta")
   while IFS= read -r candidate; do
     if fm_pr_url_parse "$candidate"; then
       url=$FM_PR_URL
       break
     fi
-  done < <(candidates "$id")
+  done < <(candidates "$id" "$offset")
   [ -n "$url" ] || return 0
   "$SCRIPT_DIR/fm-pr-check.sh" --if-unregistered "$id" "$url" > /dev/null 2>&1
 }

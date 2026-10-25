@@ -47,7 +47,11 @@ case "$*" in
       *' --required '*) printf '%s\n' "$FM_TEST_GH_BUCKETS"; exit "$FM_TEST_GH_CHECK_RC" ;;
       *) printf '%s\n' "$FM_TEST_GH_ALL_BUCKETS"; exit "$FM_TEST_GH_ALL_RC" ;;
     esac ;;
-  *'pr view '*) printf '%s\n' "$FM_TEST_GH_STATE" ;;
+  *'pr view '*)
+    case " $* " in
+      *" ${FM_TEST_GH_MERGED_URL:-none} "*) printf 'MERGED\n' ;;
+      *) printf '%s\n' "$FM_TEST_GH_STATE" ;;
+    esac ;;
   *) exit 1 ;;
 esac
 FAKE
