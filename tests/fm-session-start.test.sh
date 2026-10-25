@@ -1474,6 +1474,76 @@ EOF
   pass "session start accepts the omp extension marker written before a fresh home had state/"
 }
 
+test_local_rules_in_detected_primary_digest() {
+  local rec root fixture_home fakebin harness out rc
+  rec=$(new_world local-rules)
+  IFS='|' read -r root fixture_home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  printf '%s\n' manual > "$fixture_home/config/backlog-backend"
+  printf '%s\n' 'LOCAL_RULE_FIRST: preserve captain instructions.' \
+    'LOCAL_RULE_LAST: never commit this file.' > "$fixture_home/CLAUDE.local.md"
+  for harness in omp codex opencode pi pi-signed grok kimi claude; do
+    make_fake_ps_harness "$fakebin" "$harness"
+    rc=0
+    if [ "$harness" = pi-signed ]; then
+      out=$(FM_FAKE_HARNESS="$harness" run_session_start "$fixture_home" "$root" "$fakebin:$BASE_PATH" pi-signed) || rc=$?
+    else
+      out=$(FM_FAKE_HARNESS="$harness" run_session_start "$fixture_home" "$root" "$fakebin:$BASE_PATH") || rc=$?
+    fi
+    expect_code 0 "$rc" "$harness local-rules digest"
+    assert_contains "$out" "for harness '$harness'" "test did not detect $harness"
+    if [ "$harness" = claude ]; then
+      assert_not_contains "$out" 'LOCAL_RULE_FIRST' 'Claude duplicated natively loaded rules'
+    else
+      assert_contains "$out" "$(cat "$fixture_home/CLAUDE.local.md")" "$harness omitted full local rules"
+      assert_not_contains "$out" "$root/CLAUDE.local.md" 'digest used code root instead of active home'
+    fi
+  done
+  pass 'session start supplies full home-local rules to every non-Claude primary'
+}
+
+test_local_rules_absent_and_unreadable_digest() {
+  local rec root fixture_home fakebin out rc shape
+  rec=$(new_world local-rules-errors)
+  IFS='|' read -r root fixture_home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_harness "$fakebin" omp
+  out=$(FM_FAKE_HARNESS=omp run_session_start "$fixture_home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" 'CLAUDE.local.md' 'absent local rules printed noise'
+  for shape in directory dangling permission; do
+    case "$shape" in
+      directory) mkdir "$fixture_home/CLAUDE.local.md" ;;
+      dangling) ln -s "$fixture_home/missing-rules" "$fixture_home/CLAUDE.local.md" ;;
+      permission)
+        printf 'SECRET_LOCAL_RULE\n' > "$fixture_home/CLAUDE.local.md"
+        chmod 000 "$fixture_home/CLAUDE.local.md"
+        [ ! -r "$fixture_home/CLAUDE.local.md" ] || fail 'unreadable fixture is readable'
+        ;;
+    esac
+    rc=0
+    out=$(FM_FAKE_HARNESS=omp run_session_start "$fixture_home" "$root" "$fakebin:$BASE_PATH") || rc=$?
+    expect_code 0 "$rc" "unreadable $shape local rules must not abort startup"
+    [ "$(printf '%s\n' "$out" | grep -c 'CLAUDE_LOCAL: unreadable')" = 1 ] \
+      || fail "$shape rules need one diagnostic"
+    assert_contains "$out" "$fixture_home/CLAUDE.local.md" 'diagnostic omitted local rule path'
+    assert_contains "$out" 'NEXT STEP' 'unreadable rules stopped digest'
+    assert_not_contains "$out" 'SECRET_LOCAL_RULE' 'unreadable rules leaked into digest'
+    if [ "$shape" = directory ]; then
+      rmdir "$fixture_home/CLAUDE.local.md"
+    else
+      chmod 600 "$fixture_home/CLAUDE.local.md" 2>/dev/null || true
+      rm -f "${fixture_home:?}/CLAUDE.local.md"
+    fi
+  done
+  pass 'absent local rules are silent and unreadable rules diagnose without aborting'
+}
+
+test_local_rules_in_detected_primary_digest
+test_local_rules_absent_and_unreadable_digest
 test_context_digest_absent_empty_present
 test_omp_extension_marker_survives_fresh_home_without_state
 test_lock_refusal_read_only_path

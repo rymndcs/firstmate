@@ -276,15 +276,13 @@ The [X mode configuration reference](configuration.md#promised-public-replies-st
 ## Project memory belongs to projects
 
 Durable project-intrinsic agent knowledge lives in each project's committed `CLAUDE.md`, with `AGENTS.md` as a symlink.
-Ship briefs prompt crewmates to create or update those files through the normal delivery path; `data/projects.md` stays a thin private registry.
-Each project `CLAUDE.md` carries a short `## Maintaining this file` self-governance section; `bin/fm-ensure-agents-md.sh` owns the canonical wording and injects it idempotently when creating the skeleton, promoting an existing `AGENTS.md`, or reconciling an existing `CLAUDE.md` that still lacks it.
-It refuses case-variant memory names such as lowercase `agents.md` or `claude.md`, because the `AGENTS.md` symlink must carry the uppercase literal `CLAUDE.md` target portably across case-sensitive and case-insensitive filesystems, and surfaces the mismatch for manual reconciliation.
+Changes to project instruction files follow the per-change permission boundary in [`AGENTS.md`](../AGENTS.md) section 6; `data/projects.md` stays a thin private registry.
 The full ownership rule - what is project-intrinsic versus fleet-private, and how firstmate keeps the two apart without writing into project clones - is owned by [`AGENTS.md`](../AGENTS.md) (project and knowledge management).
 
 ## Operational memory routing
 
 `/stow` sweeps the current session for durable knowledge that only exists in conversation and routes each finding to the most specific disk home.
-Home-domain captain preferences go to `data/captain.md`, cross-domain shared captain preferences go to the primary home's `data/captain-shared.md`, fleet-local operational facts and gotchas go to home-local `data/learnings.md`, project-intrinsic knowledge goes through normal crewmate delivery into that project's committed `AGENTS.md`, and task-scoped notes or undone next steps go to the backlog.
+[`AGENTS.md`](../AGENTS.md) section 6 owns knowledge destinations and permission boundaries for project instruction changes.
 Memory writes use inspect-then-update: read the current destination first, then rewrite or prune matching bullets or notes in place instead of appending by default.
 Task-scoped notes use `tasks-axi show <id> --full` followed by `tasks-axi update <id> --body-file <path>`, adding `--archive-body` when the prior body should remain recoverable.
 Generalizable firstmate knowledge goes to shared tracked docs through the normal PR pipeline; the firstmate-internal `/stow` deliberately never stores findings in either skill directory.

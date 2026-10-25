@@ -66,6 +66,11 @@
 #                       empty-but-present file; the section preamble prints what
 #                       each file's absence means, because absence is meaningful
 #                       for every one of them.
+#                       The home's optional CLAUDE.local.md follows in full for
+#                       every primary except Claude, which loads it natively.
+#                       Missing local rules are silent; an unreadable path prints
+#                       one CLAUDE_LOCAL diagnostic without aborting the digest.
+#                       harness-adapters records the per-harness evidence.
 #   5. fleet digest   - a compact data/backlog.md identity/metadata listing,
 #                       every state/*.meta, a bounded state/*.status tail
 #                       labeled as wake-EVENT history rather than current state
@@ -408,6 +413,17 @@ print_file_or_absent "$DATA/secondmates.md" "data/secondmates.md"
 print_file_or_absent "$DATA/captain.md" "data/captain.md"
 print_file_or_absent "$DATA/captain-shared.md" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)"
 print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
+if [ "$PRIMARY_HARNESS" != claude ]; then
+  LOCAL_RULES="$FM_HOME/CLAUDE.local.md"
+  if [ -e "$LOCAL_RULES" ] || [ -L "$LOCAL_RULES" ]; then
+    if [ -f "$LOCAL_RULES" ] && [ -r "$LOCAL_RULES" ] && LOCAL_RULES_TEXT=$(cat "$LOCAL_RULES" 2>/dev/null); then
+      subsection "$LOCAL_RULES"
+      printf '%s\n' "$LOCAL_RULES_TEXT"
+    else
+      printf 'CLAUDE_LOCAL: unreadable %s; personal rules could not be loaded\n' "$LOCAL_RULES"
+    fi
+  fi
+fi
 
 # --- 5. fleet-state digest ---------------------------------------------
 section "FLEET STATE"

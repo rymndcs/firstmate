@@ -29,7 +29,7 @@
 #   without it carry a loud declaration so an omitted contract cannot be silent.
 # For ship tasks, --mode is REQUIRED and shapes the definition of done. Firstmate
 # resolves it per task at intake (AGENTS.md section 7); data/projects.md holds the
-# captain's standing posture as context, and this script never reads it:
+# captain's standing posture as context, and this script never selects from it:
 #   no-mistakes  implement -> /no-mistakes pipeline -> PR -> configured merge authority
 #   direct-PR    implement -> push + open PR via gh-axi (no pipeline) -> configured merge authority
 #   local-only   implement on branch, stop and report "ready in branch" (no push/PR);
@@ -83,11 +83,17 @@
 # declared-external-wait verb (FM_CLASSIFY_PAUSED_VERB, default "paused") from
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
-# Ship tasks include a project-memory section so durable project-intrinsic
-# learnings can be committed to AGENTS.md through the project's delivery path;
-# it carries the AGENTS.md authoring bar (widely useful knowledge only, pointers
-# over copied detail) and has the crewmate add the fm-ensure-agents-md.sh
-# self-governance section when a touched project AGENTS.md lacks it.
+# All scaffolds carry the project-instruction boundary from AGENTS.md section 6.
+# This script owns per-brief CLAUDE.local.md discovery: project names resolve to
+# FM_HOME/projects/<name>, and projects/<name> or absolute clone paths also work.
+# The code-root basename and absolute home/code-root paths name Firstmate itself,
+# including when its own posture is registered. The firstmate alias also names it
+# unless that name belongs to a registered project or an existing project clone.
+# Project-less charters read the home's rules; other charters read every listed
+# project's rules. Each existing file is read before writing a brief, then included
+# in full with its absolute source path for every harness and remote secondmate.
+# Absent files are explicit in the brief; unreadable paths refuse the scaffold.
+# Local rule files are never copied into worktrees or committed.
 # Refuses to overwrite an existing brief.
 #
 # Ship review step: when this home configures config/ship-review.md, every ship
@@ -300,6 +306,58 @@ STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 TEMP_TARGETS=$(shell_quote "$STATE/$ID.temp-targets")
 DECISION_HOLD_CMD="FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-decision-hold.sh")"
 
+project_local_rules() {
+  local project=$1 clone path contents
+  case "$project" in
+    "$FM_HOME"|"$FM_ROOT"|"${FM_ROOT##*/}") clone=$FM_HOME ;;
+    /*) clone=$project ;;
+    projects/*) clone="$FM_HOME/$project" ;;
+    *)
+      clone="$FM_HOME/projects/$project"
+      if [ ! -d "$clone" ] && ! { [ -f "$DATA/projects.md" ] &&
+        awk -v name="$project" '$1 == "-" && $2 == name { found=1 } END { exit !found }' "$DATA/projects.md"; }; then
+        case "$project" in
+          firstmate) clone=$FM_HOME ;;
+        esac
+      fi
+      ;;
+  esac
+  path="$clone/CLAUDE.local.md"
+  if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+    printf 'ABSENT: %s (no project-local personal rules).\n' "$path"
+    return 0
+  fi
+  if [ ! -f "$path" ] || [ ! -r "$path" ] || ! contents=$(cat "$path" 2>/dev/null); then
+    printf 'error: unreadable project-local rules: %s; refusing to scaffold without them\n' "$path" >&2
+    return 1
+  fi
+  printf '\nRead in full before starting work (source: %s). These personal rules apply to you on every harness:\n\n%s\n\n' "\`$path\`" "$contents"
+}
+
+local_rules_section() {
+  local idx
+  printf '# Personal project rules\n'
+  printf 'Never copy these files into a worktree or commit them.\n'
+  if [ "$KIND" = secondmate ]; then
+    if [ "$NO_PROJECTS" -eq 1 ]; then
+      project_local_rules "$FM_HOME" || return 1
+    else
+      for ((idx=1; idx<${#POS[@]}; idx++)); do
+        project_local_rules "${POS[$idx]}" || return 1
+      done
+    fi
+  else
+    project_local_rules "${POS[1]}" || return 1
+  fi
+}
+
+LOCAL_RULES_SECTION=$(local_rules_section) || exit 1
+IFS= read -r -d '' PROJECT_INSTRUCTIONS_SECTION <<'EOF' || true
+# Project instruction files
+Crewmates never edit a project's repo-tracked `CLAUDE.md`, `AGENTS.md`, `CONCEPTS.md`, `docs/solutions/`, `.claude/` or `.codex/` files without the captain's per-change permission.
+Firstmate's own repo keeps editing its own `AGENTS.md`, skills and docs through its normal review path.
+EOF
+
 if [ "$KIND" = secondmate ]; then
 SECONDMATE_PROJECTS=""
 idx=1
@@ -329,6 +387,10 @@ $SECONDMATE_CHARTER
 
 # Routing scope
 $SECONDMATE_SCOPE
+
+$LOCAL_RULES_SECTION
+
+$PROJECT_INSTRUCTIONS_SECTION
 
 # Project clones
 $PROJECT_CLONES_BODY
@@ -425,6 +487,10 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 
 # Task
 {TASK}
+
+$LOCAL_RULES_SECTION
+
+$PROJECT_INSTRUCTIONS_SECTION
 
 $HERDR_SECTION
 
@@ -590,6 +656,10 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 # Task
 {TASK}
 
+$LOCAL_RULES_SECTION
+
+$PROJECT_INSTRUCTIONS_SECTION
+
 $HERDR_SECTION
 
 # Setup
@@ -626,13 +696,6 @@ $RULE1
 7. Never stop, restart, or update the shared \`no-mistakes\` daemon - it is one instance serving
    every lane/home, so restarting it kills other lanes' in-flight pipeline runs. On ANY no-mistakes
    daemon error, append \`blocked: {the daemon error}\` and stop; only firstmate manages the daemon.
-
-# Project memory
-If \`AGENTS.md\` or \`CLAUDE.md\` already exists, or if this task produced durable project-intrinsic knowledge, run \`$FM_ROOT/bin/fm-ensure-agents-md.sh .\` in the worktree.
-Record only project knowledge useful to almost every future session.
-For anything the codebase already shows, prefer a pointer to the authoritative file, command, or doc over copying the detail.
-If you touch a project \`AGENTS.md\` that lacks \`## Maintaining this file\`, add that short self-governance section from \`$FM_ROOT/bin/fm-ensure-agents-md.sh\` in the same pass.
-Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced no durable project knowledge.
 
 $CHECKS_SECTION
 

@@ -103,6 +103,23 @@ One verified fact worth pinning here.
 On Claude Code 2.1.241 every PreToolUse payload carries `transcript_path`, and PreToolUse fires before the calling tool's own `tool_use` entry is appended, so a prior skill load is already visible to the next call while the current one is not.
 `tests/fm-ask-user-gate-live-e2e.test.sh` (opt-in, `FM_CLAUDE_LIVE_E2E=1`) is what re-proves that after a Claude upgrade.
 
+## Personal project rules
+
+`bin/fm-session-start.sh` owns supplemental home `CLAUDE.local.md` delivery; `bin/fm-brief.sh` owns project-local rule delivery to every worker and secondmate charter independently of harness discovery.
+The primary decision below was checked on 2026-10-25 against each integration's instruction discovery, rather than inferred from Claude compatibility.
+
+| Primary | Supplemental digest | Discovery evidence |
+| --- | --- | --- |
+| claude | No | [Claude memory](https://code.claude.com/docs/en/memory#how-claudemd-files-load) loads `CLAUDE.local.md` alongside `CLAUDE.md`, including gitignored local preferences. |
+| codex | Yes | [Codex instruction discovery](https://learn.chatgpt.com/docs/agent-configuration/agents-md) selects `AGENTS.override.md`, `AGENTS.md`, then configured fallbacks; it does not append `CLAUDE.local.md` alongside Firstmate's `AGENTS.md`. |
+| opencode | Yes | [OpenCode precedence](https://opencode.ai/docs/rules/#precedence) selects local `AGENTS.md` or `CLAUDE.md`; the tracked `.opencode/plugins/` integrations add no local-rule loader. |
+| pi / pi-signed | Yes | Pi's installed `dist/core/resource-loader.js`, `loadContextFileFromDir`, selects from `AGENTS.override.md`, `AGENTS.md`, `AGENTS.MD`, `CLAUDE.md`, `CLAUDE.MD`; neither tracked Pi extension adds local-rule loading, and the signed launch uses the same Pi loader. |
+| grok | Yes | [Grok project rules](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/12-project-rules.md#gitignore-filtering) recognize the filename but skip gitignored files, so native discovery does not cover this private file. |
+| kimi | Yes | Kimi's installed `dist/main.mjs`, `loadAgentsMdForRoots`, collects home and ancestor `AGENTS.md` / `agents.md` plus `.kimi-code/AGENTS.md`; its tracked hook integration adds no local-rule loader. |
+| omp | Yes | [omp 18.12.6 context discovery](https://github.com/can1357/oh-my-pi/blob/v18.12.6/docs/context-files.md) discovers `AGENTS.md` / provider context files without this local filename; the tracked omp extension adds no local-rule loader. |
+
+`tests/fm-session-start.test.sh` exercises the resulting digest through all eight detected primary identities, and `tests/fm-brief.test.sh` exercises rule delivery and read failures through generated briefs.
+
 ## Primary session-start nudge
 
 AGENTS.md section 3 remains the behavioral owner for session start, while tracked native adapters invoke `bin/fm-sessionstart-nudge.sh` as an idempotent enforcement layer.

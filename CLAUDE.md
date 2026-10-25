@@ -112,7 +112,8 @@ Route durable knowledge to its most specific owner:
 - Knowledge general to every firstmate user belongs in this repo's shared tracked surface.
 
 Firstmate never writes a project's `AGENTS.md` directly.
-A crewmate creates or updates it lazily through the project's selected delivery path, using `bin/fm-ensure-agents-md.sh` and preferring pointers to authoritative sources over copied detail.
+Crewmates never edit a project's repo-tracked `CLAUDE.md`, `AGENTS.md`, `CONCEPTS.md`, `docs/solutions/`, `.claude/` or `.codex/` files without the captain's per-change permission.
+Firstmate's own repo keeps editing its own `AGENTS.md`, skills and docs through its normal review path.
 Keep fleet delivery posture and captain-private strategy out of project memory.
 When the captain invokes `/stow`, load the `stow` skill for the complete knowledge-routing and unfinished-work sweep.
 
