@@ -261,7 +261,9 @@ fi
 
 # Record every message or key to a recorded task before delivery: the watcher
 # keeps that task off its quiet idle cadence until the status log grows past
-# this byte offset with a new state (bin/fm-watch.sh quiet_state_class).
+# this byte offset with a new state (bin/fm-watch.sh quiet_state_class), and
+# treats a death seen after this record's mtime, such as a failed same-pane
+# relaunch, as a new death episode.
 if [ -n "$TARGET_META" ]; then
   STEER_ID=$(fm_send_id_from_meta "$TARGET_META")
   { wc -c < "$STATE/$STEER_ID.status" || printf 0; } 2>/dev/null | tr -d ' ' > "$STATE/$STEER_ID.steered"

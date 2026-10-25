@@ -77,6 +77,7 @@ n=$((n + 1))
 printf '%s\n' "$n" > "$CASE/polls"
 [ -e "$CASE/static" ] || printf 'idle composer %s\n' "$n" > "$CASE/pane"
 [ ! -e "$CASE/realsleep" ] || /bin/sleep 1
+[ ! -x "$CASE/onpoll" ] || "$CASE/onpoll" "$n"
 if [ "$n" -ge "$(cat "$CASE/maxpolls" 2>/dev/null || printf 3)" ]; then
   : > "$CASE/completed"
   kill -TERM "$PPID"
@@ -455,6 +456,102 @@ test_away_owns_stale() {
   pass 'away mode keeps its own stale wake for live quiet and dead workers'
 }
 
+# Firstmate's same-pane relaunch: $d/relaunch types the launch line into the
+# worker's shell through fm-send, and the harness then comes up or fails at once.
+relaunch_prepare() {  # <case-dir> <alive|dead>
+  local d=$1 sb="$1/sendbin"
+  mkdir -p "$sb"
+  printf '%s\n' "$2" > "$d/relaunch-to"
+  cat > "$sb/relaunched" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$CASE/sent"
+if [ "$(cat "$CASE/relaunch-to")" = alive ]; then
+  printf 'alive\n' > "$CASE/liveness"
+  printf 'resumed session\n> \n' > "$CASE/pane"
+else
+  printf 'dead\n' > "$CASE/liveness"
+  printf 'Error: session resume failed\n$ \n' > "$CASE/pane"
+fi
+SH
+  cat > "$sb/tmux" <<'SH'
+#!/usr/bin/env bash
+[ "$1 ${4:-}" != 'send-keys -l' ] || exec "$(dirname "$0")/relaunched" "$5"
+[ "$1" != send-keys ] || exit 0
+exec "$CASE/fakebin/tmux" "$@"
+SH
+  cat > "$sb/herdr" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  'pane send-text') exec "$(dirname "$0")/relaunched" "$4" ;;
+  'pane send-keys') exit 0 ;;
+esac
+exec "$CASE/fakebin/herdr" "$@"
+SH
+  printf '#!/usr/bin/env bash\nexec /bin/sleep "$@"\n' > "$sb/sleep"
+  # Firstmate relaunches only after handling the death alert, so the relaunch
+  # lands in a later second than the death it follows.
+  cat > "$d/relaunch" <<SH
+#!/usr/bin/env bash
+/bin/sleep 1
+CASE="$d" PATH="$sb:$d/fakebin:\$PATH" FM_ROOT_OVERRIDE="$d" FM_HOME="$d" FM_STATE_OVERRIDE="$d/state" \\
+  FM_SEND_SETTLE=0 FM_SEND_RETRIES=1 FM_SEND_SLEEP=0 \\
+  "$ROOT/bin/fm-send.sh" quiet 'claude --continue' > /dev/null 2>> "$d/send.err" || true
+SH
+  chmod +x "$sb/relaunched" "$sb/tmux" "$sb/herdr" "$sb/sleep" "$d/relaunch"
+}
+
+# A death after a same-pane relaunch is a new failure even when no poll ever saw
+# the relaunched agent alive: the relaunch fails before a re-armed watcher's
+# first poll, or between two polls of a running one.
+test_relaunch_death() {  # <backend> <rearmed|running>
+  local backend=$1 when=$2 d label round
+  label="$backend relaunch ($when)"
+  d=$(quiet_case "relaunch-$backend-$when" "$backend" claude)
+  printf 'working: implementing\n' > "$d/state/quiet.status"
+  printf 'dead\n' > "$d/liveness"
+  printf '$ \n' > "$d/pane"
+  : > "$d/static"
+  quiet_run "$d"
+  grep -F 'agent exited or endpoint gone' "$d/out" >/dev/null || fail "$label: first death did not surface: $(cat "$d/out")"
+  relaunch_prepare "$d" dead
+  case "$when" in
+    rearmed) "$d/relaunch" ;;
+    running)
+      cat > "$d/onpoll" <<'SH'
+#!/usr/bin/env bash
+[ "$1" != 2 ] || "$CASE/relaunch"
+SH
+      chmod +x "$d/onpoll"
+      printf '5\n' > "$d/maxpolls"
+      ;;
+  esac
+  quiet_run "$d"
+  rm -f "${d:?}/onpoll"
+  grep -Fx 'claude --continue' "$d/sent" >/dev/null || fail "$label: relaunch never reached the pane: $(cat "$d/send.err")"
+  grep -F 'agent exited or endpoint gone' "$d/out" >/dev/null || fail "$label: failed relaunch was hidden by the first death: $(cat "$d/out")"
+  [ "$(grep -c 'agent exited or endpoint gone' "$d/state/.wake-queue")" -eq 2 ] || fail "$label: failed relaunch was not queued"
+  quiet_run "$d"
+  [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "$label: unchanged dead endpoint alerted again: $(cat "$d/out")"
+  relaunch_prepare "$d" alive
+  "$d/relaunch"
+  printf 'done: ready for review\n' >> "$d/state/quiet.status"
+  for round in 1 2; do
+    quiet_run "$d"
+    [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "$label: recovered done worker round $round was not quiet: $(cat "$d/out")"
+  done
+  pass "$label: a failed same-pane relaunch surfaces once; a healthy one stays quiet"
+}
+
+test_relaunch_cases() {
+  local backend when failures=0
+  for backend in tmux herdr; do
+    for when in rearmed running; do
+      (test_relaunch_death "$backend" "$when") || failures=$((failures + 1))
+    done
+  done
+  [ "$failures" -eq 0 ]
+}
+
 test_second_death_cases() {
   local backend mode failures=0
   for backend in tmux herdr; do
@@ -483,6 +580,7 @@ case "${FM_QUIET_TEST:-all}" in
   unknown-all) for b in zellij cmux orca; do (test_unknown_liveness "$b") || exit 1; done; exit ;;
   second-death) test_second_death_cases; exit ;;
   away) test_away_owns_stale; exit ;;
+  relaunch) test_relaunch_cases; exit ;;
   *) fail 'unknown FM_QUIET_TEST selection' ;;
 esac
 
@@ -504,7 +602,7 @@ for backend in zellij cmux orca; do
 done
 for check in test_long_cadence test_quiet_resume test_quiet_cache_expiry test_steer_clears_quiet \
   test_lifecycle_gaps test_validating_reads_bounded test_busy_after_quiet test_second_death_cases \
-  test_away_owns_stale; do
+  test_away_owns_stale test_relaunch_cases; do
   if ! ("$check"); then failures=$((failures + 1)); fi
 done
 [ "$failures" -eq 0 ]

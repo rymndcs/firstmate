@@ -999,7 +999,10 @@ EOF
           if ! afk_present && ! status_is_paused_or_captain_held "$last"; then
             agent_alive=$liveness
             if [ "$agent_alive" = dead ]; then
-              if [ ! -e "$STATE/.dead-since-$key" ] || [ "$STATE/$task.meta" -nt "$STATE/.dead-since-$key" ]; then
+              # A newer spawn record or firstmate input (fm-send.sh records
+              # every send, including a same-pane relaunch) starts a new episode.
+              if [ ! -e "$STATE/.dead-since-$key" ] || [ "$STATE/$task.meta" -nt "$STATE/.dead-since-$key" ] \
+                || [ "$STATE/$task.steered" -nt "$STATE/.dead-since-$key" ]; then
                 : > "$STATE/.dead-since-$key"
                 rm -f "${STATE:?}/.dead-resurfaced-$key"
               fi

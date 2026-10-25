@@ -62,4 +62,5 @@ Genuine wedging means still looping, unresponsive, or repeating the same obstacl
    This is the only record of what the process learned - it cannot be reconstructed once the pane is gone.
 2. Exit the agent with the adapter's exit command and relaunch with the same brief plus a `progress so far` note drawn from the captured context.
    The worktree and commits persist, so relaunch is cheap.
+   Type both the exit and a same-pane relaunch line through `FM_HOME=<this-firstmate-home> bin/fm-send.sh <id>`, which records the attempt so a relaunch that dies again still surfaces ([`docs/architecture.md`](../../../docs/architecture.md) owns that rule).
 3. If a second relaunch fails too, write `failed` to the backlog and tell the captain the plain failure, preserved work, consequence, and the captured recovery context - citing the latest attempt's block for what actually killed it - using `AGENTS.md` section 9; do not mention metadata, harness, window, or worktree unless the path itself is needed for action.
