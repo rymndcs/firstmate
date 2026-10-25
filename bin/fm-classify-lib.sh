@@ -233,6 +233,39 @@ status_open_decisions() {  # <status-file>
   printf '%s' "$open"
 }
 
+status_line_state() {  # <status-line>
+  if status_is_paused "$1"; then printf 'paused'; return; fi
+  case "$(status_line_verb "$1")" in
+    working) printf 'working' ;;
+    needs-decision) printf 'parked' ;;
+    blocked) printf 'blocked' ;;
+    done) printf 'done' ;;
+    failed) printf 'failed' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+# Last state-bearing event, excluding bookkeeping. A decision event counts only
+# while its key remains open under status_open_decisions's authoritative fold.
+status_effective_line() {  # <status-file>
+  local f=$1 line candidate='' verb key open
+  [ -f "$f" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ "$(status_line_state "$line")" = unknown ] || candidate=$line
+  done < "$f"
+  verb=$(status_line_verb "$candidate")
+  case "$verb" in
+    needs-decision|blocked)
+      key=$(_fm_decision_key "$candidate") || return 0
+      open=$(status_open_decisions "$f")
+      while IFS= read -r line; do
+        case "$line" in "$key"$'\t'*) printf '%s' "$candidate"; return 0 ;; esac
+      done <<< "$open"
+      ;;
+    *) printf '%s' "$candidate" ;;
+  esac
+}
+
 # Print "<key>\t<verb>\t<note>" for EVERY decision-opening line in a status file,
 # in file order, with no folding at all. status_open_decisions above folds this
 # same stream into the still-open set, which is what a supervisor needs; this raw
@@ -348,21 +381,28 @@ signal_reason_is_actionable() {  # <file> ...
 #             (e.g. waiting on CI);
 #   paused  - the crew's authoritative current state is a declared external-wait
 #             pause (paused:), which is EXPECTED to idle;
-#   none    - neither, so the wake must surface (a stopped/finished/parked/failed/
+#   parked/done - with the optional quiet argument only; the watcher requires a
+#             verified live agent before applying their bounded idle cadence;
+#   none    - none of these, so the wake must surface (a stopped/failed/
 #             torn-down/unknown crew, or an unreadable verdict).
-# One fm-crew-state.sh read serves BOTH absorb reasons at once. Reading the state
+# One fm-crew-state.sh read serves these classifications at once. Reading the state
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
 # that appended paused: but then STARTED a run reports working, never paused.
 # NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
-# run it only on no-verb signal and first-sighting stale paths, never every wake.
+# run it on no-verb signals, first-sighting stale paths and bounded quiet rechecks.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
-crew_absorb_class() {  # <id>
+crew_absorb_class() {  # <id> [quiet]
   local id=$1 line state src
   [ -n "$id" ] || { printf 'none'; return; }
   line=$("$FM_CREW_STATE_BIN" "$id" 2>/dev/null) || true
   case "$line" in state:*) ;; *) printf 'none'; return ;; esac
   state=${line#state: }; state=${state%% *}
-  if [ "$state" = paused ]; then printf 'paused'; return; fi
+  case "$state" in
+    paused) printf '%s' "$state"; return ;;
+    parked|done)
+      if [ "${2:-}" = quiet ]; then printf '%s' "$state"; return; fi
+      ;;
+  esac
   if [ "$state" = working ]; then
     src=${line#*source: }; src=${src%% *}
     case "$src" in run-step|pane) printf 'working'; return ;; esac

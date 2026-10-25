@@ -5,10 +5,10 @@
 # The no-verb signal and stale path is absorb-only-when-provably-working: a wake
 # is absorbed only when the crew shows POSITIVE evidence it is still working (an
 # actively-running no-mistakes step, or a backend busy signal), and surfaced
-# otherwise, so a crew that finishes (or stops and waits) without a current
-# working signal is never silently swallowed. A declared external-wait pause is
-# the separate idle absorb case and re-surfaces only on its long bounded cadence,
-# although its initial no-verb status signal still surfaces in normal mode.
+# otherwise, so an unexplained stop without a current working signal surfaces.
+# Verified-live parked/done workers and declared external-wait pauses instead
+# use the bounded idle cadence described in docs/architecture.md.
+# Initial status signals still surface in normal mode.
 # While state/.afk exists, the daemon owns triage and this watcher queues and exits
 # on every wake. Printed reason lines:
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
@@ -20,7 +20,10 @@
 #                          line, since the crew's own log gets no new entry once
 #                          firstmate hands it to a no-mistakes validation. A declared
 #                          external-wait pause is absorbed instead with its own long
-#                          re-surface cadence, never as a wedge. Only when neither
+#                          re-surface cadence, never as a wedge. A verified-live
+#                          parked/done worker also uses that long cadence; agent
+#                          death is probed each poll and surfaces before capture.
+#                          Only when none of these
 #                          absorb class applies does the log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
 #                          both surfaced at once. A provably-working stale past the
@@ -316,35 +319,57 @@ busy_turn_over_age() {  # <task>
   [ "$(age_of "$f")" -ge "$BUSY_TURN_MAX_SECS" ]
 }
 
-# Absorb a stale pane under a declared external-wait pause (paused:) or a
-# dead-agent captain-held transfer, and re-surface it once every
-# PAUSE_RESURFACE_SECS for a recheck so it cannot rot invisibly. Called on any
-# stale poll once pause_state_class permits the bounded cadence, so it must be
-# cheap: it NEVER re-reads crew state. The re-surface age is anchored on the
-# status file mtime, not a per-hash marker, so a churny idle pane (a ticking
-# clock, a token counter) cannot keep resetting the cadence the way a hash-tied
-# timer would. A .paused-resurfaced-<key> throttle marker records the last
-# re-surface epoch so, once past the window, it fires once per window rather than
-# every poll. Advances the stale suppressor to <hash> and flags the key paused.
-handle_paused_stale() {  # <window> <task> <hash>
-  local win=$1 task=$2 h=$3 key statusf mtime age rf rf_age reason
+# Bounded idle rechecks share status-age anchoring and per-window throttling.
+# Death surfaces immediately once; subsequent rechecks use the long cadence.
+handle_bounded_stale() {  # <window> <task> <hash> <paused|parked|done|dead>
+  local win=$1 task=$2 h=$3 class=$4 key statusf mtime age rf rf_age reason group
+  case "$class" in
+    paused) group=paused ;;
+    dead) group=dead ;;
+    *) group=quiet ;;
+  esac
   key=$(printf '%s' "$win" | tr ':/.' '___')
   printf '%s' "$h" > "$STATE/.stale-$key"
-  : > "$STATE/.paused-$key"
+  [ "$class" != paused ] || : > "$STATE/.paused-$key"
   rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
   statusf="$STATE/$task.status"
   mtime=$(stat_mtime "$statusf")
   case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
   age=$(( $(date +%s) - mtime ))
-  rf="$STATE/.paused-resurfaced-$key"
+  rf="$STATE/.$group-resurfaced-$key"
   rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
-  if [ "$age" -ge "$PAUSE_RESURFACE_SECS" ] && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]; then
-    reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)"
+  if { [ "$class" = dead ] || [ "$age" -ge "$PAUSE_RESURFACE_SECS" ]; } && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]; then
+    case "$class" in
+      paused) reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)" ;;
+      dead) reason="stale: $win (agent exited or endpoint gone; rechecked on a long cadence)" ;;
+      *) reason="stale: $win ($class ${age}s; healthy idle agent, rechecked on a long cadence)" ;;
+    esac
     fm_wake_append stale "$win" "$reason" || exit 1
     date +%s > "$rf"
     wake "$reason"
   fi
-  triage_log "absorbed stale (paused, awaiting external, age ${age}s): $win"
+  triage_log "absorbed stale ($class, age ${age}s): $win"
+}
+
+handle_paused_stale() { handle_bounded_stale "$@" paused; }
+
+# Positive quiet verdicts expire after one wedge interval or any status change.
+# Agent liveness is never cached.
+quiet_state_class() {  # <task> <window-key>
+  local task=$1 key=$2 cache sig cached class
+  cache="$STATE/.quiet-state-$key"
+  sig=$(stat_sig "$STATE/$task.status" || true)
+  cached=$(cat "$cache" 2>/dev/null || true)
+  if [ -n "$sig" ] && [ "${cached% *}" = "$sig" ] && [ "$(age_of "$cache")" -lt "$STALE_ESCALATE_SECS" ]; then
+    printf '%s' "${cached##* }"
+    return
+  fi
+  class=$(crew_absorb_class "$task" quiet)
+  case "$class" in
+    parked|done) printf '%s %s' "$sig" "$class" > "$cache" ;;
+    *) rm -f "${STATE:?}/.quiet-state-$key" ;;
+  esac
+  printf '%s' "$class"
 }
 
 clear_pause_state() {  # <window>
@@ -945,7 +970,21 @@ EOF
     if [ "$kind" = secondmate ] && ! status_is_paused "$last"; then
       continue
     fi
-    tail40=$(fm_backend_capture "$(window_backend "$w")" "$w" 40 "$(window_label "$w")" 2>/dev/null) || continue
+    backend=$(window_backend "$w")
+    agent_alive=unknown
+    if [ "$kind" != secondmate ] && ! afk_present && ! status_is_paused_or_captain_held "$last"; then
+      case "$backend" in
+        tmux|herdr)
+          agent_alive=$(fm_backend_agent_alive "$backend" "$w" 2>/dev/null) || agent_alive=unknown
+          if [ "$agent_alive" = dead ]; then
+            handle_bounded_stale "$w" "$task" agent-dead dead
+            continue
+          fi
+          rm -f "${STATE:?}/.dead-resurfaced-$key"
+          ;;
+      esac
+    fi
+    tail40=$(fm_backend_capture "$backend" "$w" 40 "$(window_label "$w")" 2>/dev/null) || continue
     h=$(printf '%s' "$tail40" | hash_pane)
     key=$(printf '%s' "$w" | tr ':/.' '___')
     hf="$STATE/.hash-$key"
@@ -961,6 +1000,19 @@ EOF
     # content cannot suppress stale detection. Read once per window per poll and
     # reused below so a busy verdict is consistent within one cycle.
     if window_is_busy "$w" "$tail40"; then busy_now=0; else busy_now=1; fi
+    if [ "$agent_alive" = alive ] && [ "$busy_now" -ne 0 ]; then
+      quiet_class=$(quiet_state_class "$task" "$key")
+      case "$quiet_class" in
+        parked|done)
+          handle_bounded_stale "$w" "$task" "$h" "$quiet_class"
+          continue
+          ;;
+      esac
+    fi
+    if [ -e "$STATE/.quiet-state-$key" ]; then
+      rm -f "${STATE:?}/.quiet-state-$key" "${STATE:?}/.stale-$key"
+    fi
+    rm -f "${STATE:?}/.quiet-resurfaced-$key"
     if [ "$h" = "$prev" ]; then
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"
