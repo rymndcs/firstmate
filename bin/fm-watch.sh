@@ -22,7 +22,8 @@
 #                          external-wait pause is absorbed instead with its own long
 #                          re-surface cadence, never as a wedge. A verified-live
 #                          parked/done worker also uses that long cadence; agent
-#                          death is probed each poll and surfaces before capture.
+#                          death is probed each poll before capture and surfaces
+#                          once it persists one poll interval.
 #                          Only when none of these
 #                          absorb class applies does the log's last line decide:
 #                          terminal (captain-relevant) or non-terminal (no verb),
@@ -353,23 +354,39 @@ handle_bounded_stale() {  # <window> <task> <hash> <paused|parked|done|dead>
 
 handle_paused_stale() { handle_bounded_stale "$@" paused; }
 
-# Positive quiet verdicts expire after one wedge interval or any status change.
-# Agent liveness is never cached.
+# Idle verdicts expire after one wedge interval, any status change or activity.
+# A firstmate message (state/<id>.steered from fm-send.sh) disables quiet until
+# the worker reports a new state. Agent liveness is never cached.
 quiet_state_class() {  # <task> <window-key>
-  local task=$1 key=$2 cache sig cached class
+  local task=$1 key=$2 cache sig cached class steer
+  steer="$STATE/$task.steered"
+  if [ -e "$steer" ]; then
+    if ! status_state_since "$STATE/$task.status" "$(cat "$steer" 2>/dev/null || printf 0)"; then
+      printf 'none'
+      return
+    fi
+    rm -f "$steer"
+  fi
   cache="$STATE/.quiet-state-$key"
   sig=$(stat_sig "$STATE/$task.status" || true)
   cached=$(cat "$cache" 2>/dev/null || true)
-  if [ -n "$sig" ] && [ "${cached% *}" = "$sig" ] && [ "$(age_of "$cache")" -lt "$STALE_ESCALATE_SECS" ]; then
+  if [ "${cached% *}" = "$sig" ] && [ "$(age_of "$cache")" -lt "$STALE_ESCALATE_SECS" ]; then
     printf '%s' "${cached##* }"
     return
   fi
   class=$(crew_absorb_class "$task" quiet)
-  case "$class" in
-    parked|done) printf '%s %s' "$sig" "$class" > "$cache" ;;
-    *) rm -f "${STATE:?}/.quiet-state-$key" ;;
-  esac
+  printf '%s %s' "$sig" "$class" > "$cache"
   printf '%s' "$class"
+}
+
+# Activity or unproven liveness drops the cached verdict; leaving a quiet verdict
+# also drops the hash it absorbed so that pane is classified afresh.
+forget_quiet_state() {  # <window-key>
+  local key=$1
+  case "$(cat "$STATE/.quiet-state-$key" 2>/dev/null)" in
+    *' parked'|*' done') rm -f "${STATE:?}/.stale-$key" ;;
+  esac
+  rm -f "${STATE:?}/.quiet-state-$key"
 }
 
 clear_pause_state() {  # <window>
@@ -977,10 +994,16 @@ EOF
         tmux|herdr)
           agent_alive=$(fm_backend_agent_alive "$backend" "$w" 2>/dev/null) || agent_alive=unknown
           if [ "$agent_alive" = dead ]; then
-            handle_bounded_stale "$w" "$task" agent-dead dead
+            if [ ! -e "$STATE/.dead-since-$key" ] || [ "$STATE/$task.meta" -nt "$STATE/.dead-since-$key" ]; then
+              : > "$STATE/.dead-since-$key"
+              rm -f "${STATE:?}/.dead-resurfaced-$key"
+            fi
+            if [ "$(age_of "$STATE/.dead-since-$key")" -ge "$POLL" ]; then
+              handle_bounded_stale "$w" "$task" agent-dead dead
+            fi
             continue
           fi
-          rm -f "${STATE:?}/.dead-resurfaced-$key"
+          rm -f "${STATE:?}/.dead-since-$key" "${STATE:?}/.dead-resurfaced-$key"
           ;;
       esac
     fi
@@ -1008,9 +1031,8 @@ EOF
           continue
           ;;
       esac
-    fi
-    if [ -e "$STATE/.quiet-state-$key" ]; then
-      rm -f "${STATE:?}/.quiet-state-$key" "${STATE:?}/.stale-$key"
+    else
+      forget_quiet_state "$key"
     fi
     rm -f "${STATE:?}/.quiet-resurfaced-$key"
     if [ "$h" = "$prev" ]; then

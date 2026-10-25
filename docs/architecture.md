@@ -24,9 +24,11 @@ Live or inconclusive liveness remains fail-open at that initial surface, and the
 Its initial normal-mode status signal still surfaces through the no-verb path, while away mode self-handles that routine signal and owns the later recheck.
 Fresh stale panes use the same current-state read before trusting the status log, so an active run or a proven busy worker outranks an old captain-relevant status-log line left behind before validation.
 In normal mode, tmux and Herdr workers whose reconciled state is parked or done use `FM_PAUSE_RESURFACE_SECS` while idle only when the existing backend agent-liveness probe positively reports a live agent.
-Each poll probes liveness before capture, so a missing pane or an agent that exited to a bare shell surfaces immediately, independently of pane hashes and stale busy records; an unchanged dead endpoint then uses the same long recheck cadence.
+Each poll probes liveness before capture, so a missing pane or an agent that exited to a bare shell surfaces once that death has persisted for one `FM_POLL` interval, independently of pane hashes and stale busy records; an unchanged dead endpoint then uses the same long recheck cadence.
+That interval keeps the spawn gap before the harness starts and the teardown gap before the task record is removed silent, and a respawned task record starts a fresh interval.
 Healthy parked and done workers clear wedge aging and escalation counts even when idle pane text changes.
-Their reconciled verdict is cached for at most `FM_STALE_ESCALATE_SECS`, invalidated by a changed status signature or provable activity, while liveness is never cached.
+The reconciled verdict on this idle path, quiet or not, is cached for at most `FM_STALE_ESCALATE_SECS`, invalidated by a changed status signature or provable activity, so an idle validating worker does not re-read current state every poll; liveness is never cached.
+Any `bin/fm-send.sh` message or key to a recorded task keeps it off the quiet cadence until its status log gains a new state-bearing event, so a steered worker that wedges surfaces on the ordinary cadence and firstmate bookkeeping alone never restores quiet.
 Zellij, cmux and Orca have no verified agent-liveness verdict and retain their existing conservative stale behavior without this suppression.
 No-change heartbeats are also benign.
 Absorbed wakes advance their suppression markers, log to `state/.watch-triage.log`, and keep the watcher blocking without a queue record or LLM turn.

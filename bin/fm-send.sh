@@ -259,6 +259,14 @@ fi
 # send implementation. A failed backend send is still surfaced below as a hard
 # error with the attempted resolution attached.
 
+# Record every message or key to a recorded task before delivery: the watcher
+# keeps that task off its quiet idle cadence until the status log grows past
+# this byte offset with a new state (bin/fm-watch.sh quiet_state_class).
+if [ -n "$TARGET_META" ]; then
+  STEER_ID=$(fm_send_id_from_meta "$TARGET_META")
+  { wc -c < "$STATE/$STEER_ID.status" || printf 0; } 2>/dev/null | tr -d ' ' > "$STATE/$STEER_ID.steered"
+fi
+
 if [ "${1:-}" = "--key" ]; then
   if [ "$TARGET_BACKEND" = remote ]; then
     if ! "$SCRIPT_DIR/fm-on.sh" "$TARGET_REMOTE_ID" fm-remote-secondmate-control.sh key "$TARGET_REMOTE_ID" "$2" < /dev/null; then

@@ -245,6 +245,16 @@ status_line_state() {  # <status-line>
   esac
 }
 
+# 0 when a state-bearing event follows byte <offset>; bookkeeping such as
+# resolved: never counts as a new state.
+status_state_since() {  # <status-file> <byte-offset>
+  local f=$1 off=$2 line
+  while IFS= read -r line || [ -n "$line" ]; do
+    [ "$(status_line_state "$line")" = unknown ] || return 0
+  done < <(tail -c +"$((off + 1))" "$f" 2>/dev/null)
+  return 1
+}
+
 # Last state-bearing event, excluding bookkeeping. A decision event counts only
 # while its key remains open under status_open_decisions's authoritative fold.
 status_effective_line() {  # <status-file>
@@ -389,7 +399,7 @@ signal_reason_is_actionable() {  # <file> ...
 # authoritatively (not the status log) is what keeps run-step precedence: a crew
 # that appended paused: but then STARTED a run reports working, never paused.
 # NOT a pure read: fm-crew-state.sh may make a bounded no-mistakes call, so callers
-# run it on no-verb signals, first-sighting stale paths and bounded quiet rechecks.
+# run it on no-verb signals, first-sighting stale paths and cached idle-path rechecks.
 # FM_CREW_STATE_BIN lets tests stub the verdict.
 crew_absorb_class() {  # <id> [quiet]
   local id=$1 line state src
