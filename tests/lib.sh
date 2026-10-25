@@ -190,6 +190,24 @@ fm_git_worktree() {
   git -C "$repo" worktree add --quiet -b "$branch" "$worktree"
 }
 
+# --- FIFO fixtures ----------------------------------------------------------
+#
+# fm_fifo_feed <fifo> <line> starts a background writer that hands <line> to the
+# first reader of <fifo> and records its pid in FM_FIFO_FEED_PID, so a script
+# that reads the FIFO gets the line and EOF instead of blocking and the read is
+# observable with no timeout. fm_fifo_release <fifo> ends that writer without
+# blocking, whether or not anything read the FIFO.
+fm_fifo_feed() {
+  ( printf '%s\n' "$2" > "$1" ) &
+  FM_FIFO_FEED_PID=$!
+}
+
+fm_fifo_release() {
+  exec 9<>"$1"
+  wait "$FM_FIFO_FEED_PID" || true
+  exec 9<&-
+}
+
 # --- state/<id>.meta writers ------------------------------------------------
 
 # fm_write_meta <file> <key=val> ...: write the given key=val lines to a meta

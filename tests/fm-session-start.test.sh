@@ -1514,10 +1514,11 @@ EOF
   make_fake_ps_harness "$fakebin" omp
   out=$(FM_FAKE_HARNESS=omp run_session_start "$fixture_home" "$root" "$fakebin:$BASE_PATH")
   assert_not_contains "$out" 'CLAUDE.local.md' 'absent local rules printed noise'
-  for shape in directory dangling permission; do
+  for shape in directory dangling permission fifo; do
     case "$shape" in
       directory) mkdir "$fixture_home/CLAUDE.local.md" ;;
       dangling) ln -s "$fixture_home/missing-rules" "$fixture_home/CLAUDE.local.md" ;;
+      fifo) mkfifo "$fixture_home/CLAUDE.local.md" ;;
       permission)
         printf 'SECRET_LOCAL_RULE\n' > "$fixture_home/CLAUDE.local.md"
         chmod 000 "$fixture_home/CLAUDE.local.md"
@@ -1525,7 +1526,9 @@ EOF
         ;;
     esac
     rc=0
+    [ "$shape" != fifo ] || fm_fifo_feed "$fixture_home/CLAUDE.local.md" 'SECRET_LOCAL_RULE'
     out=$(FM_FAKE_HARNESS=omp run_session_start "$fixture_home" "$root" "$fakebin:$BASE_PATH") || rc=$?
+    [ "$shape" != fifo ] || fm_fifo_release "$fixture_home/CLAUDE.local.md"
     expect_code 0 "$rc" "unreadable $shape local rules must not abort startup"
     [ "$(printf '%s\n' "$out" | grep -c 'CLAUDE_LOCAL: unreadable')" = 1 ] \
       || fail "$shape rules need one diagnostic"

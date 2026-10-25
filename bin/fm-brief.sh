@@ -92,7 +92,8 @@
 # Project-less charters read the home's rules; other charters read every listed
 # project's rules. Each existing file is read before writing a brief, then included
 # in full with its absolute source path for every harness and remote secondmate.
-# Absent files are explicit in the brief; unreadable paths refuse the scaffold.
+# Absent files are explicit in the brief; unreadable or non-regular paths, such
+# as a directory or FIFO, refuse the scaffold.
 # Local rule files are never copied into worktrees or committed.
 # Refuses to overwrite an existing brief.
 #
@@ -309,7 +310,7 @@ DECISION_HOLD_CMD="FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin
 project_local_rules() {
   local project=$1 clone path contents
   case "$project" in
-    "$FM_HOME"|"$FM_ROOT"|"${FM_ROOT##*/}") clone=$FM_HOME ;;
+    "$FM_ROOT"|"${FM_ROOT##*/}") clone=$FM_HOME ;;
     /*) clone=$project ;;
     projects/*) clone="$FM_HOME/$project" ;;
     *)
@@ -327,7 +328,7 @@ project_local_rules() {
     printf 'ABSENT: %s (no project-local personal rules).\n' "$path"
     return 0
   fi
-  if [ ! -f "$path" ] || [ ! -r "$path" ] || ! contents=$(cat "$path" 2>/dev/null); then
+  if [ ! -f "$path" ] || ! contents=$(cat "$path" 2>/dev/null); then
     printf 'error: unreadable project-local rules: %s; refusing to scaffold without them\n' "$path" >&2
     return 1
   fi

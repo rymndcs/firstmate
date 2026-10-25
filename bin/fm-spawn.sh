@@ -53,9 +53,10 @@
 #   brief is the one place the name is stated, and a second flag could disagree
 #   with the instructions the worker actually follows. A brief that declares none
 #   records no branch= at all and every consumer derives fm/<task-id> as before.
-#   A ship brief that names a Linear issue outright while recording no branch is
-#   an intake gap, since bin/fm-linear.sh resolves the issue from the recorded
-#   branch alone: the spawn proceeds untouched and says so loudly on stderr.
+#   A ship brief that names a Linear issue outright, outside the personal rules
+#   fm-brief.sh embeds, while recording no branch is an intake gap, since
+#   bin/fm-linear.sh resolves the issue from the recorded branch alone: the
+#   spawn proceeds untouched and says so loudly on stderr.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -1495,10 +1496,17 @@ if [ "$KIND" = ship ]; then
   # uppercase <TEAM>-<number> token, which is also the form a linear.app issue
   # URL carries - and a task id is never read as an issue reference, because an
   # ordinary id such as db2-index-cleanup would name a completely unrelated
-  # issue. This reads the brief and nothing else: it sends no Linear request,
-  # and its whole effect is the diagnostic.
+  # issue. Personal rules that fm-brief.sh embeds between its "# Personal project
+  # rules" and "# Project instruction files" headings are not task material, so
+  # an issue they name is never read as this task's. This reads the brief and
+  # nothing else: it sends no Linear request, and its whole effect is the diagnostic.
   if [ -z "$BRIEF_BRANCH" ]; then
-    BRIEF_LINEAR_IDENT=$(grep -oE '(^|[^0-9A-Za-z_-])[A-Z]{2,5}-[0-9]{1,6}([^0-9A-Za-z_-]|$)' "$BRIEF" \
+    BRIEF_LINEAR_IDENT=$(awk '
+        $0 == "# Personal project rules" { rules = 1; next }
+        $0 == "# Project instruction files" { rules = 0 }
+        !rules
+      ' "$BRIEF" \
+      | grep -oE '(^|[^0-9A-Za-z_-])[A-Z]{2,5}-[0-9]{1,6}([^0-9A-Za-z_-]|$)' \
       | grep -oE '[A-Z]{2,5}-[0-9]{1,6}' | head -n 1) || BRIEF_LINEAR_IDENT=
   fi
   if [ -z "$BRIEF_MODE" ]; then

@@ -1137,10 +1137,11 @@ test_local_rules_absent_and_unreadable_briefs() {
   FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" absent-rules sample --mode local-only --checks targeted >/dev/null 2>&1
   brief="$fixture_home/data/absent-rules/brief.md"
   assert_grep "ABSENT: $fixture_home/projects/sample/CLAUDE.local.md" "$brief" 'missing rules silently dropped'
-  for shape in directory dangling permission; do
+  for shape in directory dangling permission fifo; do
     case "$shape" in
       directory) mkdir "$fixture_home/projects/sample/CLAUDE.local.md" ;;
       dangling) ln -s "$fixture_home/missing-rules" "$fixture_home/projects/sample/CLAUDE.local.md" ;;
+      fifo) mkfifo "$fixture_home/projects/sample/CLAUDE.local.md" ;;
       permission)
         printf 'PRIVATE_RULE\n' > "$fixture_home/projects/sample/CLAUDE.local.md"
         chmod 000 "$fixture_home/projects/sample/CLAUDE.local.md"
@@ -1149,11 +1150,13 @@ test_local_rules_absent_and_unreadable_briefs() {
     esac
     for kind in ship scout secondmate; do
       rc=0
+      [ "$shape" != fifo ] || fm_fifo_feed "$fixture_home/projects/sample/CLAUDE.local.md" 'FIFO_RULE'
       case "$kind" in
         ship) out=$(FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "bad-$shape-$kind" sample --mode local-only --checks targeted 2>&1) || rc=$? ;;
         scout) out=$(FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "bad-$shape-$kind" sample --scout 2>&1) || rc=$? ;;
         secondmate) out=$(FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "bad-$shape-$kind" --secondmate sample 2>&1) || rc=$? ;;
       esac
+      [ "$shape" != fifo ] || fm_fifo_release "$fixture_home/projects/sample/CLAUDE.local.md"
       [ "$rc" -ne 0 ] || fail "$kind accepted $shape local rules"
       assert_contains "$out" 'unreadable' "$kind did not explain refusal"
       assert_contains "$out" "$fixture_home/projects/sample/CLAUDE.local.md" "$kind omitted unreadable path"
@@ -1167,6 +1170,42 @@ test_local_rules_absent_and_unreadable_briefs() {
     fi
   done
   pass 'missing brief rules are explicit and unreadable rules stop every scaffold'
+}
+
+test_local_rules_project_path_forms() {
+  local fixture_home elsewhere code_root form id brief rules text
+  fixture_home="$TMP_ROOT/path-forms home"
+  elsewhere="$TMP_ROOT/path-forms elsewhere/sample-clone"
+  code_root="$TMP_ROOT/path-forms code root"
+  mkdir -p "$fixture_home/data" "$fixture_home/projects/sample" "$elsewhere" "$code_root"
+  printf 'PREFIXED_RULE: sample clone rules.\n' > "$fixture_home/projects/sample/CLAUDE.local.md"
+  printf 'ELSEWHERE_RULE: absolute clone rules.\n' > "$elsewhere/CLAUDE.local.md"
+  printf 'HOME_RULE: active home rules.\n' > "$fixture_home/CLAUDE.local.md"
+  printf 'CODE_ROOT_RULE: code root rules.\n' > "$code_root/CLAUDE.local.md"
+  for form in prefixed absolute code-root; do
+    id="path-form-$form"
+    case "$form" in
+      prefixed)
+        rules="$fixture_home/projects/sample/CLAUDE.local.md"
+        FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" projects/sample --scout >/dev/null 2>&1 ;;
+      absolute)
+        rules="$elsewhere/CLAUDE.local.md"
+        FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" "$elsewhere" --scout >/dev/null 2>&1 ;;
+      code-root)
+        rules="$fixture_home/CLAUDE.local.md"
+        FM_ROOT_OVERRIDE="$code_root" FM_HOME="$fixture_home" \
+          "$ROOT/bin/fm-brief.sh" "$id" "$code_root" --scout >/dev/null 2>&1 ;;
+    esac
+    brief="$fixture_home/data/$id/brief.md"
+    assert_present "$brief" "$form brief missing"
+    text=$(cat "$rules")
+    assert_grep "source: \`$rules\`" "$brief" "$form brief named the wrong local-rules source"
+    assert_grep "$text" "$brief" "$form brief omitted its local rules"
+    assert_no_grep 'ABSENT:' "$brief" "$form brief reported existing rules as absent"
+  done
+  assert_no_grep 'CODE_ROOT_RULE' "$fixture_home/data/path-form-code-root/brief.md" \
+    'code-root alias read the code root instead of the active home'
+  pass 'projects/<name>, absolute clone and code-root project arguments read the right local rules'
 }
 
 test_registered_project_name_wins_over_firstmate_alias() {
@@ -1201,6 +1240,7 @@ test_registered_operational_home_uses_home_rules
 test_registered_project_name_wins_over_firstmate_alias
 test_local_rules_in_every_brief
 test_local_rules_absent_and_unreadable_briefs
+test_local_rules_project_path_forms
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_ship_review_round_boundaries

@@ -68,8 +68,9 @@
 #                       for every one of them.
 #                       The home's optional CLAUDE.local.md follows in full for
 #                       every primary except Claude, which loads it natively.
-#                       Missing local rules are silent; an unreadable path prints
-#                       one CLAUDE_LOCAL diagnostic without aborting the digest.
+#                       Missing local rules are silent; an unreadable or
+#                       non-regular path prints one CLAUDE_LOCAL diagnostic
+#                       without aborting the digest.
 #                       harness-adapters records the per-harness evidence.
 #   5. fleet digest   - a compact data/backlog.md identity/metadata listing,
 #                       every state/*.meta, a bounded state/*.status tail
@@ -416,7 +417,7 @@ print_file_or_absent "$DATA/learnings.md" "data/learnings.md"
 if [ "$PRIMARY_HARNESS" != claude ]; then
   LOCAL_RULES="$FM_HOME/CLAUDE.local.md"
   if [ -e "$LOCAL_RULES" ] || [ -L "$LOCAL_RULES" ]; then
-    if [ -f "$LOCAL_RULES" ] && [ -r "$LOCAL_RULES" ] && LOCAL_RULES_TEXT=$(cat "$LOCAL_RULES" 2>/dev/null); then
+    if [ -f "$LOCAL_RULES" ] && LOCAL_RULES_TEXT=$(cat "$LOCAL_RULES" 2>/dev/null); then
       subsection "$LOCAL_RULES"
       printf '%s\n' "$LOCAL_RULES_TEXT"
     else
