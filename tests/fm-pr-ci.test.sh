@@ -26,11 +26,13 @@ FM_TEST_GH_HEAD=2222222222222222222222222222222222222222
 assert_contains "$(poll_pr)" ci-pass 'new head needs a fresh outcome'
 pass 'failure and new-head outcomes wake while pending and previous outcomes stay silent'
 
+FM_TEST_GH_ALL_BUCKETS=
 for buckets in '' garbage; do
   FM_TEST_GH_HEAD=3333333333333333333333333333333333333333
   FM_TEST_GH_BUCKETS=$buckets
   [ -z "$(poll_pr)" ] || fail 'empty or malformed checks must not become green'
 done
+FM_TEST_GH_ALL_BUCKETS=fail
 FM_TEST_GH_BUCKETS=pass FM_TEST_GH_CHECK_RC=4
 [ -z "$(poll_pr)" ] || fail 'authentication error must not become green'
 FM_TEST_GH_STATE=MERGED
@@ -51,6 +53,16 @@ FM_TEST_GH_BUCKETS=$'pass\nskipping' FM_TEST_GH_CHECK_RC=0
 assert_contains "$(poll_pr)" ci-pass 'skipped required checks satisfy GitHub protection'
 pass 'required-check aggregation handles mixed, canceled and skipped checks'
 
+FM_TEST_GH_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+FM_TEST_GH_BUCKETS='' FM_TEST_GH_CHECK_RC=1
+FM_TEST_GH_ALL_BUCKETS=$(printf 'pass\n%.0s' $(seq 17); printf 'skipping\n%.0s' $(seq 3)) FM_TEST_GH_ALL_RC=0
+assert_contains "$(poll_pr)" ci-pass 'a PR with no required checks must use all reported checks'
+FM_TEST_GH_HEAD=cccccccccccccccccccccccccccccccccccccccc
+FM_TEST_GH_ALL_RC=4
+[ -z "$(poll_pr)" ] || fail 'a failed all-checks lookup must stay silent'
+FM_TEST_GH_BUCKETS=pass FM_TEST_GH_CHECK_RC=0 FM_TEST_GH_ALL_BUCKETS=fail FM_TEST_GH_ALL_RC=1
+pass 'a PR without required checks reports CI from all of its checks'
+
 FM_TEST_GH_HEAD=7777777777777777777777777777777777777777
 export FM_TEST_GH_HEAD_AFTER=8888888888888888888888888888888888888888
 [ -z "$(poll_pr)" ] || fail 'concurrent head change must not publish stale checks'
@@ -68,13 +80,38 @@ assert_grep 'task-other.check.sh' "$PR_TMP/outcomes" 'each registered task must 
 [ -z "$(poll_pr)" ] || fail 'same URL registered twice must still deduplicate'
 pass 'matching registrations each receive one durable notification'
 
+write_pr_task task-diff
+"$PR_CODE/bin/fm-pr-check.sh" task-diff https://github.com/owner/repo/pull/43 > /dev/null 2>&1 || fail 'registration failed'
+FM_TEST_GH_HEAD=dddddddddddddddddddddddddddddddddddddddd
+poll_pr > /dev/null
+drain_pr > "$PR_TMP/other-url"
+assert_grep 'task-a.check.sh' "$PR_TMP/other-url" 'the registered task must still be notified'
+assert_no_grep 'task-diff.check.sh' "$PR_TMP/other-url" 'a task registered to another PR must not receive this CI outcome'
+pass 'CI outcomes reach only tasks registered to that PR'
+
+write_pr_task task-move
+"$PR_CODE/bin/fm-pr-check.sh" task-move https://github.com/owner/repo/pull/51 > /dev/null 2>&1 || fail 'registration failed'
+FM_TEST_GH_HEAD=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+FM_PR_CHECK_GH_TIMEOUT=30 FM_TEST_GH_HEAD_WAIT_URL=https://github.com/owner/repo/pull/52 \
+  "$PR_CODE/bin/fm-pr-check.sh" task-move https://github.com/owner/repo/pull/52 > /dev/null 2>&1 &
+mover=$!
+await_file "$FM_HOME/head-wait-started" 'fixture: re-registration did not reach its head lookup'
+[ -z "$(poll_pr 51)" ] || fail 'a CI outcome must not publish while its task registration is changing'
+: > "$FM_HOME/head-wait-release"
+wait "$mover" || fail 're-registration failed'
+rm -f "${FM_HOME:?}/head-wait-started" "${FM_HOME:?}/head-wait-finished" "${FM_HOME:?}/head-wait-release"
+[ -z "$(poll_pr 51)" ] || fail 'a task moved to another PR must never receive the old PR outcome'
+pass 'CI publication never overlaps a change of the task registration'
+
+write_pr_task task-queue
+"$PR_CODE/bin/fm-pr-check.sh" task-queue https://github.com/owner/repo/pull/50 > /dev/null 2>&1 || fail 'registration failed'
 FM_TEST_GH_HEAD=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 mkdir "$FM_HOME/state/.wake-queue.blocked"
 mv "$FM_HOME/state/.wake-queue" "$FM_HOME/state/.wake-queue.blocked/saved"
 mkdir "$FM_HOME/state/.wake-queue"
-[ -z "$(poll_pr)" ] || fail 'failed durable enqueue must not announce or consume observation'
+[ -z "$(poll_pr 50)" ] || fail 'failed durable enqueue must not announce or consume observation'
 rmdir "$FM_HOME/state/.wake-queue"
 mv "$FM_HOME/state/.wake-queue.blocked/saved" "$FM_HOME/state/.wake-queue"
 rmdir "$FM_HOME/state/.wake-queue.blocked"
-assert_contains "$(poll_pr)" ci-pass 'CI observation must retry when enqueue recovers'
+assert_contains "$(poll_pr 50)" ci-pass 'CI observation must retry when enqueue recovers'
 pass 'queue failure cannot consume an undelivered CI observation'

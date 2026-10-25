@@ -16,10 +16,20 @@ mkdir -p "$FM_HOME/state" "$FM_HOME/data" "$FM_HOME/config" "$PR_TMP/fakebin"
 export PATH="$PR_TMP/fakebin:$PATH"
 export FM_TEST_GH_STATE=OPEN FM_TEST_GH_HEAD=1111111111111111111111111111111111111111
 export FM_TEST_GH_BUCKETS=pass FM_TEST_GH_CHECK_RC=0
+export FM_TEST_GH_ALL_BUCKETS=fail FM_TEST_GH_ALL_RC=1
 cat > "$PR_TMP/fakebin/gh" <<'FAKE'
 #!/usr/bin/env bash
 case "$*" in
   *headRefOid*)
+    case " $* " in
+      *" ${FM_TEST_GH_HEAD_WAIT_URL:-none} "*)
+        : > "$FM_HOME/head-wait-started"
+        for _ in $(seq 600); do
+          [ ! -e "$FM_HOME/head-wait-release" ] || break
+          sleep 0.05
+        done
+        : > "$FM_HOME/head-wait-finished" ;;
+    esac
     if [ -n "${FM_TEST_GH_HEAD_AFTER:-}" ]; then
       marker="$FM_HOME/head-query"
       if [ -f "$marker" ]; then
@@ -33,8 +43,10 @@ case "$*" in
     fi
     ;;
   *'pr checks '*)
-    case " $* " in *' --required '*) ;; *) printf 'fail\n'; exit 1 ;; esac
-    printf '%s\n' "$FM_TEST_GH_BUCKETS"; exit "$FM_TEST_GH_CHECK_RC" ;;
+    case " $* " in
+      *' --required '*) printf '%s\n' "$FM_TEST_GH_BUCKETS"; exit "$FM_TEST_GH_CHECK_RC" ;;
+      *) printf '%s\n' "$FM_TEST_GH_ALL_BUCKETS"; exit "$FM_TEST_GH_ALL_RC" ;;
+    esac ;;
   *'pr view '*) printf '%s\n' "$FM_TEST_GH_STATE" ;;
   *) exit 1 ;;
 esac
@@ -48,7 +60,15 @@ register_pr() {
   "$PR_CODE/bin/fm-pr-check.sh" "$1" "$url" > /dev/null 2> "$PR_TMP/register.err" || fail 'registration failed'
 }
 poll_pr() {
-  "$PR_CODE/bin/fm-pr-poll.sh" --validated github "$url" github.com owner/repo 42
+  local number=${1:-42}
+  "$PR_CODE/bin/fm-pr-poll.sh" --validated github "https://github.com/owner/repo/pull/$number" github.com owner/repo "$number"
+}
+await_file() {
+  for _ in $(seq 200); do
+    [ ! -e "$1" ] || return 0
+    sleep 0.05
+  done
+  fail "$2"
 }
 drain_pr() {
   "$PR_CODE/bin/fm-wake-drain.sh"

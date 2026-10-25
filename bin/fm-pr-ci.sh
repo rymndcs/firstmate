@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Publish a GitHub CI observation only for canonical registrations of that URL.
+# Each task is checked under its state/<id>.pr-registration.lock, shared with
+# fm-pr-check.sh, so a registration change never overlaps a publication; a busy
+# lock skips the task until the next poll.
 # The per-task receipt retains URL/head/outcome identities across retries,
 # re-registration and restarts. Queue before receipt, then print the observation
 # to wake the watcher; its matching queue append collapses at drain as usual.
@@ -25,10 +28,10 @@ URL=$1 HEAD=$2 OUTCOME=$3
 
 publish_one() (
   local id=$1 receipt="$STATE/$1.pr-ci" record="$URL $HEAD $OUTCOME" tmp=''
-  fm_lock_try_acquire "$STATE/$id.pr-ci.lock" || return 0
-  trap 'fm_lock_release "$STATE/$id.pr-ci.lock"; [ -z "$tmp" ] || rm -f -- "$tmp"' EXIT
+  fm_lock_try_acquire "$STATE/$id.pr-registration.lock" || return 0
+  trap 'fm_lock_release "$STATE/$id.pr-registration.lock"; [ -z "$tmp" ] || rm -f -- "$tmp"' EXIT
+  fm_pr_metadata_identity_parse "$STATE/$id.meta" && [ "$FM_PR_META_URL" = "$URL" ] || return 0
   fm_pr_poll_artifacts_valid "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" || return 0
-  [ "$FM_PR_META_URL" = "$URL" ] || return 0
   fm_pr_regular_destination_or_absent "$receipt" || return 1
   if [ -f "$receipt" ] && grep -qxF "$record" "$receipt"; then
     return 0
@@ -46,6 +49,5 @@ for meta in "$STATE"/*.meta; do
   [ -f "$meta" ] && [ ! -L "$meta" ] || continue
   id=$(basename "$meta" .meta)
   fm_pr_task_id_valid "$id" || continue
-  fm_pr_metadata_identity_parse "$meta" && [ "$FM_PR_META_URL" = "$URL" ] || continue
   publish_one "$id" || exit 1
 done

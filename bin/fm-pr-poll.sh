@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Static watcher program for a validated PR/MR poll sidecar.
 # It preserves the exact merged result for PR/MR retirement and publishes
-# GitHub required-check outcomes through fm-pr-ci.sh, once per head/outcome.
+# GitHub check outcomes through fm-pr-ci.sh, once per head/outcome.
 # Missing, pending, malformed or failed check lookups stay silent.
 # Usage: fm-pr-poll.sh [--validated <provider> <url> <host> <path> <number>]
-# Required checks use gh pr checks --required --json bucket; skipped checks count
+# A PR with required checks uses only those (gh pr checks --required --json
+# bucket); a PR with none uses all of its reported checks. Skipped checks count
 # as satisfied, canceled checks as failure, and an empty set is not all-green.
 # Head identity is read before and after checks to reject a concurrent push.
 # The provider-tagged identity is data in the sidecar and is never
@@ -84,6 +85,10 @@ case "$provider" in
     checks_rc=0
     buckets=$(gh pr checks "$url" --required --json bucket --jq '.[].bucket' 2>/dev/null) || checks_rc=$?
     case "$checks_rc" in 0|1|8) ;; *) exit 0 ;; esac
+    if [ -z "$buckets" ]; then
+      buckets=$(gh pr checks "$url" --json bucket --jq '.[].bucket' 2>/dev/null) || checks_rc=$?
+      case "$checks_rc" in 0|1|8) ;; *) exit 0 ;; esac
+    fi
     outcome=$(printf '%s\n' "$buckets" | awk '
       $0 == "fail" || $0 == "cancel" { failed = 1; next }
       $0 == "pending" { pending = 1; next }
