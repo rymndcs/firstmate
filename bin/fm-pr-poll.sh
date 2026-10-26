@@ -2,6 +2,7 @@
 # Static watcher program for a validated PR/MR poll sidecar.
 # It preserves the exact merged result for PR/MR retirement and publishes
 # GitHub check outcomes through fm-pr-ci.sh, once per head/outcome.
+# Only an OPEN PR publishes check outcomes; a closed PR stays silent.
 # Missing, pending, malformed or failed check lookups stay silent.
 # Usage: fm-pr-poll.sh [--validated <provider> <url> <host> <path> <number>]
 # A PR with required checks uses only those (gh pr checks --required --json

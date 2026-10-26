@@ -84,7 +84,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-tasks-axi-lib.sh`    | Shared backlog-backend selector and `tasks-axi` compatibility probe                  |
 | `fm-dispatch-axi-lib.sh` | Sole owner of the bounded, never-blocking `dispatch-axi` reading spawns record, and of the `quota-axi` compatibility floor bootstrap reports |
 | `fm-vendor-auth-probe.sh`| Run one hard-bounded, non-destructive authentication probe of a named vendor CLI and report the fact |
-| `fm-wake-drain.sh`       | Atomically drain queued watcher wakes, emit bounded best-effort status-event annotations, then assert watcher liveness |
+| `fm-wake-drain.sh`       | Atomically drain queued watcher wakes, emit bounded best-effort status-event annotations, run automatic PR registration, then assert watcher liveness |
 | `fm-wake-lib.sh`         | Shared durable wake queue, portable locks, and watcher identity/health helpers       |
 | `fm-classify-lib.sh`     | Shared captain-relevant and declared-external-wait wake classification vocabulary    |
 | `fm-ship-review-lib.sh`  | Shared configured ship-review text, landing gate, and captain-override mechanics     |
@@ -100,6 +100,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
 | `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical polls       |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm a static merge poll |
+| `fm-pr-auto-register.sh` | Discover a ship task's own GitHub PR from its status log and register it through `fm-pr-check.sh` |
+| `fm-pr-ci.sh`            | Publish a GitHub PR's CI outcome once per head to each task registered for that URL |
 | `fm-pr-merge.sh`         | Apply the configured ship-review gate, then record PR metadata and merge a task's canonical full GitHub URL |
 | `fm-linear.sh`           | Own Linear API mechanics: move a Linear-tracked task's issue as part of the dispatch, PR-record, and merge steps |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode and its configured ship-review step |
