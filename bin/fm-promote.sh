@@ -12,6 +12,9 @@
 # read the scout's report (AGENTS.md section 7); data/projects.md holds the
 # captain's standing posture as context, and this script never looks it up.
 # no-mistakes-prod-only is a registry policy rather than a task mode and is refused.
+# The same meta write records promoted_status_offset=<bytes>, the status log's
+# length at promotion, so PR discovery ignores the scout's status lines
+# (bin/fm-pr-auto-register.sh owns that rule).
 # A scout has no branch, so promotion is also where a supplied branch name is
 # decided. --branch <name> records branch=<name> in the meta and names that branch
 # in the printed ship instructions, matching what fm-brief.sh --branch does for a
@@ -131,12 +134,14 @@ else
   REVIEW_STEP="; then follow the review round boundaries in $REVIEW_FILE before reporting done"
 fi
 
+STATUS_OFFSET=$(cat -- "$STATE/$ID.status" 2>/dev/null | wc -c | tr -d ' ')
 TMP="$META.tmp"
 grep -v -e '^kind=' -e '^mode=' -e '^yolo=' -e '^branch=' "$META" > "$TMP"
 {
   echo "kind=ship"
   echo "mode=$MODE"
   echo "yolo=$YOLO"
+  echo "promoted_status_offset=$STATUS_OFFSET"
   # Recorded only when supplied, so an ordinary promotion's meta is unchanged.
   if [ "$BRANCH_SET" -eq 1 ]; then echo "branch=$BRANCH"; fi
 } >> "$TMP"
