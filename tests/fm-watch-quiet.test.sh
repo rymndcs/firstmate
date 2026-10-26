@@ -458,8 +458,8 @@ test_away_owns_stale() {
 
 # Firstmate's same-pane relaunch: $d/relaunch types the launch line into the
 # worker's shell through fm-send, and the harness then comes up or fails at once.
-relaunch_prepare() {  # <case-dir> <alive|dead>
-  local d=$1 sb="$1/sendbin"
+relaunch_prepare() {  # <case-dir> <alive|dead> <fm-send target>
+  local d=$1 sb="$1/sendbin" target=$3
   mkdir -p "$sb"
   printf '%s\n' "$2" > "$d/relaunch-to"
   cat > "$sb/relaunched" <<'SH'
@@ -495,25 +495,26 @@ SH
 /bin/sleep 1
 CASE="$d" PATH="$sb:$d/fakebin:\$PATH" FM_ROOT_OVERRIDE="$d" FM_HOME="$d" FM_STATE_OVERRIDE="$d/state" \\
   FM_SEND_SETTLE=0 FM_SEND_RETRIES=1 FM_SEND_SLEEP=0 \\
-  "$ROOT/bin/fm-send.sh" quiet 'claude --continue' > /dev/null 2>> "$d/send.err" || true
+  "$ROOT/bin/fm-send.sh" '$target' 'claude --continue' > /dev/null 2>> "$d/send.err" || true
 SH
   chmod +x "$sb/relaunched" "$sb/tmux" "$sb/herdr" "$sb/sleep" "$d/relaunch"
 }
 
 # A death after a same-pane relaunch is a new failure even when no poll ever saw
 # the relaunched agent alive: the relaunch fails before a re-armed watcher's
-# first poll, or between two polls of a running one.
-test_relaunch_death() {  # <backend> <rearmed|running>
-  local backend=$1 when=$2 d label round
-  label="$backend relaunch ($when)"
-  d=$(quiet_case "relaunch-$backend-$when" "$backend" claude)
+# first poll, or between two polls of a running one. Firstmate addresses the
+# relaunch to the task id or to the window its stale alert names.
+test_relaunch_death() {  # <backend> <rearmed|running> <fm-send target>
+  local backend=$1 when=$2 target=$3 d label round
+  label="$backend relaunch ($when, to $target)"
+  d=$(quiet_case "relaunch-$backend-$when-${target//:/_}" "$backend" claude)
   printf 'working: implementing\n' > "$d/state/quiet.status"
   printf 'dead\n' > "$d/liveness"
   printf '$ \n' > "$d/pane"
   : > "$d/static"
   quiet_run "$d"
   grep -F 'agent exited or endpoint gone' "$d/out" >/dev/null || fail "$label: first death did not surface: $(cat "$d/out")"
-  relaunch_prepare "$d" dead
+  relaunch_prepare "$d" dead "$target"
   case "$when" in
     rearmed) "$d/relaunch" ;;
     running)
@@ -532,7 +533,7 @@ SH
   [ "$(grep -c 'agent exited or endpoint gone' "$d/state/.wake-queue")" -eq 2 ] || fail "$label: failed relaunch was not queued"
   quiet_run "$d"
   [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "$label: unchanged dead endpoint alerted again: $(cat "$d/out")"
-  relaunch_prepare "$d" alive
+  relaunch_prepare "$d" alive "$target"
   "$d/relaunch"
   printf 'done: ready for review\n' >> "$d/state/quiet.status"
   for round in 1 2; do
@@ -546,8 +547,9 @@ test_relaunch_cases() {
   local backend when failures=0
   for backend in tmux herdr; do
     for when in rearmed running; do
-      (test_relaunch_death "$backend" "$when") || failures=$((failures + 1))
+      (test_relaunch_death "$backend" "$when" quiet) || failures=$((failures + 1))
     done
+    (test_relaunch_death "$backend" rearmed test:fm-quiet) || failures=$((failures + 1))
   done
   [ "$failures" -eq 0 ]
 }
