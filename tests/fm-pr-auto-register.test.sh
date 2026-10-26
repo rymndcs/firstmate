@@ -141,6 +141,20 @@ assert_absent "$FM_HOME/state/task-comma.check.sh" 'a URL followed by a comma is
 assert_absent "$FM_HOME/state/task-semicolon.check.sh" 'a URL followed by a semicolon is not an accepted own-PR form'
 pass 'Markdown links with spaced labels register and only colon or period trail a bare URL'
 
+write_pr_task task-backport
+printf 'pushed fix to PR https://github.com/owner/repo/pull/82 and backported to PR https://github.com/owner/repo/pull/83\n' > "$FM_HOME/state/task-backport.status"
+write_pr_task task-backport-bare
+printf 'pushed to PR https://github.com/owner/repo/pull/84 and backported to PR https://github.com/owner/repo/pull/85\n' > "$FM_HOME/state/task-backport-bare.status"
+write_pr_task task-replied
+printf 'pushed fix to PR https://github.com/owner/repo/pull/86 and replied to PR comments\n' > "$FM_HOME/state/task-replied.status"
+drain_pr > /dev/null
+[ "$(grep '^pr=' "$FM_HOME/state/task-backport.meta")" = 'pr=https://github.com/owner/repo/pull/82' ] \
+  || fail 'the first to-PR URL on a pushed line must be the task PR'
+[ "$(grep '^pr=' "$FM_HOME/state/task-backport-bare.meta")" = 'pr=https://github.com/owner/repo/pull/84' ] \
+  || fail 'the first to-PR URL directly after pushed must be the task PR'
+assert_grep 'pr=https://github.com/owner/repo/pull/86' "$FM_HOME/state/task-replied.meta" 'a later to-PR phrase must not hide the pushed PR'
+pass 'a pushed line registers the URL after its first to PR'
+
 write_pr_task task-slow
 printf 'done: PR https://github.com/owner/repo/pull/66\n' > "$FM_HOME/state/task-slow.status"
 FM_PR_CHECK_GH_TIMEOUT=1 FM_TEST_GH_HEAD_WAIT_URL=https://github.com/owner/repo/pull/66 drain_pr > /dev/null

@@ -43,7 +43,7 @@ candidates() {
     exit unless -f $f;
     seek($f, $ARGV[1], 0);
     while (<$f>) {
-      next unless /^done: PR (.*)/ || /^pushed (?:.* )?to PR (.*)/;
+      next unless /^done: PR (.*)/ || /^pushed (?:.*? )??to PR (.*)/;
       my $rest = $1;
       my $url = $rest =~ /^\[[^\]]*\]\(([^)\s]+)\)/ ? $1
         : $rest =~ /^`([^`\s]+)`/ ? $1
