@@ -359,6 +359,18 @@ test_lifecycle_gaps() {
   pass 'spawn, teardown and respawn gaps stay silent; death persisting a full poll still surfaces'
 }
 
+test_fractional_poll_death() {  # <backend>
+  local d
+  d=$(quiet_case "fractional-poll-$1" "$1")
+  printf 'done: ready\n' > "$d/state/quiet.status"
+  printf 'dead\n' > "$d/liveness"
+  : > "$d/realsleep"
+  QUIET_POLL=0.5 quiet_run "$d"
+  [ ! -s "$d/err" ] || fail "$1 fractional poll broke the death persistence check: $(cat "$d/err")"
+  grep -F 'agent exited or endpoint gone' "$d/out" >/dev/null || fail "$1 death persisting past a fractional poll was hidden: $(cat "$d/out")"
+  pass "$1: death persisting past a fractional poll interval surfaces"
+}
+
 test_validating_reads_bounded() {
   local d reads
   d=$(quiet_case validating tmux)
@@ -583,6 +595,7 @@ case "${FM_QUIET_TEST:-all}" in
   second-death) test_second_death_cases; exit ;;
   away) test_away_owns_stale; exit ;;
   relaunch) test_relaunch_cases; exit ;;
+  fractional) for b in tmux herdr; do (test_fractional_poll_death "$b") || exit 1; done; exit ;;
   *) fail 'unknown FM_QUIET_TEST selection' ;;
 esac
 
@@ -606,5 +619,8 @@ for check in test_long_cadence test_quiet_resume test_quiet_cache_expiry test_st
   test_lifecycle_gaps test_validating_reads_bounded test_busy_after_quiet test_second_death_cases \
   test_away_owns_stale test_relaunch_cases; do
   if ! ("$check"); then failures=$((failures + 1)); fi
+done
+for backend in tmux herdr; do
+  if ! (test_fractional_poll_death "$backend"); then failures=$((failures + 1)); fi
 done
 [ "$failures" -eq 0 ]

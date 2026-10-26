@@ -115,6 +115,8 @@ else
 fi
 
 POLL=${FM_POLL:-15}                   # seconds between cycles
+POLL_SECS=${POLL%%.*}                 # POLL rounded up to whole seconds for file ages
+[ "$POLL_SECS" = "$POLL" ] || POLL_SECS=$(( ${POLL_SECS:-0} + 1 ))
 HEARTBEAT=${FM_HEARTBEAT:-600}        # base seconds between heartbeat scans
 HEARTBEAT_MAX=${FM_HEARTBEAT_MAX:-7200}  # heartbeat backoff cap
 CHECK_INTERVAL=${FM_CHECK_INTERVAL:-300}  # seconds between *.check.sh sweeps
@@ -1006,7 +1008,7 @@ EOF
                 : > "$STATE/.dead-since-$key"
                 rm -f "${STATE:?}/.dead-resurfaced-$key"
               fi
-              if [ "$(age_of "$STATE/.dead-since-$key")" -ge "$POLL" ]; then
+              if [ "$(age_of "$STATE/.dead-since-$key")" -ge "$POLL_SECS" ]; then
                 handle_bounded_stale "$w" "$task" agent-dead dead
               fi
               continue
