@@ -5,8 +5,11 @@
 # Missing, pending, malformed or failed check lookups stay silent.
 # Usage: fm-pr-poll.sh [--validated <provider> <url> <host> <path> <number>]
 # A PR with required checks uses only those (gh pr checks --required --json
-# bucket); a PR with none uses all of its reported checks. Skipped checks count
-# as satisfied, canceled checks as failure, and an empty set is not all-green.
+# bucket); a PR with none uses all of its reported checks. gh reports "none" only
+# as its `no required checks reported on the '<branch>' branch` error, which is
+# the only signal that falls back; any other failed or empty required lookup
+# stays silent. Skipped checks count as satisfied, canceled checks as failure,
+# and an empty set is not all-green.
 # Head identity is read before and after checks to reject a concurrent push.
 # The provider-tagged identity is data in the sidecar and is never
 # interpolated into this source: these bytes are identical for every task.
@@ -83,12 +86,14 @@ case "$provider" in
     case "$head" in ''|*[!a-fA-F0-9]*) exit 0 ;; esac
     [ "${#head}" -eq 40 ] || exit 0
     checks_rc=0
-    buckets=$(gh pr checks "$url" --required --json bucket --jq '.[].bucket' 2>/dev/null) || checks_rc=$?
+    buckets=$(gh pr checks "$url" --required --json bucket --jq '.[].bucket' 2>&1) || checks_rc=$?
     case "$checks_rc" in 0|1|8) ;; *) exit 0 ;; esac
-    if [ -z "$buckets" ]; then
-      buckets=$(gh pr checks "$url" --json bucket --jq '.[].bucket' 2>/dev/null) || checks_rc=$?
-      case "$checks_rc" in 0|1|8) ;; *) exit 0 ;; esac
-    fi
+    case "$buckets" in
+      "no required checks reported on the "*)
+        buckets=$(gh pr checks "$url" --json bucket --jq '.[].bucket' 2>/dev/null) || checks_rc=$?
+        case "$checks_rc" in 0|1|8) ;; *) exit 0 ;; esac
+        ;;
+    esac
     outcome=$(printf '%s\n' "$buckets" | awk '
       $0 == "fail" || $0 == "cancel" { failed = 1; next }
       $0 == "pending" { pending = 1; next }

@@ -256,6 +256,41 @@ retire_merged task-promoted
 assert_absent "$promoted.check.sh" 'the registered PR must retire through the watcher after resume'
 pass 'a promoted task registers only PRs reported after promotion, across resume'
 
+ready_home="$PR_TMP/pr-ready-home"
+mkdir -p "$ready_home/state" "$ready_home/data/task-ready-spawn" "$ready_home/config" "$PR_TMP/linear-bin"
+cp "$ROOT/bin/fm-standing-knowledge.sh" "$ROOT/bin/fm-linear.sh" "$PR_CODE/bin/"
+printf '# Projects\n\n- project [no-mistakes] - CAPTAIN MERGE RULE: hold every PR for my word\n' > "$ready_home/data/projects.md"
+printf '# Learnings\n\n## PR ready rule\n<!-- fm-moment: pr-ready -->\nHOLD-OR-LAND RULE TEXT\n' > "$ready_home/data/learnings.md"
+printf 'lin_test_key\n' > "$ready_home/config/linear-api-key"
+printf '#!/usr/bin/env bash\nexit 7\n' > "$PR_TMP/linear-bin/curl"
+chmod +x "$PR_TMP/linear-bin/curl"
+fm_write_meta "$ready_home/state/task-ready.meta" "worktree=$PR_TMP" "project=$PR_TMP/project" 'kind=ship' 'branch=rac-125-pr-ready'
+printf 'done: PR https://github.com/owner/repo/pull/80\n' > "$ready_home/state/task-ready.status"
+ready() {
+  FM_HOME=$ready_home FM_STATE_OVERRIDE=$ready_home/state FM_DATA_OVERRIDE=$ready_home/data PATH="$PR_TMP/linear-bin:$PATH" "$@"
+}
+ready drain_pr > "$PR_TMP/ready.out" 2> "$PR_TMP/ready.err"
+assert_grep 'pr=https://github.com/owner/repo/pull/80' "$ready_home/state/task-ready.meta" 'fixture: drain must register the PR'
+assert_grep 'HOLD-OR-LAND RULE TEXT' "$PR_TMP/ready.err" 'automatic registration must print the pr-ready standing knowledge'
+assert_grep 'CAPTAIN MERGE RULE' "$PR_TMP/ready.err" 'automatic registration must print the project merge-authority entry'
+assert_grep 'LINEAR: RAC-125' "$PR_TMP/ready.err" 'automatic registration must surface the Linear diagnostic'
+assert_no_grep 'PR_REGISTRATION' "$PR_TMP/ready.err" 'a successful registration is not a registration failure'
+[ ! -s "$PR_TMP/ready.out" ] || fail 'registration output must not enter the drained wake rows'
+ready drain_pr > /dev/null 2> "$PR_TMP/ready-again.err"
+assert_no_grep 'HOLD-OR-LAND' "$PR_TMP/ready-again.err" 'an already registered PR must not repeat its pr-ready guidance'
+printf 'done: PR https://github.com/owner/repo/pull/81\n' > "$ready_home/state/task-ready-spawn.status"
+cp "$FM_HOME/data/task-spawn/brief.md" "$ready_home/data/task-ready-spawn/brief.md"
+ready spawn_pr task-ready-spawn || { cat "$PR_TMP/spawn.err"; fail 'spawn failed'; }
+assert_grep 'pr=https://github.com/owner/repo/pull/81' "$ready_home/state/task-ready-spawn.meta" 'fixture: spawn must register the PR'
+assert_grep 'HOLD-OR-LAND RULE TEXT' "$PR_TMP/spawn.err" 'spawn registration must print the pr-ready standing knowledge'
+assert_grep 'CAPTAIN MERGE RULE' "$PR_TMP/spawn.err" 'spawn registration must print the project merge-authority entry'
+[ "$(cat "$PR_TMP/spawn.out")" = "$(grep '^spawned task-ready-spawn ' "$PR_TMP/spawn.out")" ] \
+  || fail 'spawn stdout must stay its one spawned line'
+for tool in fm-standing-knowledge fm-linear; do
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$PR_CODE/bin/$tool.sh"
+done
+pass 'automatic registration delivers the pr-ready guidance once, like explicit registration'
+
 write_pr_task task-link
 printf 'done: PR %s\n' "$url" > "$PR_TMP/other.status"
 ln -s "$PR_TMP/other.status" "$FM_HOME/state/task-link.status"

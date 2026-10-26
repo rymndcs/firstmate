@@ -14,8 +14,11 @@
 # Discovery is GitHub-only; register a GitLab merge request with fm-pr-check.sh.
 # It registers through fm-pr-check.sh --if-unregistered, which owns the
 # registration lock and skips a task that already has a registration.
-# Failures print one diagnostic per task and leave the caller successful; a
-# later invocation retries.
+# A registration prints fm-pr-check.sh's whole output to stderr, so the
+# pr-ready guidance and Linear diagnostics arrive once, at registration, and the
+# caller's stdout stays unchanged.
+# Failures print one diagnostic per task instead and leave the caller
+# successful; a later invocation retries.
 # Usage: fm-pr-auto-register.sh [<task-id> | --all]
 # Wake drain calls --all after releasing its queue lock; spawn calls <task-id>
 # after writing metadata, on both fresh launches and resumes.
@@ -52,7 +55,7 @@ candidates() {
 }
 
 register_one() {
-  local id=$1 meta="$STATE/$1.meta" url='' candidate offset
+  local id=$1 meta="$STATE/$1.meta" url='' candidate offset out
   [ -f "$meta" ] && [ ! -L "$meta" ] || return 0
   [ "$(awk '/^kind=/ { kind = substr($0, 6) } END { print kind }' "$meta")" = ship ] || return 0
   offset=$(awk '/^promoted_status_offset=/ { offset = substr($0, 24) } END { print offset + 0 }' "$meta")
@@ -63,7 +66,8 @@ register_one() {
     fi
   done < <(candidates "$id" "$offset")
   [ -n "$url" ] || return 0
-  "$SCRIPT_DIR/fm-pr-check.sh" --if-unregistered "$id" "$url" > /dev/null 2>&1
+  out=$("$SCRIPT_DIR/fm-pr-check.sh" --if-unregistered "$id" "$url" 2>&1) || return 1
+  [ -z "$out" ] || printf '%s\n' "$out" >&2
 }
 
 if [ "$#" -eq 0 ]; then
@@ -71,9 +75,9 @@ if [ "$#" -eq 0 ]; then
     [ -f "$meta" ] && [ ! -L "$meta" ] || continue
     id=$(basename "$meta" .meta)
     fm_pr_task_id_valid "$id" || continue
-    register_one "$id" 2>/dev/null || printf 'PR_REGISTRATION: %s: automatic PR registration failed; will retry\n' "$id" >&2
+    register_one "$id" || printf 'PR_REGISTRATION: %s: automatic PR registration failed; will retry\n' "$id" >&2
   done
 else
-  register_one "$1" 2>/dev/null || printf 'PR_REGISTRATION: %s: automatic PR registration failed; will retry\n' "$1" >&2
+  register_one "$1" || printf 'PR_REGISTRATION: %s: automatic PR registration failed; will retry\n' "$1" >&2
 fi
 exit 0

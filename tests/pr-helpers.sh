@@ -44,7 +44,10 @@ case "$*" in
     ;;
   *'pr checks '*)
     case " $* " in
-      *' --required '*) printf '%s\n' "$FM_TEST_GH_BUCKETS"; exit "$FM_TEST_GH_CHECK_RC" ;;
+      *' --required '*)
+        [ -z "${FM_TEST_GH_CHECK_ERR:-}" ] || printf '%s\n' "$FM_TEST_GH_CHECK_ERR" >&2
+        [ -z "$FM_TEST_GH_BUCKETS" ] || printf '%s\n' "$FM_TEST_GH_BUCKETS"
+        exit "$FM_TEST_GH_CHECK_RC" ;;
       *) printf '%s\n' "$FM_TEST_GH_ALL_BUCKETS"; exit "$FM_TEST_GH_ALL_RC" ;;
     esac ;;
   *'pr view '*)

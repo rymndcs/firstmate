@@ -55,11 +55,13 @@ pass 'required-check aggregation handles mixed, canceled and skipped checks'
 
 FM_TEST_GH_HEAD=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 FM_TEST_GH_BUCKETS='' FM_TEST_GH_CHECK_RC=1
+export FM_TEST_GH_CHECK_ERR="no required checks reported on the 'fix' branch"
 FM_TEST_GH_ALL_BUCKETS=$(printf 'pass\n%.0s' $(seq 17); printf 'skipping\n%.0s' $(seq 3)) FM_TEST_GH_ALL_RC=0
 assert_contains "$(poll_pr)" ci-pass 'a PR with no required checks must use all reported checks'
 FM_TEST_GH_HEAD=cccccccccccccccccccccccccccccccccccccccc
 FM_TEST_GH_ALL_RC=4
 [ -z "$(poll_pr)" ] || fail 'a failed all-checks lookup must stay silent'
+unset FM_TEST_GH_CHECK_ERR
 FM_TEST_GH_BUCKETS=pass FM_TEST_GH_CHECK_RC=0 FM_TEST_GH_ALL_BUCKETS=fail FM_TEST_GH_ALL_RC=1
 pass 'a PR without required checks reports CI from all of its checks'
 
@@ -115,3 +117,25 @@ mv "$FM_HOME/state/.wake-queue.blocked/saved" "$FM_HOME/state/.wake-queue"
 rmdir "$FM_HOME/state/.wake-queue.blocked"
 assert_contains "$(poll_pr 50)" ci-pass 'CI observation must retry when enqueue recovers'
 pass 'queue failure cannot consume an undelivered CI observation'
+
+write_pr_task task-transient
+transient_url=https://github.com/owner/repo/pull/53
+"$PR_CODE/bin/fm-pr-check.sh" task-transient "$transient_url" > /dev/null 2>&1 || fail 'registration failed'
+drain_pr > /dev/null
+FM_TEST_GH_HEAD=ffffffffffffffffffffffffffffffffffffffff
+FM_TEST_GH_BUCKETS=$'pass\npass' FM_TEST_GH_CHECK_RC=0
+FM_TEST_GH_ALL_BUCKETS=$'pass\npass\nfail' FM_TEST_GH_ALL_RC=0
+assert_contains "$(poll_pr 53)" ci-pass 'green required checks must wake'
+FM_TEST_GH_BUCKETS='' FM_TEST_GH_CHECK_RC=1
+export FM_TEST_GH_CHECK_ERR='Post "https://api.github.com/graphql": proxyconnect tcp: dial tcp 127.0.0.1:9: connect: connection refused'
+[ -z "$(poll_pr 53)" ] || fail 'a failed required-check lookup must stay silent, never fall back to all checks'
+unset FM_TEST_GH_CHECK_ERR
+FM_TEST_GH_BUCKETS=$'pass\npass' FM_TEST_GH_CHECK_RC=0
+[ -z "$(poll_pr 53)" ] || fail 'a recovered lookup must not repeat the recorded outcome'
+[ "$(cat "$FM_HOME/state/task-transient.pr-ci")" = "$transient_url $FM_TEST_GH_HEAD ci-pass" ] \
+  || fail 'the receipt must keep only the observed green outcome'
+drain_pr > "$PR_TMP/transient"
+[ "$(grep -c "task-transient.check.sh: ci-pass head=$FM_TEST_GH_HEAD" "$PR_TMP/transient")" = 1 ] \
+  || fail 'the green outcome must be delivered once'
+assert_no_grep 'ci-fail' "$PR_TMP/transient" 'a failed lookup must never deliver a CI failure'
+pass 'a transient required-check lookup failure never reports CI failure'
