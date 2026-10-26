@@ -593,13 +593,19 @@ arm_watchdog() {
 disarm_watchdog() {
   kill -- "-$WATCHDOG_PID" 2>/dev/null || true
   wait "$WATCHDOG_PID" 2>/dev/null || true
+  WATCHDOG_PID=
   [ ! -e "$C/watchdog-expired" ] \
     || fail "the first writer $1 within ${HELD_DEADLINE}s; git hold points reached: $(grep -c '' "$C/held-at" 2>/dev/null || echo 0); installer output: $(cat "$C/held.log")"
 }
 
+# An installer that exits before opening the FIFO can interrupt the test's open.
 open_handoff() {
   arm_watchdog "$1"
-  exec 8> "$1"
+  if ! exec 8> "$1"; then
+    disarm_watchdog "$2"
+    reap_held_install "$2"
+    fail "the first writer $2: the held installer exited with status $HELD_RC; installer output: $(cat "$C/held.log")"
+  fi
   disarm_watchdog "$2"
 }
 
@@ -612,17 +618,22 @@ start_held_install() {
   open_handoff "$C/bin/fm-protected-pre-push.py" 'did not start publishing its dispatcher'
 }
 
-finish_held_install() {
-  local rc=0
+reap_held_install() {
+  HELD_RC=0
   arm_watchdog ''
-  wait "$HELD_PID" || rc=$?
-  disarm_watchdog 'did not finish after its last handoff'
-  [ "$rc" -eq 0 ] || fail "$1: $(cat "$C/held.log")"
+  wait "$HELD_PID" || HELD_RC=$?
+  disarm_watchdog "$1"
+}
+
+finish_held_install() {
+  reap_held_install 'did not finish after its last handoff'
+  [ "$HELD_RC" -eq 0 ] || fail "$1: $(cat "$C/held.log")"
   HELD_PID=
 }
 
-# A failing test must not leave its held installer blocked on a FIFO.
+# A failing test must not leave its watchdog armed or its held installer blocked on a FIFO.
 stop_held_install() {
+  [ -z "${WATCHDOG_PID:-}" ] || kill -- "-$WATCHDOG_PID" 2>/dev/null || true
   [ -z "${HELD_PID:-}" ] || kill -KILL -- "-$HELD_PID" 2>/dev/null || true
 }
 
