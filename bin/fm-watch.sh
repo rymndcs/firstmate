@@ -381,13 +381,16 @@ quiet_state_class() {  # <task> <window-key>
   printf '%s' "$class"
 }
 
-# Activity or unproven liveness drops the cached verdict; leaving a quiet verdict
-# also drops the hash it absorbed so that pane is classified afresh.
-forget_quiet_state() {  # <window-key>
+# Activity or unproven liveness drops the cached verdict. Leaving a quiet verdict
+# also drops the hash it absorbed so that pane is classified afresh, unless only
+# an inconclusive liveness read of an idle pane left it.
+forget_quiet_state() {  # <window-key> <liveness> <busy_now>
   local key=$1
-  case "$(cat "$STATE/.quiet-state-$key" 2>/dev/null)" in
-    *' parked'|*' done') rm -f "${STATE:?}/.stale-$key" ;;
-  esac
+  if [ "$2" != unknown ] || [ "$3" -eq 0 ]; then
+    case "$(cat "$STATE/.quiet-state-$key" 2>/dev/null)" in
+      *' parked'|*' done') rm -f "${STATE:?}/.stale-$key" ;;
+    esac
+  fi
   rm -f "${STATE:?}/.quiet-state-$key"
 }
 
@@ -991,6 +994,7 @@ EOF
     fi
     backend=$(window_backend "$w")
     agent_alive=unknown
+    liveness=unknown
     if [ "$kind" != secondmate ]; then
       case "$backend" in
         tmux|herdr)
@@ -1037,13 +1041,12 @@ EOF
       quiet_class=$(quiet_state_class "$task" "$key")
       case "$quiet_class" in
         parked|done)
-          echo 0 > "$cf"
           handle_bounded_stale "$w" "$task" "$h" "$quiet_class"
           continue
           ;;
       esac
     else
-      forget_quiet_state "$key"
+      forget_quiet_state "$key" "$liveness" "$busy_now"
     fi
     rm -f "${STATE:?}/.quiet-resurfaced-$key"
     if [ "$h" = "$prev" ]; then
