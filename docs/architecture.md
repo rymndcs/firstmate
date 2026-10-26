@@ -29,7 +29,9 @@ That interval keeps the spawn gap before the harness starts and the teardown gap
 Any later `bin/fm-send.sh` input to the task, such as a same-pane relaunch during recovery, also starts a fresh death episode, so a relaunch that dies before any poll sees it alive surfaces once more.
 Any live or inconclusive read ends that death episode, including a read taken while away mode, a pause or a captain hold owns the worker's alerts, so a recovered worker that dies again surfaces promptly.
 Healthy parked and done workers clear wedge aging and escalation counts even when idle pane text changes.
-An inconclusive liveness read of an idle quiet pane drops only the cached verdict and keeps the pane hash the quiet path absorbed, so an unchanged healthy pane is not re-raised however many inconclusive reads follow; busy activity, away mode, a pause or a captain hold still drop that hash.
+An inconclusive liveness read of an idle quiet pane drops only the cached verdict and keeps the pane hash the quiet path absorbed, so inconclusive reads between live ones do not re-raise an unchanged healthy pane.
+Sustained unknown liveness falls back to the ordinary stale and wedge cadence for that pane.
+Busy activity, or a conclusive read while away mode, a pause or a captain hold owns the worker, drops the absorbed hash even after inconclusive reads, so that pane is classified afresh.
 The reconciled verdict on this idle path, quiet or not, is cached for at most `FM_STALE_ESCALATE_SECS`, invalidated by a changed status signature or provable activity, so an idle validating worker does not re-read current state every poll; liveness is never cached.
 Any `bin/fm-send.sh` message or key to a recorded task keeps it off the quiet cadence until its status log gains a new state-bearing event, so a steered worker that wedges surfaces on the ordinary cadence and firstmate bookkeeping alone never restores quiet.
 Zellij, cmux and Orca have no verified agent-liveness verdict and retain their existing conservative stale behavior without this suppression.

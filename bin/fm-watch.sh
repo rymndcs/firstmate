@@ -334,6 +334,7 @@ handle_bounded_stale() {  # <window> <task> <hash> <paused|parked|done|dead>
   key=$(printf '%s' "$win" | tr ':/.' '___')
   printf '%s' "$h" > "$STATE/.stale-$key"
   [ "$class" != paused ] || : > "$STATE/.paused-$key"
+  [ "$group" != quiet ] || printf '%s' "$h" > "$STATE/.quiet-stale-$key"
   rm -f "$STATE/.stale-since-$key" "$STATE/.wedge-escalations-$key"
   statusf="$STATE/$task.status"
   mtime=$(stat_mtime "$statusf")
@@ -381,17 +382,18 @@ quiet_state_class() {  # <task> <window-key>
   printf '%s' "$class"
 }
 
-# Activity or unproven liveness drops the cached verdict. Leaving a quiet verdict
-# also drops the hash it absorbed so that pane is classified afresh, unless only
-# an inconclusive liveness read of an idle pane left it.
+# Activity or unproven liveness drops the cached verdict. Activity or a conclusive
+# read also drops the stale hash the quiet path absorbed (.quiet-stale-*), so that
+# pane is classified afresh; an inconclusive idle read keeps that hash.
 forget_quiet_state() {  # <window-key> <liveness> <busy_now>
   local key=$1
-  if [ "$2" != unknown ] || [ "$3" -eq 0 ]; then
-    case "$(cat "$STATE/.quiet-state-$key" 2>/dev/null)" in
-      *' parked'|*' done') rm -f "${STATE:?}/.stale-$key" ;;
-    esac
-  fi
   rm -f "${STATE:?}/.quiet-state-$key"
+  if [ "$2" != unknown ] || [ "$3" -eq 0 ]; then
+    if [ "$(cat "$STATE/.quiet-stale-$key" 2>/dev/null)" = "$(cat "$STATE/.stale-$key" 2>/dev/null)" ]; then
+      rm -f "${STATE:?}/.stale-$key"
+    fi
+    rm -f "${STATE:?}/.quiet-stale-$key"
+  fi
 }
 
 clear_pause_state() {  # <window>

@@ -396,10 +396,12 @@ busy_record() {  # <case-dir> <busy|idle>
 
 # A busy pane with a green run must keep its busy-turn bound, and activity after
 # quiet must drop the cached verdict and its stale hash before idle resumes, even
-# when the liveness read during that activity is inconclusive.
-test_busy_after_quiet() {  # [liveness while busy]
-  local between=${1:-alive} d
-  d=$(quiet_case "busy-after-quiet-$between" tmux claude)
+# when the liveness read during that activity, or an idle read before it, is
+# inconclusive.
+test_busy_after_quiet() {  # [liveness while busy] [unclear]
+  local between=${1:-alive} first=${2:-} d label
+  label="$between liveness${first:+ after an $first read}"
+  d=$(quiet_case "busy-after-quiet-$between${first:+-$first}" tmux claude)
   printf 'done: ready\n' > "$d/state/quiet.status"
   "$ROOT/bin/fm-busy-event.sh" arm "$d/state" quiet >/dev/null || fail 'could not arm busy state'
   busy_record "$d" idle
@@ -407,16 +409,58 @@ test_busy_after_quiet() {  # [liveness while busy]
   : > "$d/static"
   FM_CREW_STATE_BIN="$d/state-reader" quiet_run "$d"
   [ -e "$d/completed" ] || fail "busy fixture did not first become quiet: $(cat "$d/out")"
+  if [ -n "$first" ]; then
+    printf 'ambiguous\n' > "$d/liveness"
+    FM_CREW_STATE_BIN="$d/state-reader" quiet_run "$d"
+    [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "$label: an unclear idle read raised the quiet pane: $(cat "$d/out")"
+    printf 'alive\n' > "$d/liveness"
+  fi
   busy_record "$d" busy
   printf '%s\n' "$between" > "$d/liveness"
   : > "$d/realsleep"
   QUIET_ESCALATE=1 FM_BUSY_TURN_MAX_SECS=0 FM_CREW_STATE_BIN="$d/state-reader" quiet_run "$d"
-  grep -F 'possible wedge' "$d/out" >/dev/null || fail "$between: busy pane past its turn bound was absorbed as quiet: $(cat "$d/out")"
+  grep -F 'possible wedge' "$d/out" >/dev/null || fail "$label: busy pane past its turn bound was absorbed as quiet: $(cat "$d/out")"
   busy_record "$d" idle
   printf 'state: working · source: run-step · validating\n' > "$d/verdict"
   QUIET_ESCALATE=1 FM_CREW_STATE_BIN="$d/state-reader" quiet_run "$d"
-  grep -F 'possible wedge' "$d/out" >/dev/null || fail "$between: idle after activity kept the quiet stale hash: $(cat "$d/out")"
-  pass "busy activity after quiet ($between liveness) keeps the busy-turn bound and reclassifies the idle pane"
+  grep -F 'possible wedge' "$d/out" >/dev/null || fail "$label: idle after activity kept the quiet stale hash: $(cat "$d/out")"
+  pass "busy activity after quiet ($label) keeps the busy-turn bound and reclassifies the idle pane"
+}
+
+# A pane surfaced on its own after leaving quiet keeps the ordinary once-per-hash
+# contract: later activity drops only a pane hash the quiet path absorbed.
+test_surfaced_hash_once() {
+  local d
+  d=$(quiet_case surfaced-once tmux claude)
+  printf 'done: ready for review\n' > "$d/state/quiet.status"
+  "$ROOT/bin/fm-busy-event.sh" arm "$d/state" quiet >/dev/null || fail 'could not arm busy state'
+  busy_record "$d" idle
+  : > "$d/static"
+  quiet_run "$d"
+  [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "surfaced fixture did not first become quiet: $(cat "$d/out")"
+  busy_record "$d" busy
+  quiet_run "$d"
+  [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "busy pane after quiet raised a wake: $(cat "$d/out")"
+  busy_record "$d" idle
+  printf 'ambiguous\n' > "$d/liveness"
+  quiet_run "$d"
+  [ "$(cat "$d/out")" = 'stale: test:fm-quiet' ] || fail "idle pane under unclear liveness after activity lost its ordinary stale wake: $(cat "$d/out")"
+  busy_record "$d" busy
+  quiet_run "$d"
+  [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "busy pane raised a wake: $(cat "$d/out")"
+  busy_record "$d" idle
+  quiet_run "$d"
+  [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "activity re-raised an already surfaced pane: $(cat "$d/out")"
+  [ "$(grep -c 'stale: test:fm-quiet' "$d/state/.wake-queue")" -eq 1 ] || fail 'the surfaced pane queued more than one stale wake'
+  pass 'activity after leaving quiet keeps a surfaced pane once per hash'
+}
+
+test_busy_cases() {
+  local failures=0
+  (test_busy_after_quiet alive) || failures=$((failures + 1))
+  (test_busy_after_quiet ambiguous) || failures=$((failures + 1))
+  (test_busy_after_quiet alive unclear) || failures=$((failures + 1))
+  [ "$failures" -eq 0 ]
 }
 
 # Away mode, a declared pause or a captain hold owns a worker's alerts, but a
@@ -455,8 +499,9 @@ test_second_death_after_skip() {  # <backend> <pause|hold|away> [liveness while 
   pass "$label: a recovered worker's second death surfaces promptly"
 }
 
-# Away mode keeps owning idle stale wakes: neither the quiet cadence nor the
-# death alert replaces its one-shot stale wake for a live done worker or a dead one.
+# Away mode keeps owning idle stale wakes: neither the quiet cadence, even after
+# an unclear read, nor the death alert replaces its one-shot stale wake for a
+# live done worker or a dead one.
 test_away_owns_stale() {
   local d
   d=$(quiet_case away-owns tmux)
@@ -464,6 +509,10 @@ test_away_owns_stale() {
   : > "$d/static"
   quiet_run "$d"
   [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "away fixture did not first become quiet: $(cat "$d/out")"
+  printf 'ambiguous\n' > "$d/liveness"
+  quiet_run "$d"
+  [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "an unclear read raised the quiet pane: $(cat "$d/out")"
+  printf 'alive\n' > "$d/liveness"
   : > "$d/state/.afk"
   touch "$d/state/.last-heartbeat"
   quiet_run "$d"
@@ -623,7 +672,8 @@ case "${FM_QUIET_TEST:-all}" in
   steer) test_steer_clears_quiet; exit ;;
   gaps) test_lifecycle_gaps; exit ;;
   reads) test_validating_reads_bounded; exit ;;
-  busy) for l in alive ambiguous; do (test_busy_after_quiet "$l") || exit 1; done; exit ;;
+  busy) test_busy_cases; exit ;;
+  surfaced) test_surfaced_hash_once; exit ;;
   unknown-all) for b in zellij cmux orca; do (test_unknown_liveness "$b") || exit 1; done; exit ;;
   second-death) test_second_death_cases; exit ;;
   away) test_away_owns_stale; exit ;;
@@ -651,11 +701,8 @@ for backend in zellij cmux orca; do
 done
 for check in test_long_cadence test_quiet_resume test_quiet_cache_expiry test_steer_clears_quiet \
   test_lifecycle_gaps test_validating_reads_bounded test_second_death_cases \
-  test_away_owns_stale test_relaunch_cases; do
+  test_away_owns_stale test_relaunch_cases test_busy_cases test_surfaced_hash_once; do
   if ! ("$check"); then failures=$((failures + 1)); fi
-done
-for liveness in alive ambiguous; do
-  if ! (test_busy_after_quiet "$liveness"); then failures=$((failures + 1)); fi
 done
 for backend in tmux herdr; do
   if ! (test_fractional_poll_death "$backend"); then failures=$((failures + 1)); fi
