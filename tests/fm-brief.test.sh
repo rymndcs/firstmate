@@ -192,7 +192,7 @@ EOF
 }
 
 test_ship_review_contract_in_every_mode() {
-  local home mode scope brief obligation
+  local home mode scope brief obligation review_line
   home="$TMP_ROOT/review-contract-home"
   mkdir -p "$home/data"
   for mode in no-mistakes direct-PR local-only; do
@@ -212,13 +212,24 @@ migration up, interrupted retry and rollback
 old code against new data during deploy
 concurrency on overlapping rows
 existing data shapes against real data where the project allows it
-Before every push, get an independent, code-first review of the whole change
+Before every push and every handoff
+get an independent, code-first review of the whole change
 new behaviour and preserved behaviour for existing users at real entry points
 Keep one risk ledger across review rounds
-state every surviving risk in the PR description or handoff
+state every surviving risk in your task report or handoff
+the PR description gets only a one-line pointer to it
 When a team reviewer finds something our review missed
 record the lesson in the project's review lessons file the same turn, if the project or user configures one
 OBLIGATIONS
+      assert_no_grep 'every surviving risk in the PR description' "$brief" \
+        "$mode/$scope: the full risk list was routed into the short PR description"
+      if [ "$mode" = local-only ]; then
+        assert_grep "append \`done: ready in branch fm/contract-$mode-$scope\`" "$brief" \
+          "local-only/$scope: handoff report changed; re-check the review trigger reaches it"
+        review_line=$(grep -F 'code-first review of the whole change' "$brief")
+        assert_contains "$review_line" "every handoff, including a local-only \`done: ready in branch\` report" \
+          "local-only/$scope: the whole-change review is never due before the only report this mode makes"
+      fi
       if [ "$scope" = targeted ]; then
         assert_grep 'Run only the specific test files for what you change; never run a local full suite.' "$brief" \
           "$mode: targeted checks must forbid a local full suite"

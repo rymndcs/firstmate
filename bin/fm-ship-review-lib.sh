@@ -22,6 +22,10 @@
 # omits this step; a final newline is added to policy lacking one.
 # fm_ship_review_round_boundaries owns the independent round-boundary text that
 # both callers deliver to every ship, with or without a configured review step.
+# fm_ship_review_contract owns the planning, whole-change review, risk-ledger and
+# configured review-lesson obligations that both callers deliver to every ship
+# regardless of delivery mode or review config: fm-brief.sh in its ship Rules,
+# fm-promote.sh at the top of the promoted task's review file.
 #
 # Landing gate: when the first line of <config>/ship-review-gate is `required`,
 # landing a task refuses unless the LAST line of state/<id>.status whose verb is
@@ -47,6 +51,17 @@
 # that fails leaves no entry. The recorded line is echoed on stderr as
 # `SHIP REVIEW OVERRIDE:`; a write that still fails after landing is reported
 # loudly on stderr rather than undoing the landing.
+
+fm_ship_review_contract() {
+  cat <<'CONTRACT'
+Before planning, find past implementations and earlier PRs solving the same kind of problem in this codebase; follow them or explicitly justify departing from them.
+If the planned approach departs from common practice (e.g. bulk work inside a web request instead of a background job), say so and recommend the standard approach before building.
+At plan time, check: bulk work in background jobs; migration up, interrupted retry and rollback; old code against new data during deploy; concurrency on overlapping rows; existing data shapes against real data where the project allows it.
+Before every push and every handoff, including a local-only `done: ready in branch` report, get an independent, code-first review of the whole change that checks new behaviour and preserved behaviour for existing users at real entry points.
+Keep one risk ledger across review rounds and state every surviving risk in your task report or handoff; the PR description gets only a one-line pointer to it, keeping its short format.
+When a team reviewer finds something our review missed, record the lesson in the project's review lessons file the same turn, if the project or user configures one.
+CONTRACT
+}
 
 fm_ship_review_round_boundaries() {
   local launcher

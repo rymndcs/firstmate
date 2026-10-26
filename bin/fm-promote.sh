@@ -27,8 +27,10 @@
 # and the printed ship instructions tell the crewmate to follow it before reporting
 # done, exactly as a ship brief would carry it (bin/fm-ship-review-lib.sh owns the
 # launch-slot contract and shared round-boundary text; docs/configuration.md "Ship
-# review step" owns the file). Every promotion writes the round boundaries even
-# without a configured step. An unreadable config refuses before the meta changes.
+# review step" owns the file). Every promotion writes the planning and review
+# contract and the round boundaries even without a configured step, and the
+# printed instructions name that file before planning. An unreadable config
+# refuses before the meta changes.
 # Usage: fm-promote.sh <task-id> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch <name>]
 set -eu
 
@@ -123,6 +125,9 @@ esac
 REVIEW_FILE="$DATA/$ID/ship-review.md"
 mkdir -p "$DATA/$ID"
 {
+  printf '# Planning and review contract\n'
+  fm_ship_review_contract
+  printf '\n'
   fm_ship_review_round_boundaries
   if [ "$REVIEW_STATUS" -eq 0 ]; then
     printf '\n%s\n' "$REVIEW_TEXT"
@@ -149,4 +154,4 @@ mv "$TMP" "$META"
 
 HOME_Q=$(printf '%q' "$FM_HOME")
 echo "promoted $ID to ship mode=$MODE yolo=$YOLO (teardown protection restored)"
-echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch $BRANCH; implement$REVIEW_STEP; report done>'"
+echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch $BRANCH; read the planning and review contract in $REVIEW_FILE before planning; implement$REVIEW_STEP; report done>'"

@@ -394,6 +394,35 @@ test_promote_shares_review_boundaries_with_brief() {
   pass "fm-promote: configured and unconfigured ships share the brief's round boundary contract"
 }
 
+# A promoted scout ships like a scaffolded one, so it receives the same planning
+# and whole-change review contract the brief's Rules carry, and is told to read it
+# before planning rather than only before reporting done.
+test_promote_carries_the_brief_review_contract() {
+  local home mode id out file brief brief_contract line
+  home="$TMP_ROOT/promote-contract/home"
+  mkdir -p "$home/state"
+  for mode in local-only direct-PR no-mistakes; do
+    id="promote-contract-$mode"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" --checks targeted >/dev/null 2>&1 \
+      || fail "contract scaffold failed for $mode"
+    printf 'kind=scout\nworktree=/tmp/wt\n' > "$home/state/$id.meta"
+    out=$(FM_HOME="$home" "$PROMOTE" "$id" --mode "$mode" --yolo off 2>&1) \
+      || fail "contract promotion failed for $mode: $out"
+    file="$home/data/$id/ship-review.md"
+    brief="$home/data/$id/brief.md"
+    brief_contract=$(awk '/^3\. /{copy=1; next} /^4\. /{exit} copy {sub(/^   /, ""); print}' "$brief")
+    [ -n "$brief_contract" ] || fail "$mode: the scaffolded brief carries no review contract to compare against"
+    while IFS= read -r line; do
+      assert_grep "$line" "$file" "$mode: promotion omitted a brief contract line: $line"
+    done <<EOF
+$brief_contract
+EOF
+    assert_contains "$out" "read the planning and review contract in $file before planning" \
+      "$mode: promotion did not route the worker to the contract before planning"
+  done
+  pass "fm-promote: a promoted scout carries the brief's planning and review contract"
+}
+
 # A review config that exists but cannot be read must stop the promotion with the
 # task record untouched, whether it is a dangling symlink or a directory.
 test_promote_refuses_an_unreadable_review_step() {
@@ -528,6 +557,7 @@ test_promote_requires_and_records_the_delivery_contract
 test_promote_review_launch_slot
 test_promote_carries_the_configured_review_step
 test_promote_shares_review_boundaries_with_brief
+test_promote_carries_the_brief_review_contract
 test_promote_refuses_an_unreadable_review_step
 test_spawn_records_only_a_supplied_branch
 test_promote_records_only_a_supplied_branch
