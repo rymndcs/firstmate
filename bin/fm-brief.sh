@@ -48,7 +48,7 @@
 #             step both run in full, every job reported by name
 #   targeted  the change is small enough that a whole-suite run is disproportionate,
 #             so both of those are kept proportionate and the worker states which
-#             tests it ran and why
+#             tests it ran and why, running only specific affected test files locally
 # The flag exists because a hand-written check instruction reliably scoped only the
 # local runner and left the pipeline's `test` step running the whole suite anyway.
 # `no-mistakes axi run --skip` is that step's only scoping control and it accepts
@@ -105,6 +105,8 @@
 # review step" owns the file). Scout and secondmate scaffolds never carry it, and
 # every ship carries the generated review-round boundary contract, even without
 # that file.
+# The ship Rules also carry the planning, whole-change review, risk-ledger and
+# configured review-lesson obligations regardless of delivery mode or review config.
 #
 # Standing knowledge at the intake moment: scaffolding a ship or scout brief is
 # where a task is defined, tiered and scoped, so before the scaffold is written
@@ -627,6 +629,7 @@ Check scope for this task: **targeted**.
 Firstmate judged this change small enough that a whole-suite run is disproportionate to it, so keep BOTH places tests run proportionate - not just the local one.
 
 1. Local checks. Run this project's local CI runner (`bin/ci-local`, or whatever runner this project provides) over the tests and lint your change actually affects, not the whole suite.
+   Run only the specific test files for what you change; never run a local full suite.
    If the project has no local runner, read its CI workflow, establish what it runs, and run the parts that cover the files you touched.
 2. The pipeline's own test step. When the no-mistakes pipeline runs for this task, its `test` step runs the WHOLE suite regardless of what you ran locally - this is the half that gets missed.
    Keep it proportionate by starting the run with `no-mistakes axi run --skip test` and running the affected tests yourself instead, comma-joining `test` with any other steps your definition of done already tells you to skip.
@@ -680,6 +683,12 @@ $RULE1
 2. Stay inside this worktree; modify nothing outside it.
    If you create a temporary directory outside this worktree, record its absolute path so teardown can remove it: \`echo <absolute-path> >> $TEMP_TARGETS\`.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
+   Before planning, find past implementations and earlier PRs solving the same kind of problem in this codebase; follow them or explicitly justify departing from them.
+   If the planned approach departs from common practice (e.g. bulk work inside a web request instead of a background job), say so and recommend the standard approach before building.
+   At plan time, check: bulk work in background jobs; migration up, interrupted retry and rollback; old code against new data during deploy; concurrency on overlapping rows; existing data shapes against real data where the project allows it.
+   Before every push, get an independent, code-first review of the whole change that checks new behaviour and preserved behaviour for existing users at real entry points.
+   Keep one risk ledger across review rounds and state every surviving risk in the PR description or handoff.
+   When a team reviewer finds something our review missed, record the lesson in the project's review lessons file the same turn, if the project or user configures one.
 4. Report status by appending one line:
    \`echo "{state}: {one short line}" >> $STATUS_FILE\`
    States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.

@@ -191,6 +191,45 @@ write_registry() {
 EOF
 }
 
+test_ship_review_contract_in_every_mode() {
+  local home mode scope brief obligation
+  home="$TMP_ROOT/review-contract-home"
+  mkdir -p "$home/data"
+  for mode in no-mistakes direct-PR local-only; do
+    for scope in targeted full; do
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "contract-$mode-$scope" some-proj --mode "$mode" --checks "$scope" >/dev/null 2>&1 \
+        || fail "$mode/$scope: could not scaffold ship brief"
+      brief="$home/data/contract-$mode-$scope/brief.md"
+      while IFS= read -r obligation; do
+        assert_grep "$obligation" "$brief" "$mode/$scope: missing review obligation: $obligation"
+      done <<'OBLIGATIONS'
+Before planning, find past implementations and earlier PRs solving the same kind of problem
+follow them or explicitly justify departing from them
+If the planned approach departs from common practice
+recommend the standard approach before building
+At plan time, check: bulk work in background jobs
+migration up, interrupted retry and rollback
+old code against new data during deploy
+concurrency on overlapping rows
+existing data shapes against real data where the project allows it
+Before every push, get an independent, code-first review of the whole change
+new behaviour and preserved behaviour for existing users at real entry points
+Keep one risk ledger across review rounds
+state every surviving risk in the PR description or handoff
+When a team reviewer finds something our review missed
+record the lesson in the project's review lessons file the same turn, if the project or user configures one
+OBLIGATIONS
+      if [ "$scope" = targeted ]; then
+        assert_grep 'Run only the specific test files for what you change; never run a local full suite.' "$brief" \
+          "$mode: targeted checks must forbid a local full suite"
+      else
+        assert_no_grep 'never run a local full suite' "$brief" "$mode: targeted-only restriction leaked into full checks"
+      fi
+    done
+  done
+  pass 'fm-brief.sh: every ship mode carries planning, independent review, risk and learning obligations'
+}
+
 # fm-brief.sh must exit 0 and produce a brief with no unreplaced shell
 # metacharacter corruption for every ship delivery mode. This also guards
 # against any *new* unescaped apostrophe or unbalanced quote later added to
@@ -1307,6 +1346,7 @@ test_ship_review_launch_slot
 test_ship_review_step_is_appended_only_when_configured
 test_help_includes_entire_header
 test_ship_modes_generate_clean_briefs
+test_ship_review_contract_in_every_mode
 test_ship_mode_is_required_and_closed_set
 test_ship_checks_is_required_and_closed_set
 test_check_contract_covers_both_places_tests_run

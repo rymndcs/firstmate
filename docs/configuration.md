@@ -326,7 +326,7 @@ When it exists, `bin/fm-brief.sh` appends its review policy with bundled role-la
 [`bin/fm-review-round.sh`](../bin/fm-review-round.sh) owns fresh task review directories identified by non-path tokens, derived private artifact destinations, one-process role launches, safe prompt passing, the dated captain runtime rule, and failure reporting; its header and `--help` own the interface.
 The fixed launch-slot contract and automatic compatibility for existing policy are owned by the header of [`bin/fm-ship-review-lib.sh`](../bin/fm-ship-review-lib.sh).
 Scout briefs and secondmate charters never carry it.
-The independent review-round boundary text owned by `bin/fm-ship-review-lib.sh` reaches both ship paths even when this file is absent.
+The independent review-round boundary text owned by `bin/fm-ship-review-lib.sh` reaches both ship paths even when this file is absent; newly scaffolded ship briefs also carry the planning and review contract owned by [`bin/fm-brief.sh`](../bin/fm-brief.sh)'s ship Rules.
 A configured path that exists but cannot be read stops the scaffold or promotion before anything is written.
 
 `config/ship-review-gate` makes landing depend on the review having run.
