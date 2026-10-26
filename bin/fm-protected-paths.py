@@ -26,7 +26,9 @@ fm-wake-lib.sh on the project's hooks directory, held while the dispatchers
 and records of the project and its gate are published; no-mistakes keeps one
 gate per project, so that lock is the gate's too. A dead installer's lock is
 recovered, and a live one makes a second install refuse with a retry hint.
-Records are renamed into place from unique temporary files.
+Dispatchers and records are renamed into place from unique temporary files,
+and the original pre-push is hard-linked to its preserved name first, so
+an interrupted install keeps a pre-push in place and a retry completes it.
 remove deletes task markers and gate entries, skipping a gate that no longer
 exists; shared dispatchers remain inert without them.
 
@@ -160,17 +162,21 @@ def task_record(repo, task, branch):
             "approval": str(home() / "data" / task / "agent-file-approval.md")}
 
 
-def write_json(path, record):
+def write_file(path, data, mode=0o600):
     path.parent.mkdir(parents=True, exist_ok=True)
-    stream = tempfile.NamedTemporaryFile("w", dir=path.parent, prefix="." + path.name + ".", suffix=".tmp", delete=False)
+    stream = tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix="." + path.name + ".", suffix=".tmp", delete=False)
     try:
         with stream:
-            json.dump(record, stream)
-            stream.write("\n")
+            stream.write(data)
+        os.chmod(stream.name, mode)
         os.replace(stream.name, path)
     except BaseException:
         os.unlink(stream.name)
         raise
+
+
+def write_json(path, record):
+    write_file(path, (json.dumps(record) + "\n").encode())
 
 
 @contextlib.contextmanager
@@ -191,25 +197,16 @@ def install_lock(hooks):
 def publish_hook(hooks):
     hook = hooks / "pre-push"
     template = b'#!/bin/sh\n# firstmate-protected-pre-push-v1\nexec python3 -I "$(dirname "$0")/fm-protected-pre-push.py" "$@"\n'
-    managed = hook.exists() and hook.read_bytes() == template
-    helper = hooks / "fm-protected-pre-push.py"
-    if helper.exists() and not managed:
-        raise ValueError("existing hook helper needs reconciliation")
-    # Only the lock holder writes this file, so an existing one is a dead installer's.
-    helper_tmp = hooks / "fm-protected-pre-push.py.lock"
-    with helper_tmp.open("wb") as stream:
-        stream.write((BIN / "fm-protected-pre-push.py").read_bytes())
-    helper_tmp.replace(helper)
+    write_file(hooks / "fm-protected-pre-push.py", (BIN / "fm-protected-pre-push.py").read_bytes())
+    if hook.exists() and hook.read_bytes() == template:
+        return
     if hook.exists() or hook.is_symlink():
-        if managed:
-            return
         original = hooks / "pre-push.firstmate-original"
-        if original.exists() or original.is_symlink():
+        if not (original.exists() or original.is_symlink()):
+            os.link(hook, original, follow_symlinks=False)
+        elif not os.path.samestat(os.lstat(original), os.lstat(hook)):
             raise ValueError("existing pre-push and preserved hook need reconciliation")
-        hook.rename(original)
-    with hook.open("xb") as stream:
-        stream.write(template)
-    hook.chmod(0o755)
+    write_file(hook, template, 0o755)
 
 
 def hooks_dir(repo):
@@ -286,8 +283,9 @@ def landing(task, head=None, number=None, base=None):
         return
     ref = "refs/fm-protected/pull/" + number
     try:
+        base = remote_default(repo)
         git(repo, "fetch", "--quiet", "origin", "+refs/pull/" + number + "/head:" + ref)
-        check(repo, task, approval, [git_text(repo, "rev-parse", ref + "^{commit}")], remote_default(repo))
+        check(repo, task, approval, [git_text(repo, "rev-parse", ref + "^{commit}")], base)
     finally:
         git(repo, "update-ref", "-d", ref)
 

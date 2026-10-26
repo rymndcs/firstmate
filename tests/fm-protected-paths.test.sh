@@ -440,7 +440,42 @@ test_unreachable_origin() {
   if git -C "$GATE_REPO" show-ref --verify --quiet refs/heads/fm/task-x1; then
     fail 'refused submission reached the gate'
   fi
-  pass 'submission with an unreachable origin refuses and says origin must be reachable, and why'
+  make_case unreachable-origin-landing
+  printf 'unapproved\n' >> "$WT/CLAUDE.md"
+  commit_change unapproved
+  git -C "$WT" push -q origin HEAD:refs/pull/9/head
+  git -C "$PROJ" update-ref refs/fm-protected/pull/10 main
+  fm_write_meta "$HOME_DIR/state/task-x1.meta" "window=firstmate:fm-task-x1" "worktree=$WT" "project=$PROJ" "kind=ship" "mode=local-only"
+  git -C "$PROJ" remote set-url origin "$C/unreachable-origin.git"
+  if PATH="$C/fakebin:$PATH" "$ROOT/bin/fm-pr-merge.sh" task-x1 https://github.com/example/repo/pull/9 > "$C/merge.log" 2>&1; then
+    fail 'PR landed without a current origin base'
+  fi
+  assert_grep 'origin must be reachable to submit, review or land' "$C/merge.log" 'unreachable origin landing refusal must say origin is needed'
+  assert_no_grep 'returned non-zero exit status' "$C/merge.log" 'unreachable origin landing refusal leaked a raw command failure'
+  assert_no_comparison_ref 'PR check with an unreachable origin'
+  pass 'submission and PR landing with an unreachable origin refuse and say origin must be reachable, and why'
+}
+
+# A killed installer can stop after publishing the dispatcher helper, or after
+# preserving the project's pre-push under its second name; a retry from either
+# state must finish the install and keep chaining the project's pre-push.
+test_interrupted_hook_install() {
+  local state hooks
+  for state in helper-published original-preserved; do
+    make_case "interrupted-hook-$state"
+    hooks="$PROJ/.git/hooks"
+    printf '#!/bin/sh\nprintf "project-push\\n" >> "%s"\n' "$C/project-hook.log" > "$hooks/pre-push"
+    chmod +x "$hooks/pre-push"
+    cp "$ROOT/bin/fm-protected-pre-push.py" "$hooks/fm-protected-pre-push.py"
+    [ "$state" = helper-published ] || ln "$hooks/pre-push" "$hooks/pre-push.firstmate-original"
+    spawn_task
+    printf 'changed\n' >> "$WT/CLAUDE.md"
+    commit_change change
+    refused_push HEAD:refs/heads/fm/task-x1
+    git -C "$PROJ" push -q origin main:refs/heads/captain || fail "captain push refused after a retry from $state"
+    assert_grep project-push "$C/project-hook.log" "project pre-push was not chained after a retry from $state"
+  done
+  pass 'a retry after an installer died mid-publication completes the install and chains the project pre-push'
 }
 
 # A branch name long enough that its JSON record outgrows the file-size limit,
@@ -668,6 +703,6 @@ test_install_lock_recovery() {
   pass 'a killed installer leaves no lasting block; a live installer keeps its lock; repeated installs pass'
 }
 
-for test in ${FM_PROTECTED_TESTS:-test_layer_one test_net_changes test_rename_and_case test_all_protected_paths_and_refs test_existing_hooks_and_unmarked_pushes test_exempt_project test_pipeline_gate test_gate_default_publication test_inherited_main_change test_landing test_teardown test_missing_gate_cleanup test_unreachable_origin test_install_refusals test_install_lock_recovery test_interrupted_publication test_concurrent_registration}; do
+for test in ${FM_PROTECTED_TESTS:-test_layer_one test_net_changes test_rename_and_case test_all_protected_paths_and_refs test_existing_hooks_and_unmarked_pushes test_exempt_project test_pipeline_gate test_gate_default_publication test_inherited_main_change test_landing test_teardown test_missing_gate_cleanup test_unreachable_origin test_install_refusals test_interrupted_hook_install test_install_lock_recovery test_interrupted_publication test_concurrent_registration}; do
   "$test"
 done
