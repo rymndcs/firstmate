@@ -472,14 +472,16 @@ test_interrupted_publication() {
   commit_change change
   interrupted_install "$WT" task-x1
   git -C "$WT" push -q origin HEAD:refs/heads/fm/task-x1 || fail 'interrupted publication damaged the published task marker'
+  printf 'changed\n' >> "$WT/CONCEPTS.md"
+  commit_change unapproved
+  refused_push HEAD:refs/heads/fm/task-x1
+  assert_grep '  CONCEPTS.md' "$C/push.log" 'earlier marker stopped protecting after an interrupted publication'
   gitdir=$(git -C "$WT" rev-parse --absolute-git-dir)
   [ -z "$(find "$gitdir" -maxdepth 1 -name '*fm-agent-file-task*' ! -name fm-agent-file-task.json)" ] \
     || fail 'interrupted marker publication left a temporary file'
   printf '{"task": "task-x1", "ref' > "$gitdir/fm-agent-file-task.json.lock"
   "$GATE" install "$WT" task-x1 fm/task-x1 > "$C/install.log" 2>&1 \
     || fail "install after an interrupted marker publication refused: $(cat "$C/install.log")"
-  printf 'changed\n' >> "$WT/CONCEPTS.md"
-  commit_change partial
   refused_push HEAD:refs/heads/fm/task-x1
   assert_grep '  CONCEPTS.md' "$C/push.log" 'republished marker did not enforce its approval'
   make_case interrupted-gate
@@ -506,27 +508,38 @@ test_interrupted_publication() {
   pass 'interrupted marker and gate publications leave the published records valid and allow a retry'
 }
 
+second_writer_retries() {
+  if "$GATE" install "$C/task2" task-x2 fm/task-x1 > "$C/install.log" 2>&1; then
+    fail "a second writer registered the gate branch $1"
+  fi
+  assert_grep 'retry after it finishes' "$C/install.log" "a second writer $1 must be told to retry"
+}
+
+# The first writer runs with a git that stops on its last call, which resolves
+# the task's Git directory after the gate registration and before the marker.
 test_concurrent_registration() {
   make_case concurrent-registration
   make_gate
   cp -R "$ROOT/bin" "$C/bin"
   rm "${C:?}/bin/fm-protected-pre-push.py"
-  mkfifo "$C/bin/fm-protected-pre-push.py"
+  mkfifo "$C/bin/fm-protected-pre-push.py" "$C/hold-records"
+  mkdir "$C/holdbin"
+  printf '#!/usr/bin/env bash\ncase "$*" in *" rev-parse --absolute-git-dir") read -r _ < %q ;; esac\nexec %q "$@"\n' \
+    "$C/hold-records" "$(command -v git)" > "$C/holdbin/git"
+  chmod +x "$C/holdbin/git"
   git -C "$PROJ" worktree add -qb fm/task-x2 "$C/task2"
-  start_held_install
-  if "$GATE" install "$C/task2" task-x2 fm/task-x1 > "$C/install.log" 2>&1; then
-    fail 'a second writer registered while the first held the project lock'
-  fi
-  assert_grep 'retry after it finishes' "$C/install.log" 'concurrent writer must be told to retry'
+  PATH="$C/holdbin:$PATH" start_held_install
+  second_writer_retries 'while the first publishes its dispatcher'
   cat "$ROOT/bin/fm-protected-pre-push.py" >&8
   exec 8>&-
+  # The gate's dispatcher is published from the same source.
   exec 8> "$C/bin/fm-protected-pre-push.py"
-  if "$GATE" install "$C/task2" task-x2 fm/task-x1 > "$C/install.log" 2>&1; then
-    fail 'a second writer registered while the first held the gate lock'
-  fi
-  assert_grep 'retry after it finishes' "$C/install.log" 'concurrent gate writer must be told to retry'
   cat "$ROOT/bin/fm-protected-pre-push.py" >&8
   exec 8>&-
+  exec 9> "$C/hold-records"
+  second_writer_retries 'after the first registered it'
+  printf '\n' >&9
+  exec 9>&-
   wait "$HELD_PID" || fail "held installer failed: $(cat "$C/held.log")"
   if "$GATE" install "$C/task2" task-x2 fm/task-x1 > "$C/install.log" 2>&1; then
     fail 'a conflicting writer took over a registered gate branch'
@@ -540,7 +553,7 @@ test_concurrent_registration() {
   git -C "$GATE_REPO" worktree add -q --detach "$C/run" fm/task-x1
   git -C "$C/run" push -q "$C/origin.git" HEAD:refs/heads/fm/task-x1 > "$C/push.log" 2>&1 \
     || fail "first writer gate registration lost its approval: $(cat "$C/push.log")"
-  pass 'concurrent writers to one gate branch: the second retries, then is refused; the first record stays complete'
+  pass "a second writer for one gate branch retries throughout the first writer's publication, then is refused; the first record stays complete"
 }
 
 test_install_refusals() {

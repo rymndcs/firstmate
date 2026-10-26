@@ -21,10 +21,12 @@ configured, the same dispatcher checks that task's destination branch in its
 bare gate, including commits the pipeline adds. An unregistered gate branch
 cannot borrow any task's approval; only a push to the default branch of
 commits already on the project's own local default branch passes unchecked.
-Installs into one hooks directory take turns through the owner-PID lock in
-fm-wake-lib.sh, held while that directory's records are published: a dead
-installer's lock is recovered, and a live one makes a second install refuse
-with a retry hint. Records are renamed into place from unique temporary files.
+Installs for one project take turns through the owner-PID lock in
+fm-wake-lib.sh on the project's hooks directory, held while the dispatchers
+and records of the project and its gate are published; no-mistakes keeps one
+gate per project, so that lock is the gate's too. A dead installer's lock is
+recovered, and a live one makes a second install refuse with a retry hint.
+Records are renamed into place from unique temporary files.
 remove deletes task markers and gate entries, skipping a gate that no longer
 exists; shared dispatchers remain inert without them.
 
@@ -210,17 +212,13 @@ def publish_hook(hooks):
     hook.chmod(0o755)
 
 
-@contextlib.contextmanager
-def installed_hook(repo):
-    """Publish the dispatcher and keep the hooks directory's install lock for the caller's records."""
+def hooks_dir(repo):
     hooks = common_dir(repo) / "hooks"
     configured = optional_git(repo, "config", "--get", "core.hooksPath")
     if configured and Path(git_text(repo, "rev-parse", "--git-path", "hooks")).resolve() != hooks:
         raise ValueError("needs-decision [key=gate-install]: project uses a different hooks directory")
     hooks.mkdir(exist_ok=True)
-    with install_lock(hooks):
-        publish_hook(hooks)
-        yield hooks
+    return hooks
 
 
 def gate_repo(repo, missing_ok=False):
@@ -242,14 +240,17 @@ def install(repo, task, branch):
         return
     record = task_record(repo, task, branch)
     gate = gate_repo(repo)
-    with installed_hook(repo):
-        if gate:
-            with installed_hook(gate) as hooks:
-                name = hashlib.sha256(record["ref"].encode()).hexdigest() + ".json"
-                entry = hooks / "fm-agent-file-tasks" / name
-                if entry.exists() and json.loads(entry.read_text()) != record:
-                    raise ValueError("no-mistakes branch is already assigned to another task")
-                write_json(entry, record)
+    hooks = hooks_dir(repo)
+    gate_hooks = gate and hooks_dir(gate)
+    with install_lock(hooks):
+        publish_hook(hooks)
+        if gate_hooks:
+            publish_hook(gate_hooks)
+            name = hashlib.sha256(record["ref"].encode()).hexdigest() + ".json"
+            entry = gate_hooks / "fm-agent-file-tasks" / name
+            if entry.exists() and json.loads(entry.read_text()) != record:
+                raise ValueError("no-mistakes branch is already assigned to another task")
+            write_json(entry, record)
         git_dir = Path(git_text(repo, "rev-parse", "--absolute-git-dir"))
         write_json(git_dir / MARKER, record)
 
