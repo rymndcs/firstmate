@@ -19,14 +19,18 @@ is preserved as pre-push.firstmate-original and chained with its arguments and
 stdin. Other hooks and Git configuration are untouched. If no-mistakes is
 configured, the same dispatcher checks that task's destination branch in its
 bare gate, including commits the pipeline adds. An unregistered gate branch
-cannot borrow any task's approval. Installs into one hooks directory take
-turns through the owner-PID lock in fm-wake-lib.sh: a dead installer's lock is
-recovered, and a live one makes a second install refuse with a retry hint.
-remove deletes task markers and gate entries; shared dispatchers remain inert
-without them.
+cannot borrow any task's approval; only a push to the default branch of
+commits already on the project's own local default branch passes unchecked.
+Installs into one hooks directory take turns through the owner-PID lock in
+fm-wake-lib.sh, held while that directory's records are published: a dead
+installer's lock is recovered, and a live one makes a second install refuse
+with a retry hint. Records are renamed into place from unique temporary files.
+remove deletes task markers and gate entries, skipping a gate that no longer
+exists; shared dispatchers remain inert without them.
 
 check --repo <repo> --task <task> --approval <absolute-file> reads standard
-pre-push input, or accepts --head <commit> for landing. Only unlisted protected
+pre-push input, or accepts --head <commit> for landing; --primary <git-dir>
+replaces --approval for unregistered gate branches. Only unlisted protected
 paths are printed on refusal. land-pr <task> <number> fetches the current PR
 head from the task project into a comparison ref it deletes after the check,
 whatever the outcome; land-local <task> <commit> <base> checks a pinned
@@ -43,6 +47,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 BIN = Path(__file__).resolve().parent
 MARKER = "fm-agent-file-task.json"
@@ -115,7 +120,17 @@ def approval_paths(path):
 
 
 def remote_default(repo):
-    return subprocess.check_output([str(BIN / "fm-diff-base.sh"), str(repo)], text=True).strip()
+    try:
+        return subprocess.check_output([str(BIN / "fm-diff-base.sh"), str(repo)], text=True).strip()
+    except subprocess.CalledProcessError:
+        raise ValueError(f"cannot resolve the comparison base for {repo}") from None
+
+
+def captain_default(primary, base, ref, sha):
+    branch = "refs/heads/" + base.removeprefix("origin/")
+    return ref == branch and subprocess.run(
+        ["git", "--git-dir", str(primary), "merge-base", "--is-ancestor", sha, branch],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
 def check(repo, task, approval, heads, base_ref):
@@ -139,17 +154,21 @@ def task_record(repo, task, branch):
     valid_task(task)
     git(repo, "check-ref-format", "refs/heads/" + branch)
     return {"task": task, "ref": "refs/heads/" + branch,
-            "checker": str(BIN / "fm-protected-paths.sh"),
+            "checker": str(BIN / "fm-protected-paths.sh"), "project": str(common_dir(repo)),
             "approval": str(home() / "data" / task / "agent-file-approval.md")}
 
 
 def write_json(path, record):
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".lock")
-    with temporary.open("x") as stream:
-        json.dump(record, stream)
-        stream.write("\n")
-    temporary.replace(path)
+    stream = tempfile.NamedTemporaryFile("w", dir=path.parent, prefix="." + path.name + ".", suffix=".tmp", delete=False)
+    try:
+        with stream:
+            json.dump(record, stream)
+            stream.write("\n")
+        os.replace(stream.name, path)
+    except BaseException:
+        os.unlink(stream.name)
+        raise
 
 
 @contextlib.contextmanager
@@ -167,44 +186,52 @@ def install_lock(hooks):
         holder.wait()
 
 
-def install_hook(repo):
+def publish_hook(hooks):
+    hook = hooks / "pre-push"
+    template = b'#!/bin/sh\n# firstmate-protected-pre-push-v1\nexec python3 -I "$(dirname "$0")/fm-protected-pre-push.py" "$@"\n'
+    managed = hook.exists() and hook.read_bytes() == template
+    helper = hooks / "fm-protected-pre-push.py"
+    if helper.exists() and not managed:
+        raise ValueError("existing hook helper needs reconciliation")
+    # Only the lock holder writes this file, so an existing one is a dead installer's.
+    helper_tmp = hooks / "fm-protected-pre-push.py.lock"
+    with helper_tmp.open("wb") as stream:
+        stream.write((BIN / "fm-protected-pre-push.py").read_bytes())
+    helper_tmp.replace(helper)
+    if hook.exists() or hook.is_symlink():
+        if managed:
+            return
+        original = hooks / "pre-push.firstmate-original"
+        if original.exists() or original.is_symlink():
+            raise ValueError("existing pre-push and preserved hook need reconciliation")
+        hook.rename(original)
+    with hook.open("xb") as stream:
+        stream.write(template)
+    hook.chmod(0o755)
+
+
+@contextlib.contextmanager
+def installed_hook(repo):
+    """Publish the dispatcher and keep the hooks directory's install lock for the caller's records."""
     hooks = common_dir(repo) / "hooks"
     configured = optional_git(repo, "config", "--get", "core.hooksPath")
     if configured and Path(git_text(repo, "rev-parse", "--git-path", "hooks")).resolve() != hooks:
         raise ValueError("needs-decision [key=gate-install]: project uses a different hooks directory")
     hooks.mkdir(exist_ok=True)
     with install_lock(hooks):
-        hook = hooks / "pre-push"
-        template = b'#!/bin/sh\n# firstmate-protected-pre-push-v1\nexec python3 -I "$(dirname "$0")/fm-protected-pre-push.py" "$@"\n'
-        managed = hook.exists() and hook.read_bytes() == template
-        helper = hooks / "fm-protected-pre-push.py"
-        if helper.exists() and not managed:
-            raise ValueError("existing hook helper needs reconciliation")
-        # Only the lock holder writes this file, so an existing one is a dead installer's.
-        helper_tmp = hooks / "fm-protected-pre-push.py.lock"
-        with helper_tmp.open("wb") as stream:
-            stream.write((BIN / "fm-protected-pre-push.py").read_bytes())
-        helper_tmp.replace(helper)
-        if hook.exists() or hook.is_symlink():
-            if managed:
-                return hooks
-            original = hooks / "pre-push.firstmate-original"
-            if original.exists() or original.is_symlink():
-                raise ValueError("existing pre-push and preserved hook need reconciliation")
-            hook.rename(original)
-        with hook.open("xb") as stream:
-            stream.write(template)
-        hook.chmod(0o755)
-    return hooks
+        publish_hook(hooks)
+        yield hooks
 
 
-def gate_repo(repo):
+def gate_repo(repo, missing_ok=False):
     remote = optional_git(repo, "remote", "get-url", "no-mistakes")
     if not remote:
         return None
     gate = Path(remote)
     if not gate.is_absolute():
         gate = (Path(repo) / gate).resolve()
+    if missing_ok and not gate.exists():
+        return None
     if git_text(gate, "rev-parse", "--is-bare-repository") != "true":
         raise ValueError("no-mistakes remote is not a local bare gate repository")
     return gate
@@ -214,17 +241,17 @@ def install(repo, task, branch):
     if exempt(repo):
         return
     record = task_record(repo, task, branch)
-    install_hook(repo)
     gate = gate_repo(repo)
-    if gate:
-        hooks = install_hook(gate)
-        name = hashlib.sha256(record["ref"].encode()).hexdigest() + ".json"
-        entry = hooks / "fm-agent-file-tasks" / name
-        if entry.exists() and json.loads(entry.read_text()) != record:
-            raise ValueError("no-mistakes branch is already assigned to another task")
-        write_json(entry, record)
-    git_dir = Path(git_text(repo, "rev-parse", "--absolute-git-dir"))
-    write_json(git_dir / MARKER, record)
+    with installed_hook(repo):
+        if gate:
+            with installed_hook(gate) as hooks:
+                name = hashlib.sha256(record["ref"].encode()).hexdigest() + ".json"
+                entry = hooks / "fm-agent-file-tasks" / name
+                if entry.exists() and json.loads(entry.read_text()) != record:
+                    raise ValueError("no-mistakes branch is already assigned to another task")
+                write_json(entry, record)
+        git_dir = Path(git_text(repo, "rev-parse", "--absolute-git-dir"))
+        write_json(git_dir / MARKER, record)
 
 
 def remove(repo, task):
@@ -235,7 +262,7 @@ def remove(repo, task):
     record = json.loads(marker.read_text())
     if record["task"] != task:
         raise ValueError("task marker belongs to a different task")
-    gate = gate_repo(repo)
+    gate = gate_repo(repo, missing_ok=True)
     if gate:
         entries = common_dir(gate) / "hooks" / "fm-agent-file-tasks"
         if entries.is_dir():
@@ -277,6 +304,7 @@ def main():
     child.add_argument("--repo", type=Path, required=True)
     child.add_argument("--task", required=True)
     child.add_argument("--approval", type=Path)
+    child.add_argument("--primary", type=Path)
     child.add_argument("--head")
     for command, names in (("land-pr", ("number",)), ("land-local", ("head", "base"))):
         child = sub.add_parser(command)
@@ -290,16 +318,19 @@ def main():
         remove(args.repo.resolve(), args.task)
     elif args.command == "check":
         valid_task(args.task)
-        heads = []
+        pushed = []
         if args.head:
-            heads.append(args.head)
+            pushed.append((None, args.head))
         else:
             for line in sys.stdin:
                 local_ref, sha, remote_ref, remote_sha = line.split()
                 if remote_ref.startswith("refs/heads/") and set(sha) != {"0"}:
-                    heads.append(sha)
-        if heads:
-            check(args.repo, args.task, args.approval, heads, remote_default(args.repo))
+                    pushed.append((remote_ref, sha))
+        if pushed:
+            base = remote_default(args.repo)
+            if args.primary:
+                pushed = [(ref, sha) for ref, sha in pushed if not captain_default(args.primary, base, ref, sha)]
+            check(args.repo, args.task, args.approval, [sha for _, sha in pushed], base)
     elif args.command == "land-pr":
         landing(args.task, number=args.number)
     else:

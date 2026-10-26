@@ -33,7 +33,9 @@ def main():
                     checks.append(({**tasks[0], "task": "unregistered-branch", "approval": None}, unknown))
     for task, selected in checks:
         command = [task["checker"], "check", "--repo", str(pathlib.Path.cwd()), "--task", task["task"]]
-        if task["approval"] is not None:
+        if task["approval"] is None:
+            command.extend(["--primary", task["project"]])
+        else:
             command.extend(["--approval", task["approval"]])
         result = subprocess.run(command, input=selected)
         if result.returncode:

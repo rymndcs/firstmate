@@ -206,24 +206,29 @@ test_exempt_project() {
   pass 'only the registered ai-workspace entry is exempt; its directory name alone grants nothing'
 }
 
+# Real gates track origin under refs/remotes/origin/* only: no local main or
+# master, and no origin/HEAD.
+make_gate() {
+  GATE_REPO="$C/.no-mistakes/repos/016d88035d58.git"
+  mkdir -p "$(dirname "$GATE_REPO")"
+  git init -q --bare "$GATE_REPO"
+  git -C "$GATE_REPO" symbolic-ref HEAD refs/heads/main
+  git -C "$GATE_REPO" config --local commit.gpgsign false
+  git -C "$GATE_REPO" config --local tag.gpgsign false
+  git -C "$GATE_REPO" remote add origin "$C/origin.git"
+  git -C "$GATE_REPO" fetch -q origin '+refs/heads/*:refs/remotes/origin/*'
+  git -C "$GATE_REPO" config extensions.worktreeConfig true
+  git -C "$GATE_REPO" config --worktree core.hooksPath "$GATE_REPO/hooks"
+  git -C "$GATE_REPO" config --worktree core.bare true
+  git -C "$GATE_REPO" config --local --unset core.bare
+  git -C "$PROJ" remote add no-mistakes "$GATE_REPO"
+}
+
 test_pipeline_gate() {
   make_case pipeline
   local bare pwt head
-  bare="$C/.no-mistakes/repos/016d88035d58.git"
-  mkdir -p "$(dirname "$bare")"
-  # Real gates track origin under refs/remotes/origin/* only: no local main or
-  # master, and no origin/HEAD.
-  git init -q --bare "$bare"
-  git -C "$bare" symbolic-ref HEAD refs/heads/main
-  git -C "$bare" config --local commit.gpgsign false
-  git -C "$bare" config --local tag.gpgsign false
-  git -C "$bare" remote add origin "$C/origin.git"
-  git -C "$bare" fetch -q origin '+refs/heads/*:refs/remotes/origin/*'
-  git -C "$bare" config extensions.worktreeConfig true
-  git -C "$bare" config --worktree core.hooksPath "$bare/hooks"
-  git -C "$bare" config --worktree core.bare true
-  git -C "$bare" config --local --unset core.bare
-  git -C "$PROJ" remote add no-mistakes "$bare"
+  make_gate
+  bare=$GATE_REPO
   spawn_task
   printf 'ordinary\n' > "$WT/ordinary.txt"
   commit_change submitted
@@ -254,6 +259,45 @@ test_pipeline_gate() {
   "$GATE" remove "$WT" task-x2
   "$GATE" install "$WT" task-x1 fm/task-x1
   pass 'real-layout bare gate publishes ordinary pipeline pushes and checks pipeline-added commits, including immutable-SHA pushes'
+}
+
+refused_publication() {
+  if git -C "$1" push "$C/origin.git" "${@:2}" > "$C/push.log" 2>&1; then
+    fail "gate published ${*:2} without approval"
+  fi
+  assert_grep '  CLAUDE.md' "$C/push.log" "gate refusal of ${*:2} did not name the protected change"
+}
+
+test_gate_default_publication() {
+  make_case gate-default
+  local pwt captain pipeline worker
+  make_gate
+  spawn_task
+  printf 'captain edit\n' >> "$PROJ/CLAUDE.md"
+  git -C "$PROJ" commit -qam 'captain edit on primary main'
+  captain=$(git -C "$PROJ" rev-parse main)
+  git -C "$PROJ" push -q no-mistakes main:refs/heads/main || fail 'captain main did not reach the gate'
+  pwt="$C/.no-mistakes/worktrees/016d88035d58/captain"
+  git -C "$GATE_REPO" worktree add -q --detach "$pwt" refs/heads/main
+  refused_publication "$pwt" "$captain:refs/heads/main" "$captain:refs/heads/other-branch"
+  refused_publication "$pwt" "$captain:refs/heads/fm/task-x1"
+  printf 'pipeline addition\n' > "$pwt/pipeline.txt"
+  git -C "$pwt" add pipeline.txt
+  git -C "$pwt" commit -qm 'pipeline-added commit on captain main'
+  pipeline=$(git -C "$pwt" rev-parse HEAD)
+  refused_publication "$pwt" "$pipeline:refs/heads/main"
+  git -C "$WT" merge -q --ff-only main
+  printf 'worker addition\n' > "$WT/worker.txt"
+  commit_change 'worker commit on captain main'
+  worker=$(git -C "$WT" rev-parse HEAD)
+  git -C "$PROJ" push -q no-mistakes "$worker:refs/heads/main"
+  refused_publication "$pwt" "$worker:refs/heads/main"
+  refused_publication "$pwt" "$captain:refs/heads/main" "$worker:refs/heads/fm/task-x1"
+  [ "$(git -C "$C/origin.git" rev-parse refs/heads/main)" != "$captain" ] || fail 'refused push published captain main'
+  git -C "$pwt" push -q "$C/origin.git" "$captain:refs/heads/main" > "$C/push.log" 2>&1 \
+    || fail "captain default publication refused: $(cat "$C/push.log")"
+  [ "$(git -C "$C/origin.git" rev-parse refs/heads/main)" = "$captain" ] || fail 'captain main did not reach upstream'
+  pass 'gate publishes captain primary main to the default branch; other refs and off-main commits stay gated'
 }
 
 # A protected edit already on unpublished local main rides along in every
@@ -336,6 +380,169 @@ test_teardown() {
   pass 'teardown removes the task marker; the retained shared hook is inert for pool reuse'
 }
 
+landed_task_with_missing_gate() {
+  make_case "$1"
+  make_gate
+  spawn_task
+  printf 'ordinary\n' > "$WT/ordinary.txt"
+  commit_change ordinary
+  git -C "$WT" push -q origin HEAD:refs/heads/main
+  mv "$GATE_REPO" "$C/gate-moved-away"
+}
+
+assert_marker_removed() {
+  git -C "$WT" checkout -qb "after-$1"
+  printf 'next worker\n' >> "$WT/CONCEPTS.md"
+  commit_change "after $1"
+  git -C "$WT" push -q origin "HEAD:refs/heads/after-$1" || fail "$1 left the task marker active"
+}
+
+test_missing_gate_cleanup() {
+  landed_task_with_missing_gate missing-gate
+  git -C "$PROJ" worktree add -qb fm/task-x2 "$C/task2"
+  if "$GATE" install "$C/task2" task-x2 fm/task-x2 > "$C/install.log" 2>&1; then
+    fail 'install accepted a missing no-mistakes gate'
+  fi
+  assert_absent "$(git -C "$C/task2" rev-parse --absolute-git-dir)/fm-agent-file-task.json" 'refused install wrote a task marker'
+  PATH="$C/fakebin:$PATH" "$ROOT/bin/fm-teardown.sh" task-x1 > "$C/teardown.log" 2>&1 \
+    || fail "teardown of a landed task refused after its gate disappeared: $(cat "$C/teardown.log")"
+  assert_marker_removed teardown
+  landed_task_with_missing_gate missing-gate-force
+  PATH="$C/fakebin:$PATH" "$ROOT/bin/fm-teardown.sh" task-x1 --force > "$C/teardown.log" 2>&1 \
+    || fail "forced teardown of a landed task refused after its gate disappeared: $(cat "$C/teardown.log")"
+  assert_marker_removed forced-teardown
+  make_case missing-gate-unlanded
+  make_gate
+  spawn_task
+  printf 'unlanded\n' >> "$WT/CLAUDE.md"
+  commit_change unlanded
+  mv "$GATE_REPO" "$C/gate-moved-away"
+  if PATH="$C/fakebin:$PATH" "$ROOT/bin/fm-teardown.sh" task-x1 > "$C/teardown.log" 2>&1; then
+    fail 'teardown discarded unlanded work after the gate disappeared'
+  fi
+  refused_push HEAD:refs/heads/unlanded
+  pass 'a landed task cleans up without its gate; install still refuses it; unlanded work keeps its protection'
+}
+
+test_unreachable_origin() {
+  make_case unreachable-origin
+  make_gate
+  spawn_task
+  printf 'ordinary\n' > "$WT/ordinary.txt"
+  commit_change ordinary
+  git -C "$PROJ" remote set-url origin "$C/unreachable-origin.git"
+  if git -C "$WT" push no-mistakes HEAD:refs/heads/fm/task-x1 > "$C/push.log" 2>&1; then
+    fail 'submission passed without a current origin base'
+  fi
+  assert_grep 'origin must be reachable to submit' "$C/push.log" 'unreachable origin refusal must say origin is needed'
+  assert_grep "merge-base with origin's current main" "$C/push.log" 'unreachable origin refusal must say why'
+  assert_no_grep 'returned non-zero exit status' "$C/push.log" 'unreachable origin refusal leaked a raw command failure'
+  if git -C "$GATE_REPO" show-ref --verify --quiet refs/heads/fm/task-x1; then
+    fail 'refused submission reached the gate'
+  fi
+  pass 'submission with an unreachable origin refuses and says origin must be reachable, and why'
+}
+
+# A branch name long enough that its JSON record outgrows the file-size limit,
+# while the shared hook files still fit, interrupts the record write itself.
+long_branch() {
+  local branch=fm part
+  part=$(printf '%0200d' 0)
+  for _ in $(seq 60); do
+    branch="$branch/$part"
+  done
+  printf '%s\n' "$branch"
+}
+
+interrupted_install() {
+  if (ulimit -f 8; "$GATE" install "$1" "$2" "$(long_branch)") > "$C/install.log" 2>&1; then
+    fail 'oversized record publication was not interrupted'
+  fi
+  assert_grep 'File too large' "$C/install.log" 'publication was not interrupted inside the record write'
+}
+
+# A killed installer can also leave a partial temporary file behind; the
+# fixtures plant one at the earlier fixed temporary name before each retry.
+test_interrupted_publication() {
+  make_case interrupted-marker
+  local gitdir entries entry
+  spawn_task
+  approve CLAUDE.md
+  printf 'changed\n' >> "$WT/CLAUDE.md"
+  commit_change change
+  interrupted_install "$WT" task-x1
+  git -C "$WT" push -q origin HEAD:refs/heads/fm/task-x1 || fail 'interrupted publication damaged the published task marker'
+  gitdir=$(git -C "$WT" rev-parse --absolute-git-dir)
+  [ -z "$(find "$gitdir" -maxdepth 1 -name '*fm-agent-file-task*' ! -name fm-agent-file-task.json)" ] \
+    || fail 'interrupted marker publication left a temporary file'
+  printf '{"task": "task-x1", "ref' > "$gitdir/fm-agent-file-task.json.lock"
+  "$GATE" install "$WT" task-x1 fm/task-x1 > "$C/install.log" 2>&1 \
+    || fail "install after an interrupted marker publication refused: $(cat "$C/install.log")"
+  printf 'changed\n' >> "$WT/CONCEPTS.md"
+  commit_change partial
+  refused_push HEAD:refs/heads/fm/task-x1
+  assert_grep '  CONCEPTS.md' "$C/push.log" 'republished marker did not enforce its approval'
+  make_case interrupted-gate
+  make_gate
+  spawn_task
+  git -C "$PROJ" worktree add -qb fm/task-x2 "$C/task2"
+  interrupted_install "$C/task2" task-x2
+  entries="$GATE_REPO/hooks/fm-agent-file-tasks"
+  [ -z "$(find "$entries" -mindepth 1 ! -name '*.json')" ] || fail 'interrupted gate publication left a temporary file'
+  printf 'ordinary\n' > "$WT/ordinary.txt"
+  commit_change ordinary
+  git -C "$WT" push -q no-mistakes HEAD:refs/heads/fm/task-x1 || fail 'submission refused after an interrupted gate publication'
+  git -C "$GATE_REPO" worktree add -q --detach "$C/run" fm/task-x1
+  git -C "$C/run" push -q "$C/origin.git" HEAD:refs/heads/fm/task-x1 > "$C/push.log" 2>&1 \
+    || fail "interrupted publication damaged the gate registrations: $(cat "$C/push.log")"
+  entry=$(printf '%s' "refs/heads/$(long_branch)" | shasum -a 256 | cut -c1-64)
+  printf '{"task": "task-x2", "ref' > "$entries/$entry.json.lock"
+  "$GATE" install "$C/task2" task-x2 "$(long_branch)" > "$C/install.log" 2>&1 \
+    || fail "install after an interrupted gate publication refused: $(cat "$C/install.log")"
+  if "$GATE" install "$C/task2" task-x3 "$(long_branch)" > "$C/install.log" 2>&1; then
+    fail 'republished gate registration lost its assignment'
+  fi
+  assert_grep 'already assigned to another task' "$C/install.log" 'republished gate registration must keep its assignment'
+  pass 'interrupted marker and gate publications leave the published records valid and allow a retry'
+}
+
+test_concurrent_registration() {
+  make_case concurrent-registration
+  make_gate
+  cp -R "$ROOT/bin" "$C/bin"
+  rm "${C:?}/bin/fm-protected-pre-push.py"
+  mkfifo "$C/bin/fm-protected-pre-push.py"
+  git -C "$PROJ" worktree add -qb fm/task-x2 "$C/task2"
+  start_held_install
+  if "$GATE" install "$C/task2" task-x2 fm/task-x1 > "$C/install.log" 2>&1; then
+    fail 'a second writer registered while the first held the project lock'
+  fi
+  assert_grep 'retry after it finishes' "$C/install.log" 'concurrent writer must be told to retry'
+  cat "$ROOT/bin/fm-protected-pre-push.py" >&8
+  exec 8>&-
+  exec 8> "$C/bin/fm-protected-pre-push.py"
+  if "$GATE" install "$C/task2" task-x2 fm/task-x1 > "$C/install.log" 2>&1; then
+    fail 'a second writer registered while the first held the gate lock'
+  fi
+  assert_grep 'retry after it finishes' "$C/install.log" 'concurrent gate writer must be told to retry'
+  cat "$ROOT/bin/fm-protected-pre-push.py" >&8
+  exec 8>&-
+  wait "$HELD_PID" || fail "held installer failed: $(cat "$C/held.log")"
+  if "$GATE" install "$C/task2" task-x2 fm/task-x1 > "$C/install.log" 2>&1; then
+    fail 'a conflicting writer took over a registered gate branch'
+  fi
+  assert_grep 'already assigned to another task' "$C/install.log" 'conflicting writer must be refused'
+  assert_absent "$(git -C "$C/task2" rev-parse --absolute-git-dir)/fm-agent-file-task.json" 'refused writer published a task marker'
+  approve CLAUDE.md
+  printf 'approved\n' >> "$WT/CLAUDE.md"
+  commit_change approved
+  git -C "$WT" push -q no-mistakes HEAD:refs/heads/fm/task-x1 || fail 'first writer marker lost its approval'
+  git -C "$GATE_REPO" worktree add -q --detach "$C/run" fm/task-x1
+  git -C "$C/run" push -q "$C/origin.git" HEAD:refs/heads/fm/task-x1 > "$C/push.log" 2>&1 \
+    || fail "first writer gate registration lost its approval: $(cat "$C/push.log")"
+  pass 'concurrent writers to one gate branch: the second retries, then is refused; the first record stays complete'
+}
+
 test_install_refusals() {
   make_case install-refusals
   git -C "$WT" config core.hooksPath .husky
@@ -392,6 +599,6 @@ test_install_lock_recovery() {
   pass 'a killed installer leaves no lasting block; a live installer keeps its lock; repeated installs pass'
 }
 
-for test in ${FM_PROTECTED_TESTS:-test_layer_one test_net_changes test_rename_and_case test_all_protected_paths_and_refs test_existing_hooks_and_unmarked_pushes test_exempt_project test_pipeline_gate test_inherited_main_change test_landing test_teardown test_install_refusals test_install_lock_recovery}; do
+for test in ${FM_PROTECTED_TESTS:-test_layer_one test_net_changes test_rename_and_case test_all_protected_paths_and_refs test_existing_hooks_and_unmarked_pushes test_exempt_project test_pipeline_gate test_gate_default_publication test_inherited_main_change test_landing test_teardown test_missing_gate_cleanup test_unreachable_origin test_install_refusals test_install_lock_recovery test_interrupted_publication test_concurrent_registration}; do
   "$test"
 done
