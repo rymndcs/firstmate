@@ -10,7 +10,7 @@
 # in the metadata, and discovery reads only after it. A task spawned as a ship
 # has no offset and reads its whole status log.
 # On those own-PR lines the URL may be bare, `backticked`, <angled>, a Markdown
-# link [text](url), or followed by : . , or ;.
+# link [text](url), or followed by : or .
 # Discovery is GitHub-only; register a GitLab merge request with fm-pr-check.sh.
 # It registers through fm-pr-check.sh --if-unregistered, which owns the
 # registration lock and skips a task that already has a registration.
@@ -43,12 +43,12 @@ candidates() {
     exit unless -f $f;
     seek($f, $ARGV[1], 0);
     while (<$f>) {
-      next unless /^done: PR (\S+)/ || /^pushed (?:.* )?to PR (\S+)/;
-      my $token = $1;
-      my $url = $token =~ /^\[[^\]]*\]\(([^)]+)\)/ ? $1
-        : $token =~ /^`([^`]+)`/ ? $1
-        : $token =~ /^<([^>]+)>/ ? $1
-        : $token =~ s/[:.,;]+$//r;
+      next unless /^done: PR (.*)/ || /^pushed (?:.* )?to PR (.*)/;
+      my $rest = $1;
+      my $url = $rest =~ /^\[[^\]]*\]\(([^)\s]+)\)/ ? $1
+        : $rest =~ /^`([^`\s]+)`/ ? $1
+        : $rest =~ /^<([^>\s]+)>/ ? $1
+        : ($rest =~ /^(\S*)/)[0] =~ s/[:.]+$//r;
       print "$url\n" if $url =~ m{^https://github\.com/};
     }
   ' "$STATE/$1.status" "$2"

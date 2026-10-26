@@ -126,6 +126,21 @@ done
 assert_grep 'pr=https://github.com/owner/repo/pull/65' "$FM_HOME/state/task-form-pushed.meta" 'a Markdown link on a pushed-to-PR line must register'
 pass 'own-PR lines accept backticked, angle, colon, period and Markdown-link URLs'
 
+write_pr_task task-label-done
+printf 'done: PR [PR #72](https://github.com/owner/repo/pull/72) checks green\n' > "$FM_HOME/state/task-label-done.status"
+write_pr_task task-label-pushed
+printf 'pushed fix to PR [PR #73](https://github.com/owner/repo/pull/73)\n' > "$FM_HOME/state/task-label-pushed.status"
+write_pr_task task-comma
+printf 'done: PR https://github.com/owner/repo/pull/74, checks green\n' > "$FM_HOME/state/task-comma.status"
+write_pr_task task-semicolon
+printf 'done: PR https://github.com/owner/repo/pull/75; checks green\n' > "$FM_HOME/state/task-semicolon.status"
+drain_pr > /dev/null
+assert_grep 'pr=https://github.com/owner/repo/pull/72' "$FM_HOME/state/task-label-done.meta" 'a Markdown link with a spaced label on a done line must register'
+assert_grep 'pr=https://github.com/owner/repo/pull/73' "$FM_HOME/state/task-label-pushed.meta" 'a Markdown link with a spaced label on a pushed-to-PR line must register'
+assert_absent "$FM_HOME/state/task-comma.check.sh" 'a URL followed by a comma is not an accepted own-PR form'
+assert_absent "$FM_HOME/state/task-semicolon.check.sh" 'a URL followed by a semicolon is not an accepted own-PR form'
+pass 'Markdown links with spaced labels register and only colon or period trail a bare URL'
+
 write_pr_task task-slow
 printf 'done: PR https://github.com/owner/repo/pull/66\n' > "$FM_HOME/state/task-slow.status"
 FM_PR_CHECK_GH_TIMEOUT=1 FM_TEST_GH_HEAD_WAIT_URL=https://github.com/owner/repo/pull/66 drain_pr > /dev/null
