@@ -37,8 +37,11 @@ SH
 live=$(cat "$CASE/liveness")
 case "$1 $2" in
   'pane get')
-    if [ "$live" = missing ]; then printf '{"error":{"code":"pane_not_found"}}\n'
-    else printf '{"result":{"pane":{"pane_id":"fm-quiet"}}}\n'; fi ;;
+    case "$live" in
+      missing) printf '{"error":{"code":"pane_not_found"}}\n' ;;
+      ambiguous) printf '{"error":{"code":"server_busy"}}\n' ;;
+      *) printf '{"result":{"pane":{"pane_id":"fm-quiet"}}}\n' ;;
+    esac ;;
   'pane read') [ "$live" != missing ] || exit 1; cat "$CASE/pane" ;;
   'agent get')
     if [ "$live" = alive ]; then printf '{"result":{"agent":{"agent_status":"idle"}}}\n'
@@ -512,6 +515,29 @@ SH
   chmod +x "$sb/relaunched" "$sb/tmux" "$sb/herdr" "$sb/sleep" "$d/relaunch"
 }
 
+# Inconclusive liveness reads between healthy ones (an ambiguous tmux foreground
+# command, a failed Herdr read) are not consecutive stale polls of a quiet pane.
+test_inconclusive_flaps() {  # <backend>
+  local d
+  d=$(quiet_case "flaps-$1" "$1")
+  printf 'done: ready for review\n' > "$d/state/quiet.status"
+  : > "$d/static"
+  cat > "$d/onpoll" <<'SH'
+#!/usr/bin/env bash
+if [ $(( $1 % 2 )) -eq 1 ]; then printf 'ambiguous\n'; else printf 'alive\n'; fi > "$CASE/liveness"
+SH
+  chmod +x "$d/onpoll"
+  printf '9\n' > "$d/maxpolls"
+  quiet_run "$d"
+  [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "$1: inconclusive reads re-raised a healthy finished pane: $(cat "$d/out")"
+  rm -f "${d:?}/onpoll"
+  printf 'dead\n' > "$d/liveness"
+  quiet_run "$d"
+  grep -F 'agent exited or endpoint gone' "$d/out" >/dev/null || fail "$1: death after inconclusive reads was hidden: $(cat "$d/out")"
+  [ "$(grep -c 'stale: test:fm-quiet' "$d/state/.wake-queue")" -eq 1 ] || fail "$1: flapping liveness queued extra stale wakes"
+  pass "$1: inconclusive liveness reads keep a finished pane quiet; its death still surfaces once"
+}
+
 # A death after a same-pane relaunch is a new failure even when no poll ever saw
 # the relaunched agent alive: the relaunch fails before a re-armed watcher's
 # first poll, or between two polls of a running one. Firstmate addresses the
@@ -596,6 +622,7 @@ case "${FM_QUIET_TEST:-all}" in
   away) test_away_owns_stale; exit ;;
   relaunch) test_relaunch_cases; exit ;;
   fractional) for b in tmux herdr; do (test_fractional_poll_death "$b") || exit 1; done; exit ;;
+  flaps) for b in tmux herdr; do (test_inconclusive_flaps "$b") || exit 1; done; exit ;;
   *) fail 'unknown FM_QUIET_TEST selection' ;;
 esac
 
@@ -622,5 +649,6 @@ for check in test_long_cadence test_quiet_resume test_quiet_cache_expiry test_st
 done
 for backend in tmux herdr; do
   if ! (test_fractional_poll_death "$backend"); then failures=$((failures + 1)); fi
+  if ! (test_inconclusive_flaps "$backend"); then failures=$((failures + 1)); fi
 done
 [ "$failures" -eq 0 ]

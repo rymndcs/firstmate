@@ -1037,6 +1037,7 @@ EOF
       quiet_class=$(quiet_state_class "$task" "$key")
       case "$quiet_class" in
         parked|done)
+          echo 0 > "$cf"
           handle_bounded_stale "$w" "$task" "$h" "$quiet_class"
           continue
           ;;

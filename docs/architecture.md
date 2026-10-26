@@ -28,7 +28,7 @@ Each poll probes liveness before capture, so a missing pane or an agent that exi
 That interval keeps the spawn gap before the harness starts and the teardown gap before the task record is removed silent, and a respawned task record starts a fresh interval.
 Any later `bin/fm-send.sh` input to the task, such as a same-pane relaunch during recovery, also starts a fresh death episode, so a relaunch that dies before any poll sees it alive surfaces once more.
 Any live or inconclusive read ends that death episode, including a read taken while away mode, a pause or a captain hold owns the worker's alerts, so a recovered worker that dies again surfaces promptly.
-Healthy parked and done workers clear wedge aging and escalation counts even when idle pane text changes.
+Healthy parked and done workers clear wedge aging and escalation counts even when idle pane text changes, and each healthy poll restarts the identical-pane count, so isolated inconclusive reads never add up to an ordinary stale wake.
 The reconciled verdict on this idle path, quiet or not, is cached for at most `FM_STALE_ESCALATE_SECS`, invalidated by a changed status signature or provable activity, so an idle validating worker does not re-read current state every poll; liveness is never cached.
 Any `bin/fm-send.sh` message or key to a recorded task keeps it off the quiet cadence until its status log gains a new state-bearing event, so a steered worker that wedges surfaces on the ordinary cadence and firstmate bookkeeping alone never restores quiet.
 Zellij, cmux and Orca have no verified agent-liveness verdict and retain their existing conservative stale behavior without this suppression.
