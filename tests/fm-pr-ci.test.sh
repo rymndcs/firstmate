@@ -139,3 +139,16 @@ drain_pr > "$PR_TMP/transient"
   || fail 'the green outcome must be delivered once'
 assert_no_grep 'ci-fail' "$PR_TMP/transient" 'a failed lookup must never deliver a CI failure'
 pass 'a transient required-check lookup failure never reports CI failure'
+
+write_pr_task task-closed
+"$PR_CODE/bin/fm-pr-check.sh" task-closed https://github.com/owner/repo/pull/54 > /dev/null 2>&1 || fail 'registration failed'
+drain_pr > /dev/null
+FM_TEST_GH_HEAD=1212121212121212121212121212121212121212
+FM_TEST_GH_STATE=CLOSED
+[ -z "$(poll_pr 54)" ] || fail 'a closed PR must not publish a CI outcome'
+assert_absent "$FM_HOME/state/task-closed.pr-ci" 'a closed PR must not record a CI outcome'
+drain_pr > "$PR_TMP/closed"
+assert_no_grep 'task-closed.check.sh' "$PR_TMP/closed" 'a closed PR must not deliver a CI wake'
+FM_TEST_GH_STATE=OPEN
+assert_contains "$(poll_pr 54)" ci-pass 'the same green checks must wake while the PR is open'
+pass 'a closed PR with green checks publishes no CI outcome'
