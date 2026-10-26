@@ -1311,6 +1311,35 @@ test_missing_run_head_falls_back_to_current_state() {
   pass "missing run head falls back instead of matching by branch"
 }
 
+test_finished_status_survives_bookkeeping() {
+  reset_fakes
+  local d out
+  d=$(new_case finished-bookkeeping)
+  mkdir -p "$d/wt"
+  make_fakebin "$d" >/dev/null
+  fm_write_meta "$d/state/finished.meta" "window=fm:fm-finished" "worktree=$d/wt" "kind=scout" "harness=claude"
+  arm_idle_record "$d/state" finished
+  out=$(run_crew_state "$d" finished 2> "$d/missing-status.err")
+  assert_contains "$out" "state: unknown" "missing status is unknown"
+  [ ! -s "$d/missing-status.err" ] || fail "missing status emitted a read error"
+  printf 'done: ready for review\nresolved [key=choice]: captain answered\nreview: passed abc123\n' > "$d/state/finished.status"
+  out=$(run_crew_state "$d" finished)
+  assert_contains "$out" "state: done" "bookkeeping must not restart a finished worker"
+  assert_contains "$out" "ready for review" "done detail survives bookkeeping"
+  printf 'needs-decision [key=choice]: choose A\nresolved [key=choice]: answered\n' > "$d/state/finished.status"
+  out=$(run_crew_state "$d" finished)
+  assert_contains "$out" "state: unknown" "closed decision must not resurrect as parked"
+  printf 'needs-decision [key=choice]: choose A\nresolved [key=other]: unrelated\n' > "$d/state/finished.status"
+  out=$(run_crew_state "$d" finished)
+  assert_contains "$out" "state: parked" "unrelated resolution must retain the open decision"
+  printf 'done: ready\nworking: implementing follow-up\nresolved: bookkeeping\n' > "$d/state/finished.status"
+  out=$(run_crew_state "$d" finished)
+  assert_contains "$out" "state: working" "a new working event must supersede done"
+  pass "effective status preserves completion and keyed decision resolution"
+}
+
+test_finished_status_survives_bookkeeping
+
 test_active_run_is_authoritative
 test_stale_needs_decision_superseded
 test_stale_blocked_superseded

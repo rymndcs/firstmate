@@ -2391,7 +2391,7 @@ retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 cleanup_gate_backup_refs || true
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
-  "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.temp-targets"
+  "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.temp-targets" "$STATE/$ID.steered"
 if [ "$KIND" != scout ] && [ "$KIND" != secondmate ] && [ "$MODE" != local-only ]; then
   "$FM_ROOT/bin/fm-fleet-sync.sh" "$PROJ" || true
 fi

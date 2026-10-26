@@ -9,7 +9,7 @@ firstmate's always-loaded operating contract and routing index for conditional p
 ## Event-driven supervision
 
 A zero-token bash watcher (`bin/fm-watch.sh`) sleeps on the fleet, classifies detected wakes in bash, and wakes the first mate only when something is actionable.
-Actionable wakes include captain-relevant status signals, no-verb signals whose crew is not provably working, authenticated check output such as PR CI/merge polling or an X-mode mention, stale panes whose crew is not provably working whether their status log looks terminal or non-terminal, provably-working stale panes that persist past `FM_STALE_ESCALATE_SECS`, declared external waits that remain paused past `FM_PAUSE_RESURFACE_SECS`, and heartbeat backstop hits.
+Actionable wakes include captain-relevant status signals, no-verb signals whose crew is not provably working, authenticated check output such as PR CI/merge polling or an X-mode mention, unexplained stale panes, provably-working stale panes that persist past `FM_STALE_ESCALATE_SECS`, bounded idle rechecks, and heartbeat backstop hits.
 Repeated provably-working stale escalations on the same unchanged pane add an escalation count to the wake reason and, at `FM_WEDGE_DEMAND_INSPECT_COUNT`, a `demand-deep-inspection` marker.
 A busy pane is otherwise exempt from staleness, but only until its latest `state/<id>.turn-ended` marker reaches `FM_BUSY_TURN_MAX_SECS`, or its `state/<id>.meta` spawn record reaches that age before any turn completes; past that bound it is routed through the same wedge escalation, with the identical reason, escalation count, and `demand-deep-inspection` marker, for inspection only - never an automatic interrupt, signal, or restart.
 Those actionable wakes are written to a durable local queue (`state/.wake-queue`) before detector state advances, so a missed process exit can be recovered by draining the queue.
@@ -23,6 +23,18 @@ For an ordinary crew that has stopped, the normal-mode watcher first surfaces on
 Live or inconclusive liveness remains fail-open at that initial surface, and the secondmate idle-endpoint exemption is unchanged.
 Its initial normal-mode status signal still surfaces through the no-verb path, while away mode self-handles that routine signal and owns the later recheck.
 Fresh stale panes use the same current-state read before trusting the status log, so an active run or a proven busy worker outranks an old captain-relevant status-log line left behind before validation.
+In normal mode, tmux and Herdr workers whose reconciled state is parked or done use `FM_PAUSE_RESURFACE_SECS` while idle only when the existing backend agent-liveness probe positively reports a live agent.
+Each poll probes liveness before capture, so a missing pane or an agent that exited to a bare shell surfaces once that death has persisted for one `FM_POLL` interval, independently of pane hashes and stale busy records; an unchanged dead endpoint then uses the same long recheck cadence.
+That interval keeps the spawn gap before the harness starts and the teardown gap before the task record is removed silent, and a respawned task record starts a fresh interval.
+Any later `bin/fm-send.sh` input to the task, such as a same-pane relaunch during recovery, also starts a fresh death episode, so a relaunch that dies before any poll sees it alive surfaces once more.
+Any live or inconclusive read ends that death episode, including a read taken while away mode, a pause or a captain hold owns the worker's alerts, so a recovered worker that dies again surfaces promptly.
+Healthy parked and done workers clear wedge aging and escalation counts even when idle pane text changes.
+An inconclusive liveness read of an idle quiet pane drops only the cached verdict and keeps the pane hash the quiet path absorbed, so inconclusive reads between live ones do not re-raise an unchanged healthy pane.
+Sustained unknown liveness falls back to the ordinary stale and wedge cadence for that pane.
+Busy activity, or a conclusive read while away mode, a pause or a captain hold owns the worker, drops the absorbed hash even after inconclusive reads, so that pane is classified afresh.
+The reconciled verdict on this idle path, quiet or not, is cached for at most `FM_STALE_ESCALATE_SECS`, invalidated by a changed status signature or provable activity, so an idle validating worker does not re-read current state every poll; liveness is never cached.
+Any `bin/fm-send.sh` message or key to a recorded task keeps it off the quiet cadence until its status log gains a new state-bearing event, so a steered worker that wedges surfaces on the ordinary cadence and firstmate bookkeeping alone never restores quiet.
+Zellij, cmux and Orca have no verified agent-liveness verdict and retain their existing conservative stale behavior without this suppression.
 No-change heartbeats are also benign.
 Absorbed wakes advance their suppression markers, log to `state/.watch-triage.log`, and keep the watcher blocking without a queue record or LLM turn.
 After each drain, `fm-wake-drain.sh` discovers task PR links through `bin/fm-pr-auto-register.sh` outside the queue lock, then runs the same liveness guard as the supervision scripts.
@@ -40,10 +52,12 @@ Crew status files are append-only wake-event logs, not current-state fields.
 The script header owns the exact run-head ancestry rules.
 During no-mistakes' `ci` monitor phase, it also reads the ci step log tail because `axi status` reports both "still waiting on checks" and "checks green, waiting on merge" as `ci,running`.
 The most recent recognized ci log marker wins, so checks-green monitoring reports done while a later re-arm, failed-check, or issue marker returns the crew to working.
-Only when no matching run exists does it consult semantic busy state; exact busy reports working, exact idle permits fallback to a status-log event whose verb maps to a recognized run-state, and unknown or a dead pane stays unknown instead of trusting a stale log.
-Decision-only events such as `resolved` never become current state or leak their prose into the current-state detail.
+Only when no matching run exists does it consult semantic busy state; exact busy reports working and exact idle permits fallback to a recognized status state.
+On tmux and Herdr, that fallback uses the last state-bearing event from `bin/fm-classify-lib.sh`, preserving completion across informational bookkeeping and checking decision events against its authoritative keyed open-set.
+Decision-only events such as `resolved` never become current state or leak their prose into the current-state detail, and a closed decision never revives as parked.
 In that status-log fallback, a declared external wait reports the distinct `paused` state with its reason.
-The semantic branch reports working only on an exact busy verdict and names the source that produced it; an unknown verdict never becomes working, never permits the status-log fallback, and never becomes a silent idle.
+The semantic branch reports working only on an exact busy verdict and names the source that produced it; an unknown verdict never becomes working or idle.
+A declared done or unresolved decision state may still be read when the shared backend probe positively verifies the agent is alive, allowing harnesses without a verified busy adapter to report that explicit state; every other unknown verdict and every unreadable pane stays unknown.
 For whole-fleet read-only review, `bin/fm-fleet-snapshot.sh --json` emits schema `fm-fleet-snapshot.v1` from the backlog, task metadata, current crew state, endpoint probes, PR/report pointers, scout reports, bounded current summaries from registered secondmate homes, and secondmate return-channel guidance.
 `bin/fm-fleet-view.sh` renders that snapshot as Markdown for humans, while `bin/fm-bearings-snapshot.sh` provides the bounded bearings projection, so both views consume one structured contract instead of reparsing raw fleet files.
 The script header owns the exact JSON schema.
