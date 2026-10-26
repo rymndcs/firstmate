@@ -3,7 +3,7 @@ set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMP=$(fm_test_tmproot fm-protected-paths)
-trap 'rm -rf "${TMP:?}"' EXIT
+trap 'stop_held_install; rm -rf "${TMP:?}"' EXIT
 fm_git_identity
 GATE="$ROOT/bin/fm-protected-paths.sh"
 
@@ -524,8 +524,8 @@ test_concurrent_registration() {
   rm "${C:?}/bin/fm-protected-pre-push.py"
   mkfifo "$C/bin/fm-protected-pre-push.py" "$C/hold-records"
   mkdir "$C/holdbin"
-  printf '#!/usr/bin/env bash\ncase "$*" in *" rev-parse --absolute-git-dir") read -r _ < %q ;; esac\nexec %q "$@"\n' \
-    "$C/hold-records" "$(command -v git)" > "$C/holdbin/git"
+  printf '#!/usr/bin/env bash\ncase "$*" in *" rev-parse --absolute-git-dir") echo >> %q; read -r _ < %q ;; esac\nexec %q "$@"\n' \
+    "$C/held-at" "$C/hold-records" "$(command -v git)" > "$C/holdbin/git"
   chmod +x "$C/holdbin/git"
   git -C "$PROJ" worktree add -qb fm/task-x2 "$C/task2"
   PATH="$C/holdbin:$PATH" start_held_install
@@ -533,14 +533,14 @@ test_concurrent_registration() {
   cat "$ROOT/bin/fm-protected-pre-push.py" >&8
   exec 8>&-
   # The gate's dispatcher is published from the same source.
-  exec 8> "$C/bin/fm-protected-pre-push.py"
+  open_handoff "$C/bin/fm-protected-pre-push.py" 'did not start publishing the gate dispatcher'
   cat "$ROOT/bin/fm-protected-pre-push.py" >&8
   exec 8>&-
-  exec 9> "$C/hold-records"
+  open_handoff "$C/hold-records" 'did not reach its git hold after registering the gate branch'
   second_writer_retries 'after the first registered it'
-  printf '\n' >&9
-  exec 9>&-
-  wait "$HELD_PID" || fail "held installer failed: $(cat "$C/held.log")"
+  printf '\n' >&8
+  exec 8>&-
+  finish_held_install 'held installer failed'
   if "$GATE" install "$C/task2" task-x2 fm/task-x1 > "$C/install.log" 2>&1; then
     fail 'a conflicting writer took over a registered gate branch'
   fi
@@ -573,13 +573,57 @@ test_install_refusals() {
   pass 'installer refuses inactive hook placement and preserves an existing hook backup'
 }
 
+# Every wait on the held installer is bounded: after HELD_DEADLINE seconds a
+# watchdog releases the test, by opening the FIFO it is blocked writing or by
+# killing the installer it waits for, so a moved hold point fails instead of
+# hanging. A normal handoff takes well under a second.
+HELD_DEADLINE=60
+
+arm_watchdog() {
+  set -m
+  if [ -n "$1" ]; then
+    ( sleep "$HELD_DEADLINE"; : > "$C/watchdog-expired"; exec 3<> "$1" ) &
+  else
+    ( sleep "$HELD_DEADLINE"; : > "$C/watchdog-expired"; kill -KILL -- "-$HELD_PID" ) &
+  fi
+  WATCHDOG_PID=$!
+  set +m
+}
+
+disarm_watchdog() {
+  kill -- "-$WATCHDOG_PID" 2>/dev/null || true
+  wait "$WATCHDOG_PID" 2>/dev/null || true
+  [ ! -e "$C/watchdog-expired" ] \
+    || fail "the first writer $1 within ${HELD_DEADLINE}s; git hold points reached: $(grep -c '' "$C/held-at" 2>/dev/null || echo 0); installer output: $(cat "$C/held.log")"
+}
+
+open_handoff() {
+  arm_watchdog "$1"
+  exec 8> "$1"
+  disarm_watchdog "$2"
+}
+
 # An installer copy whose hook source is a FIFO stops inside the install lock until the test writes it.
 start_held_install() {
   set -m
   "$C/bin/fm-protected-paths.sh" install "$WT" task-x1 fm/task-x1 > "$C/held.log" 2>&1 &
   HELD_PID=$!
   set +m
-  exec 8> "$C/bin/fm-protected-pre-push.py"
+  open_handoff "$C/bin/fm-protected-pre-push.py" 'did not start publishing its dispatcher'
+}
+
+finish_held_install() {
+  local rc=0
+  arm_watchdog ''
+  wait "$HELD_PID" || rc=$?
+  disarm_watchdog 'did not finish after its last handoff'
+  [ "$rc" -eq 0 ] || fail "$1: $(cat "$C/held.log")"
+  HELD_PID=
+}
+
+# A failing test must not leave its held installer blocked on a FIFO.
+stop_held_install() {
+  [ -z "${HELD_PID:-}" ] || kill -KILL -- "-$HELD_PID" 2>/dev/null || true
 }
 
 test_install_lock_recovery() {
@@ -591,6 +635,7 @@ test_install_lock_recovery() {
   kill -KILL -- "-$HELD_PID"
   exec 8>&-
   wait "$HELD_PID" 2>/dev/null || true
+  HELD_PID=
   "$GATE" install "$WT" task-x1 fm/task-x1 > "$C/install.log" 2>&1 \
     || fail "install after a killed installer refused: $(cat "$C/install.log")"
   "$GATE" install "$WT" task-x1 fm/task-x1 > "$C/install.log" 2>&1 \
@@ -602,7 +647,7 @@ test_install_lock_recovery() {
   assert_grep 'retry after it finishes' "$C/install.log" 'live lock refusal must say how to recover'
   cat "$ROOT/bin/fm-protected-pre-push.py" >&8
   exec 8>&-
-  wait "$HELD_PID" || fail "live installer lost its lock: $(cat "$C/held.log")"
+  finish_held_install 'live installer lost its lock'
   "$GATE" install "$WT" task-x1 fm/task-x1 > "$C/install.log" 2>&1 \
     || fail "install after the live installer finished refused: $(cat "$C/install.log")"
   [ -z "$(find "$PROJ/.git/hooks" -name '.fm-protected-install.lock*')" ] || fail 'install left its lock behind'
