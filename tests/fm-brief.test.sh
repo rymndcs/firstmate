@@ -217,7 +217,7 @@ get an independent, code-first review of the whole change
 new behaviour and preserved behaviour for existing users at real entry points
 Keep one risk ledger across review rounds
 state every surviving risk in your task report or handoff
-the PR description gets only a one-line pointer to it
+in the PR description, add only a one-line pointer to it as one bullet of the PR body's existing short change list, not a separate section
 When a team reviewer finds something our review missed
 record the lesson in the project's review lessons file the same turn, if the project or user configures one
 OBLIGATIONS

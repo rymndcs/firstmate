@@ -58,7 +58,7 @@ Before planning, find past implementations and earlier PRs solving the same kind
 If the planned approach departs from common practice (e.g. bulk work inside a web request instead of a background job), say so and recommend the standard approach before building.
 At plan time, check: bulk work in background jobs; migration up, interrupted retry and rollback; old code against new data during deploy; concurrency on overlapping rows; existing data shapes against real data where the project allows it.
 Before every push and every handoff, including a local-only `done: ready in branch` report, get an independent, code-first review of the whole change that checks new behaviour and preserved behaviour for existing users at real entry points.
-Keep one risk ledger across review rounds and state every surviving risk in your task report or handoff; the PR description gets only a one-line pointer to it, keeping its short format.
+Keep one risk ledger across review rounds and state every surviving risk in your task report or handoff; in the PR description, add only a one-line pointer to it as one bullet of the PR body's existing short change list, not a separate section.
 When a team reviewer finds something our review missed, record the lesson in the project's review lessons file the same turn, if the project or user configures one.
 CONTRACT
 }
