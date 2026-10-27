@@ -42,8 +42,10 @@ The same discovery owner runs after spawn or resume, considers only ship tasks a
 Discovery never replaces an existing registration, and the registration record that `bin/fm-pr-check.sh` writes survives merge-poll retirement, so repeated discovery never re-arms a retired poll.
 Registration failures report a task-specific diagnostic and leave draining or spawning successful so the next discovery can retry, and the registration's GitHub head lookup is time-bounded so a slow forge cannot stall either.
 The registered GitHub poll additionally reads the PR's required checks, or all of its checks when it has none, against a stable head and delegates CI publication to `bin/fm-pr-ci.sh`, which validates the canonical task registration, appends a durable wake before recording each URL/head/outcome receipt, and returns the observation to wake the watcher.
-The watcher's matching queue append collapses during the ordinary drain, and an interrupted publication follows the queue's existing at-least-once recovery rule.
+The watcher wakes on these already queued nonterminal observations; an interrupted publication follows the queue's existing at-least-once recovery rule.
 CI observations retain the poll for later outcomes and merges; their per-task receipts survive re-registration and are removed with task cleanup.
+The same OPEN GitHub poll delegates new review activity and conflict transitions to `bin/fm-pr-activity.sh`, independently of CI availability.
+Its header owns pagination, durable last-seen IDs, batch wakes, conflict episodes and the optional review-learning hook; `tests/fm-pr-ci.test.sh` covers these alongside preserved CI behavior.
 Script headers own exact discovery precedence, check classification, and commands.
 Routine watcher polling, supervision no-ops, elapsed waiting time, and absorbed benign wakes stay silent.
 A declared external wait trades that silence for one bounded recheck per pause window, so a forgotten pause cannot remain invisible indefinitely.

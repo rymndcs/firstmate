@@ -45,6 +45,8 @@
 #                          inspection only - never an automatic interrupt,
 #                          signal, or restart of the worker or its tool process.
 #   check: <script>: <out> authenticated check output, always actionable
+#                          canonical nonterminal PR observations are already
+#                          queued by their CI/activity publishers
 #   check: process-event result captured: <keys>
 #                          a durably captured process-to-event result is queued
 #                          and has not been surfaced yet; reported once per
@@ -898,7 +900,11 @@ while :; do
       fi
       if [ -n "$out" ]; then
         reason="check: $c: $out"
-        fm_wake_append check "$c" "$reason" || exit 1
+        # Nonterminal canonical PR observations are already durably queued by
+        # their publishers, with activity keyed per batch rather than per poll.
+        if [ "$is_pr_poll" -eq 0 ] || [ "$out" = merged ]; then
+          fm_wake_append check "$c" "$reason" || exit 1
+        fi
         if [ "$is_pr_poll" -eq 1 ] && [ "$out" = merged ]; then
           if fm_pr_poll_retirement_publish "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" "$out"; then
             fm_pr_poll_retirement_recover_one "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" \

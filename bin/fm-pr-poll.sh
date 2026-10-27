@@ -2,7 +2,8 @@
 # Static watcher program for a validated PR/MR poll sidecar.
 # It preserves the exact merged result for PR/MR retirement and publishes
 # GitHub check outcomes through fm-pr-ci.sh, once per head/outcome.
-# Only an OPEN PR publishes check outcomes; a closed PR stays silent.
+# OPEN PRs also publish comments and conflicts through fm-pr-activity.sh,
+# independently of CI availability; a closed PR stays silent.
 # Missing, pending, malformed or failed check lookups stay silent.
 # Usage: fm-pr-poll.sh [--validated <provider> <url> <host> <path> <number>]
 # A PR with required checks uses only those (gh pr checks --required --json
@@ -83,6 +84,8 @@ case "$provider" in
       exit 0
     fi
     [ "$state" = OPEN ] || exit 0
+    root=${FM_ROOT_OVERRIDE:-$(cd "$(dirname "$0")/.." && pwd)}
+    "$root/bin/fm-pr-activity.sh" "$url" 2>/dev/null || true
     head=$(gh pr view "$url" --json headRefOid -q .headRefOid 2>/dev/null) || exit 0
     case "$head" in ''|*[!a-fA-F0-9]*) exit 0 ;; esac
     [ "${#head}" -eq 40 ] || exit 0
@@ -109,7 +112,6 @@ case "$provider" in
     [ -n "$outcome" ] || exit 0
     current_head=$(gh pr view "$url" --json headRefOid -q .headRefOid 2>/dev/null) || exit 0
     [ "$head" = "$current_head" ] || exit 0
-    root=${FM_ROOT_OVERRIDE:-$(cd "$(dirname "$0")/.." && pwd)}
     "$root/bin/fm-pr-ci.sh" "$url" "$head" "$outcome" 2>/dev/null || true
     ;;
   gitlab)

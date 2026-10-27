@@ -11,6 +11,7 @@
 # has no offset and reads its whole status log.
 # On those own-PR lines the URL may be bare, `backticked`, <angled>, a Markdown
 # link [text](url), or followed by : or .
+# Registration arms the existing CI, review-activity, conflict and merge poll.
 # Discovery is GitHub-only; register a GitLab merge request with fm-pr-check.sh.
 # It registers through fm-pr-check.sh --if-unregistered, which owns the
 # registration lock and skips a task that already has a registration.
