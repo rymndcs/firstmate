@@ -13,6 +13,8 @@
 #   - context-aware next-step guidance for read-only, AFK, X mode, and normal
 #     watcher ownership
 #   - status-tail bounding, default and FM_SESSION_START_STATUS_TAIL override
+#   - the output budget: leading STOP lines for rule files that do not fit,
+#     never-cut lines, FLEET_TRUNCATED shortening, and a real-size fixture
 #   - orphan status logs whose task meta has already disappeared
 #   - per-task endpoint-liveness lines for a live and a dead recorded target,
 #     tmux and herdr both
@@ -123,10 +125,11 @@ case "${1:-}" in
     case "$*" in *'--limit 80'*) : ;; *) printf '%s\n' 'missing compact limit' >&2; exit 9 ;; esac
     case "$*" in *'--file '*) : ;; *) printf '%s\n' 'missing explicit backlog file' >&2; exit 9 ;; esac
     cat <<'OUT'
-count: 2
-tasks[2]{id,state,kind,repo,title,blocked_by,hold_kind,hold_reason}:
+count: 3 of 3 total
+tasks[3]{id,state,kind,repo,title,blocked_by,hold_kind,hold_reason}:
   compact-startup,in_flight,ship,firstmate,Compact startup digest,none,captain,captain choice pending
   blocked-followup,queued,scout,firstmate,Follow compact startup,compact-startup,"-","-"
+  held-decision,queued,captain,firstmate,"Pick, then \"ship\" the library",none,captain,"HOLD-REASON-TEXT, quoted"
 help[2]:
   - Run `tasks-axi show <id> --full` for full notes on a task
   - Run `tasks-axi ready` to see unblocked queued work
@@ -137,6 +140,16 @@ esac
 exit 1
 SH
   chmod +x "$fakebin/tasks-axi"
+}
+
+make_fake_quota_axi() {
+  local fakebin=$1
+  cat > "$fakebin/quota-axi" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" = --version ] && printf '%s\n' '0.1.16'
+exit 0
+SH
+  chmod +x "$fakebin/quota-axi"
 }
 
 # make_fake_ps_claude <fakebin>: harness_pid()/holder_alive() (fm-lock.sh) walk
@@ -562,7 +575,7 @@ write_pi_loaded_markers() {
 # --- context digest: absent vs empty vs present -----------------------------
 
 test_context_digest_absent_empty_present() {
-  local rec root home fakebin out
+  local rec root home fakebin out printed
   rec=$(new_world context-digest)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -594,6 +607,9 @@ EOF
 
   cap_section=$(printf '%s\n' "$out" | awk '/^data\/captain\.md$/{flag=1;next}/^data\//{flag=0}flag')
   assert_contains "$cap_section" "(present, empty)" "empty-but-present captain.md was not distinguished from ABSENT"
+  printed=$(printf '%s\n' "$out" | grep '^Printed in full above')
+  assert_contains "$printed" "data/projects.md, data/captain.md." "NEXT STEP omitted a printed or empty rule file"
+  assert_not_contains "$printed" "data/secondmates.md" "NEXT STEP named an ABSENT rule file as printed in full"
 
   pass "context digest distinguishes ABSENT, empty-but-present, and populated files"
 }
@@ -894,8 +910,8 @@ EOF
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "working: step 7" "default status tail missing the most recent line"
-  assert_contains "$out" "working: step 3" "default status tail (5 lines) missing an expected recent line"
-  assert_not_contains "$out" "working: step 1" "default status tail (5 lines) leaked an older line"
+  assert_contains "$out" "working: step 5" "default status tail (3 lines) missing an expected recent line"
+  assert_not_contains "$out" "working: step 4" "default status tail (3 lines) leaked an older line"
   assert_contains "$out" "$home/state/task-a.status" "digest did not print the full status log path for a deeper read"
   assert_contains "$out" "Do NOT bulk-read state/*.status now either: their bounded tails were just" "closing reminder does not distinguish bounded status tails"
   assert_not_contains "$out" "state/*.status now - they were just" "closing reminder still describes status logs as fully printed"
@@ -926,7 +942,8 @@ EOF
   assert_contains "$out" "Orphan status logs (state/*.status without matching .meta)" "digest did not label orphan status logs"
   assert_contains "$out" "--- task-orphan ---" "digest did not print the orphan status id"
   assert_contains "$out" "orphan: step 6" "orphan status tail missing the newest line"
-  assert_not_contains "$out" "orphan: step 1" "orphan status tail was not bounded"
+  assert_contains "$out" "orphan: step 4" "orphan status tail (3 lines) missing an expected recent line"
+  assert_not_contains "$out" "orphan: step 3" "orphan status tail was not bounded to the 3-line default"
   assert_contains "$out" "$home/state/task-orphan.status" "orphan status tail did not print the full log path"
 
   matched_count=$(printf '%s\n' "$out" | grep -F -c 'matched: surfaced once')
@@ -1121,6 +1138,7 @@ write_long_body_backlog() {
 ## Queued
 - [ ] blocked-followup - Follow compact startup blocked-by: compact-startup - waits for implementation (repo: firstmate) (kind: scout) (since 2026-07-15)
   QUEUED-BODY-LINE this is another long multiline note.
+- [ ] held-decision - Pick the library (Option A) (repo: firstmate) (kind: captain) (since 2026-07-15) (hold: HOLD-REASON-TEXT) (hold-kind: captain)
 
 ## Done
 EOF
@@ -1143,21 +1161,22 @@ EOF
 
   out=$(FM_FAKE_TASKS_AXI_LOG="$log" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "compact backlog listing (tasks-axi; max 80 item(s); task bodies omitted)" \
+  assert_contains "$out" "compact backlog listing (tasks-axi; in-flight and captain-held items only; max 80 item(s) scanned; task bodies omitted)" \
     "compatible tasks-axi backend did not render the compact backlog listing"
-  assert_contains "$out" "tasks[2]{id,state,kind,repo,title,blocked_by,hold_kind,hold_reason}:" \
-    "tasks-axi compact listing omitted the expected structured field header"
-  assert_contains "$out" "compact-startup,in_flight,ship,firstmate,Compact startup digest,none,captain,captain choice pending" \
-    "tasks-axi compact listing omitted in-flight identity, state, or hold metadata"
-  assert_contains "$out" 'blocked-followup,queued,scout,firstmate,Follow compact startup,compact-startup,"-","-"' \
-    "tasks-axi compact listing omitted blocked-by metadata"
+  assert_contains "$out" "$(printf 'In flight (1):\ncompact-startup - Compact startup digest\nCaptain-held (1):\nheld-decision - Pick, then "ship" the library\n')" \
+    "tasks-axi listing did not render in-flight and captain-held items as id - title"
+  assert_not_contains "$out" "blocked-followup" "tasks-axi listing printed a queued item that is not captain-held"
+  assert_not_contains "$out" "HOLD-REASON-TEXT" "tasks-axi listing printed hold_reason text"
+  assert_not_contains "$out" "captain choice pending" "tasks-axi listing printed in-flight hold_reason text"
+  assert_contains "$out" "Other backlog items: tasks-axi list --file=$home/data/backlog.md" \
+    "tasks-axi listing omitted the pointer to the other backlog items"
   assert_not_contains "$out" "OVERSIZED-BODY-LINE" "tasks-axi compact digest leaked an in-flight task body"
   assert_not_contains "$out" "QUEUED-BODY-LINE" "tasks-axi compact digest leaked a queued task body"
   assert_contains "$out" "--- compact-startup ---" "in-flight meta identity disappeared from startup recovery digest"
   assert_contains "$out" "worktree=$home/projects/firstmate" "in-flight recovery worktree identity disappeared from startup digest"
   assert_contains "$out" "Full task bodies remain available on demand: tasks-axi show <id> --full" \
     "compact digest omitted the full-body lookup pointer"
-  assert_grep "list --file $home/data/backlog.md --limit 80 --fields blocked_by,hold_kind,hold_reason" "$log" \
+  assert_grep "list --file $home/data/backlog.md --limit 80 --fields hold_kind" "$log" \
     "session start did not ask tasks-axi for the bounded compact field set"
 
   pass "compatible tasks-axi backlog rendering is compact, bounded, and preserves recovery metadata"
@@ -1176,22 +1195,26 @@ EOF
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "compact backlog listing (manual backend; max 80 item(s); indented task bodies omitted)" \
+  assert_contains "$out" "compact backlog listing (manual backend; in-flight and captain-held items only; max 80 item(s) scanned; indented task bodies omitted)" \
     "manual backend did not use compact title-line rendering"
-  assert_contains "$out" "## In flight" "manual compact rendering omitted the in-flight section heading"
-  assert_contains "$out" "- [ ] compact-startup - Compact startup digest" \
-    "manual compact rendering omitted the in-flight title line"
-  assert_contains "$out" "(hold: captain choice pending) (hold-kind: captain)" \
-    "manual compact rendering omitted hold metadata"
-  assert_contains "$out" "blocked-by: compact-startup - waits for implementation" \
-    "manual compact rendering omitted blocker metadata"
+  assert_contains "$out" "$(printf 'In flight (1):\ncompact-startup - Compact startup digest\nCaptain-held (1):\nheld-decision - Pick the library (Option A)\n')" \
+    "manual rendering did not list in-flight and captain-held items as id - title"
+  assert_not_contains "$out" "blocked-followup" "manual rendering printed a queued item that is not captain-held"
+  assert_not_contains "$out" "HOLD-REASON-TEXT" "manual rendering printed hold reason text"
+  assert_not_contains "$out" "captain choice pending" "manual rendering printed in-flight hold reason text"
   assert_not_contains "$out" "OVERSIZED-BODY-LINE" "manual compact digest leaked an in-flight task body"
   assert_not_contains "$out" "QUEUED-BODY-LINE" "manual compact digest leaked a queued task body"
-  assert_contains "$out" "(shown 2 of 2 backlog item title line(s))" \
-    "manual compact rendering did not report its bound accounting"
+  assert_not_contains "$out" "(scanned " "manual rendering reported a scan bound it did not hit"
+  assert_contains "$out" "Other backlog items: read $home/data/backlog.md" \
+    "manual rendering omitted the pointer to the other backlog items"
   assert_contains "$out" "or data/backlog.md" "manual compact digest omitted the data/backlog.md full-body pointer"
 
-  pass "manual backlog rendering prints only title lines with hold and blocker metadata"
+  out=$(FM_SESSION_START_BACKLOG_LIMIT=2 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "(scanned 2 of 3 backlog item(s); raise FM_SESSION_START_BACKLOG_LIMIT to scan more)" \
+    "manual rendering did not report that its scan bound hid items"
+  assert_not_contains "$out" "held-decision" "manual rendering listed an item past its scan bound"
+
+  pass "manual backlog rendering lists only in-flight and captain-held items without hold reasons"
 }
 
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback() {
@@ -1206,13 +1229,309 @@ EOF
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
-  assert_contains "$out" "compact backlog listing (tasks-axi unavailable or incompatible; max 80 item(s); indented task bodies omitted)" \
+  assert_contains "$out" "compact backlog listing (tasks-axi unavailable or incompatible; in-flight and captain-held items only; max 80 item(s) scanned; indented task bodies omitted)" \
     "unavailable tasks-axi did not fall back to compact title-line rendering"
-  assert_contains "$out" "- [ ] compact-startup - Compact startup digest" \
+  assert_contains "$out" "compact-startup - Compact startup digest" \
     "unavailable tasks-axi fallback omitted a backlog title line"
   assert_not_contains "$out" "OVERSIZED-BODY-LINE" "unavailable tasks-axi fallback leaked an in-flight task body"
 
   pass "unavailable or incompatible tasks-axi falls back to compact manual backlog rendering"
+}
+
+# --- output budget ----------------------------------------------------------
+
+# write_sized_file <path> <bytes> <marker>: exactly <bytes> bytes whose first
+# and last lines carry <marker>, so a partial print is detectable.
+write_sized_file() {
+  local path=$1 bytes=$2 marker=$3 body
+  body=$((bytes - ${#marker} * 2 - 14))
+  {
+    printf '%s-FIRST\n' "$marker"
+    yes "$marker rule text padding the fixture to its measured size." | head -c "$body"
+    printf '\n%s-LAST\n' "$marker"
+  } > "$path"
+}
+
+first_nonempty_line() { printf '%s\n' "$1" | grep -m1 -v '^$'; }
+next_step_section() { printf '%s\n' "$1" | awk '/^NEXT STEP$/ { found = 1 } found'; }
+
+# assert_never_cut_lines <out> <harness> <home> <root>: what LOCK, BOOTSTRAP,
+# WAKE QUEUE and the supervision block print survives any budget decision.
+assert_never_cut_lines() {
+  local out=$1 harness=$2 home=$3 root=$4
+  assert_contains "$out" "lock acquired: harness pid" "budget cut the LOCK output"
+  assert_contains "$out" "MISSING: node (install:" "budget cut the BOOTSTRAP diagnostic"
+  assert_contains "$out" "$(printf 'signal\ttask-wake\tdone: never-cut wake record')" "budget cut a drained wake record"
+  assert_contains "$out" "SUPERVISION OPERATING INSTRUCTIONS - primary harness: $harness" "budget cut the supervision block"
+  assert_contains "$out" "$(FM_HOME="$home" FM_ROOT_OVERRIDE="$root" "$ROOT/bin/fm-supervision-instructions.sh" --harness "$harness" --read-only 0 --afk 0 --x-mode 0)" \
+    "budget shortened the supervision block"
+}
+
+test_budget_defers_rule_files_that_do_not_fit() {
+  local rec root home fakebin out first next printed bytes
+  rec=$(new_world budget-stop)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  rm -f "$fakebin/node"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  write_sized_file "$home/data/captain.md" 50000 CAPTAIN_BIG
+  write_sized_file "$home/data/learnings.md" 3000 LEARNINGS_FIT
+  write_sized_file "$home/data/secondmates.md" 60000 SECONDMATES_BIG
+  write_sized_file "$home/data/projects.md" 2000 PROJECTS_FIT
+  append_wake "$home/state" signal task-wake "done: never-cut wake record" || fail "seed wake failed"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  first=$(first_nonempty_line "$out")
+  case "$first" in STOP:*) ;; *) fail "digest did not begin with a STOP line: $first" ;; esac
+  assert_contains "$out" "STOP: rule file not printed - read $home/data/captain.md in full with your file-read tool before any other action (50000 bytes)" \
+    "oversized captain.md was not named on a STOP line"
+  assert_contains "$out" "STOP: rule file not printed - read $home/data/secondmates.md in full with your file-read tool before any other action (60000 bytes)" \
+    "oversized secondmates.md was not named on a STOP line"
+  assert_not_contains "$out" "CAPTAIN_BIG" "a deferred captain.md was partially printed"
+  assert_not_contains "$out" "SECONDMATES_BIG" "a deferred secondmates.md was partially printed"
+  assert_contains "$out" "$(cat "$home/data/learnings.md")" "a later rule file that fits was not printed in full"
+  assert_contains "$out" "$(cat "$home/data/projects.md")" "projects.md that fits was not printed in full"
+  assert_not_contains "$out" "STOP: rule file not printed - read $home/data/learnings.md" "a printed rule file was also named on a STOP line"
+  assert_never_cut_lines "$out" claude "$home" "$root"
+  bytes=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" | LC_ALL=C wc -c | tr -d ' ')
+  [ "$bytes" -le 46080 ] || fail "digest with deferred rule files is $bytes bytes, over the 46080-byte budget"
+
+  next=$(next_step_section "$out")
+  assert_contains "$next" "$home/data/captain.md - read it first" "NEXT STEP did not send the reader to deferred captain.md first"
+  assert_contains "$next" "$home/data/secondmates.md - read it first" "NEXT STEP did not send the reader to deferred secondmates.md first"
+  assert_not_contains "$next" "The digest above is complete" "NEXT STEP called a digest with deferred rule files complete"
+  printed=$(printf '%s\n' "$next" | grep '^Printed in full above')
+  assert_contains "$printed" "data/learnings.md" "NEXT STEP omitted a printed rule file"
+  assert_not_contains "$printed" "data/captain.md" "NEXT STEP told the reader to skip deferred captain.md"
+  assert_not_contains "$printed" "data/secondmates.md" "NEXT STEP told the reader to skip deferred secondmates.md"
+
+  pass "rule files that do not fit are named on leading STOP lines and never partially printed"
+}
+
+test_budget_setting_override_and_validation() {
+  local rec root home fakebin out
+  rec=$(new_world budget-setting)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  write_sized_file "$home/data/captain.md" 20000 CAPTAIN_MID
+
+  out=$(FM_SESSION_START_BUDGET_BYTES=10000 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "STOP: rule file not printed - read $home/data/captain.md" "FM_SESSION_START_BUDGET_BYTES did not lower the budget"
+  assert_not_contains "$out" "CAPTAIN_MID" "a lowered budget still printed captain.md"
+
+  out=$(FM_SESSION_START_BUDGET_BYTES=not-a-number run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "$(cat "$home/data/captain.md")" "an invalid budget did not fall back to the default"
+  assert_not_contains "$out" "STOP:" "an invalid budget deferred a rule file that fits the default"
+
+  pass "FM_SESSION_START_BUDGET_BYTES overrides the budget and invalid values fall back to the default"
+}
+
+test_budget_counts_bytes_not_characters() {
+  local rec root home fakebin out bytes wide
+  rec=$(new_world budget-bytes)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  # 3000 three-byte characters: 9000 bytes, but only 3000 characters, so a
+  # character count would let the 33000-byte captain.md through.
+  wide=$(awk 'BEGIN { for (i = 0; i < 3000; i++) printf "\342\224\201" }')
+  append_wake "$home/state" signal task-wide "done: $wide" || fail "seed wake failed"
+  write_sized_file "$home/data/captain.md" 33000 CAPTAIN_WIDE
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "STOP: rule file not printed - read $home/data/captain.md" \
+    "the budget counted characters instead of bytes"
+  assert_contains "$out" "$wide" "budget cut a multibyte wake record"
+  bytes=$(printf '%s\n' "$out" | LC_ALL=C wc -c | tr -d ' ')
+  [ "$bytes" -le 46080 ] || fail "multibyte digest is $bytes bytes, over the 46080-byte budget"
+
+  pass "the budget counts bytes, so multibyte never-cut output cannot push the digest over it"
+}
+
+test_budget_stop_line_path_is_absolute_for_relative_home() {
+  local rec root home fakebin out
+  rec=$(new_world budget-relative-home)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  write_sized_file "$home/data/captain.md" 50000 CAPTAIN_RELATIVE
+
+  out=$(cd "${home%/home}" && run_session_start home "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "STOP: rule file not printed - read $home/data/captain.md" \
+    "a relative FM_HOME produced a STOP line without an absolute path"
+
+  pass "STOP lines name absolute paths even when FM_HOME is relative"
+}
+
+test_budget_claims_only_shortenings_that_change_something() {
+  local rec root home fakebin out n
+  rec=$(new_world budget-no-op-steps)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  printf 'window=fm-sess:w1\nkind=ship\n' > "$home/state/task-a.meta"
+  printf 'working: only line\n' > "$home/state/task-a.status"
+
+  # A 1-byte budget forces every shortening step; none of them changes this fleet.
+  out=$(FM_SESSION_START_BUDGET_BYTES=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" "FLEET_TRUNCATED" "a shortening step that changed nothing was claimed"
+  assert_contains "$out" "$(printf -- '--- task-a ---\nwindow=fm-sess:w1\nkind=ship\nendpoint:')" "an unshortened meta lost its lines"
+  assert_contains "$(printf '%s\n' "$out" | grep '^Printed in full above')" "state/*.meta" \
+    "NEXT STEP did not name metas printed in full"
+
+  printf 'harness=claude\nworktree=/tmp/example\n' >> "$home/state/task-a.meta"
+  n=1
+  while [ "$n" -le 4 ]; do printf 'working: step %s\n' "$n"; n=$((n + 1)); done >> "$home/state/task-a.status"
+  write_long_body_backlog "$home/data/backlog.md"
+  out=$(FM_SESSION_START_BUDGET_BYTES=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "FLEET_TRUNCATED: per-task status tails cut to 1 line" "the status-tail shortening was not claimed"
+  assert_contains "$out" "FLEET_TRUNCATED: state/*.meta bodies reduced" "the meta shortening was not claimed"
+  assert_contains "$out" "FLEET_TRUNCATED: backlog reduced" "the backlog shortening was not claimed"
+  assert_not_contains "$out" "worktree=/tmp/example" "the meta shortening kept a line outside window, kind, harness, model, mode and pr"
+
+  pass "FLEET_TRUNCATED names only shortening steps that actually changed the digest"
+}
+
+# write_real_size_backlog <path>: 9 in-flight, 60 captain-held and 10 other
+# queued items with real-length hold reasons, plus one done item.
+write_real_size_backlog() {
+  local path=$1 n reason
+  reason='The export matches the later list through the cut-off and then carries only a fraction of the orders, so the captain must choose between re-pulling the tail, moving the cut-off, or warning in the app; options are not exclusive.'
+  {
+    printf '# Backlog\n\n## In flight\n'
+    n=1
+    while [ "$n" -le 9 ]; do
+      printf -- '- [ ] inflight-task-%02d - In-flight task %02d keeps its title visible at session start (repo: firstmate) (kind: ship) (since 2026-10-28)\n' "$n" "$n"
+      printf '  INFLIGHT-BODY-LINE %02d\n' "$n"
+      n=$((n + 1))
+    done
+    printf '\n## Queued\n'
+    n=1
+    while [ "$n" -le 60 ]; do
+      printf -- '- [ ] captain-held-decision-%02d - Captain decision %02d on how the import handles trailing rows (repo: racingr-wms) (kind: captain) (since 2026-08-03) (hold: %s) (hold-kind: captain)\n' "$n" "$n" "$reason"
+      n=$((n + 1))
+    done
+    n=1
+    while [ "$n" -le 10 ]; do
+      printf -- '- [ ] other-queued-%02d - Other queued work %02d (repo: firstmate) (kind: ship) (since 2026-10-01)\n' "$n" "$n"
+      n=$((n + 1))
+    done
+    printf '\n## Done\n- [x] finished-task - Finished task (repo: firstmate) (kind: ship) (since 2026-09-01)\n'
+  } > "$path"
+}
+
+# write_real_size_worker <state> <n>: a ~800-byte meta and six long status lines.
+write_real_size_worker() {
+  local state=$1 n=$2 id k
+  id=$(printf 'worker-task-%02d' "$n")
+  {
+    printf 'window=firstmate:fm-%s\nkind=ship\nharness=claude\nmodel=claude-opus-5-5\nmode=no-mistakes\n' "$id"
+    printf 'pr=https://github.com/example/firstmate/pull/%s\n' "$((100 + n))"
+    printf 'worktree=/Users/example/.treehouse/ai-workspace-cdc954/%s/ai-workspace\n' "$n"
+    printf 'project=ai-workspace\nbranch=fm/%s\nbackend=tmux\nyolo=off\n' "$id"
+    k=1
+    while [ "$k" -le 7 ]; do
+      printf 'context_%s=recorded spawn context line kept for recovery and teardown of this task\n' "$k"
+      k=$((k + 1))
+    done
+  } > "$state/$id.meta"
+  k=1
+  while [ "$k" -le 6 ]; do
+    printf 'working: step %s of %s - long status line describing what the worker just finished, what it verified, and what it will do next before reporting\n' "$k" "$id"
+    k=$((k + 1))
+  done > "$state/$id.status"
+}
+
+test_budget_real_size_fixture_prints_every_rule_file() {
+  local rec root home fakebin out bytes n next printed TMP_ROOT
+  # Every printed path costs bytes, so this world sits under a short root
+  # close to a real home's path length instead of the long platform TMPDIR.
+  TMP_ROOT=$(TMPDIR=/tmp fm_test_tmproot fmss)
+  FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
+  rec=$(new_world budget-real-size)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_tasks_axi_compact "$fakebin"
+  make_fake_quota_axi "$fakebin"
+  fm_fake_exit0 "$fakebin" dispatch-axi
+  make_fake_ps_harness "$fakebin" omp
+  rm -f "$fakebin/node"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  # Sizes measured on 2026-10-28 (1 KB = 1000 bytes, matching the measured files).
+  write_sized_file "$home/data/captain.md" 15500 CAPTAIN_REAL
+  write_sized_file "$home/data/learnings.md" 5600 LEARNINGS_REAL
+  write_sized_file "$home/CLAUDE.local.md" 6600 LOCAL_REAL
+  write_sized_file "$home/data/projects.md" 6400 PROJECTS_REAL
+  write_real_size_backlog "$home/data/backlog.md"
+  n=1
+  while [ "$n" -le 7 ]; do
+    write_real_size_worker "$home/state" "$n"
+    n=$((n + 1))
+  done
+  append_wake "$home/state" signal task-wake "done: never-cut wake record" || fail "seed wake failed"
+
+  out=$(HERDR_ENV='' FM_FAKE_HARNESS=omp run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  bytes=$(HERDR_ENV='' FM_FAKE_HARNESS=omp run_session_start "$home" "$root" "$fakebin:$BASE_PATH" | LC_ALL=C wc -c | tr -d ' ')
+
+  # Byte arithmetic for this fixture (measured 2026-10-28, re-check when the
+  # supervision block, the rule files or the shortened forms grow):
+  #   LOCK + BOOTSTRAP + WAKE QUEUE + extension diagnostic   1752
+  #   omp supervision block                                  3748
+  #   CONTEXT preamble, absent-file markers                   725
+  #   captain.md 15500 + learnings.md 5600 + CLAUDE.local.md
+  #   6600 + projects.md 6400, each with its label          34455
+  #   FLEET STATE after all of (b), (c) and (d)               4082
+  #   NEXT STEP                                                864
+  #   total                                                 45626 of 46080
+  # Level (c) alone leaves the 69-item backlog listing (~7 KB) in place, so
+  # (d) is what makes room; only ~450 bytes stay spare.
+  [ "$bytes" -le 46080 ] || fail "real-size digest is $bytes bytes, over the 46080-byte budget"
+  assert_not_contains "$out" "STOP:" "a real-size rule file was deferred"
+  assert_contains "$out" "$(cat "$home/data/captain.md")" "real-size captain.md was not printed in full"
+  assert_contains "$out" "$(cat "$home/data/learnings.md")" "real-size learnings.md was not printed in full"
+  assert_contains "$out" "$(cat "$home/CLAUDE.local.md")" "real-size CLAUDE.local.md was not printed in full"
+  assert_contains "$out" "$(cat "$home/data/projects.md")" "real-size projects.md was not printed in full"
+  assert_contains "$out" "OMP_EXTENSION: not loaded" "budget cut the extension diagnostic"
+  assert_never_cut_lines "$out" omp "$home" "$root"
+  assert_contains "$out" "FLEET_TRUNCATED: per-task status tails cut to 1 line - see $home/state/<id>.status" \
+    "real-size digest did not name the status-tail shortening"
+  assert_contains "$out" "FLEET_TRUNCATED: state/*.meta bodies reduced to window, kind, harness, model, mode, pr lines - see $home/state/<id>.meta" \
+    "real-size digest did not name the meta shortening"
+  assert_contains "$out" "FLEET_TRUNCATED: backlog reduced to in-flight ids and a captain-held count - see read $home/data/backlog.md" \
+    "real-size digest did not name the backlog shortening"
+  assert_not_contains "$out" "FLEET_TRUNCATED: orphan" "real-size digest claimed an orphan shortening with no orphans"
+  assert_contains "$out" "$(printf 'inflight-task-09\nCaptain-held items: 60 - list them with: grep -n %s %s' "'hold-kind: captain'" "$home/data/backlog.md")" \
+    "reduced backlog did not keep in-flight ids and the captain-held count"
+  assert_contains "$out" "$(printf -- '--- worker-task-07 ---\nwindow=firstmate:fm-worker-task-07\nkind=ship\nharness=claude\nmodel=claude-opus-5-5\nmode=no-mistakes\npr=https://github.com/example/firstmate/pull/107\nendpoint: alive (backend=tmux)\nlast status line')" \
+    "reduced meta did not keep exactly the window, kind, harness, model, mode and pr lines"
+
+  next=$(next_step_section "$out")
+  printed=$(printf '%s\n' "$next" | grep '^Printed in full above')
+  assert_contains "$printed" "data/captain.md" "NEXT STEP omitted printed captain.md"
+  assert_contains "$printed" "$home/CLAUDE.local.md" "NEXT STEP omitted printed CLAUDE.local.md"
+  assert_not_contains "$printed" "state/*.meta" "NEXT STEP claimed shortened metas were printed in full"
+  assert_contains "$next" "The digest above is complete for this session start." "NEXT STEP did not confirm a complete digest"
+
+  pass "real-size rule files all print in full under the budget while fleet state shortens with FLEET_TRUNCATED lines"
 }
 
 # --- fleet-state digest: no in-flight tasks ----------------------------------
@@ -1229,6 +1548,7 @@ EOF
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "(none)" "empty fleet did not report (none) for in-flight tasks"
   assert_contains "$out" "absent" "empty fleet's AFK section did not report absent"
+  assert_not_contains "$out" "state/*.meta." "NEXT STEP named metas as printed when there were none"
 
   pass "an empty fleet reports (none) for in-flight tasks and an absent AFK flag"
 }
@@ -1568,6 +1888,12 @@ test_composition_invokes_real_scripts
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_compact_manual_backend_skips_indented_bodies
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback
+test_budget_defers_rule_files_that_do_not_fit
+test_budget_setting_override_and_validation
+test_budget_counts_bytes_not_characters
+test_budget_stop_line_path_is_absolute_for_relative_home
+test_budget_claims_only_shortenings_that_change_something
+test_budget_real_size_fixture_prints_every_rule_file
 test_fleet_digest_empty_fleet
 test_next_step_sources_x_mode_cadence
 test_next_step_afk_delegates_to_daemon
