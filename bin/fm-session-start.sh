@@ -625,7 +625,7 @@ if [ "$BACKLOG_MODE" = tasks-axi ]; then
   BACKLOG_HELD_CMD="tasks-axi list --file=$BACKLOG_ABS --state held --fields hold_kind | grep -E '^  [^,]+,queued,.*,captain\$'"
 else
   BACKLOG_OTHER_CMD=$BACKLOG_ABS
-  if [ "$BACKLOG_MODE" = manual ] && fm_tasks_axi_compatible; then
+  if [ "$BACKLOG_MODE" = manual ] && [ "$BACKLOG_SOURCE" != fallback ] && fm_tasks_axi_compatible; then
     BACKLOG_OTHER_CMD="tasks-axi list --file=$BACKLOG_ABS"
   fi
   BACKLOG_HELD_CMD="awk '/^##[[:space:]]/ { q = /^##[[:space:]]+Queued[[:space:]]*\$/; next } q && /^[-*][[:space:]]/ && index(\$0, \"(hold-kind: captain)\")' $BACKLOG_ABS"

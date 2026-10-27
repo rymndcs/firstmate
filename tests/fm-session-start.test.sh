@@ -1494,6 +1494,14 @@ EOF
     "a failed captain-held count did not fall back to title-line rendering"
   assert_contains "$out" "$(printf 'Captain-held (1):\nheld-decision - Pick the library (Option A)\n')" \
     "the fallback after a failed captain-held count did not count the backlog file"
+  assert_contains "$out" "Other backlog items: $home/data/backlog.md" \
+    "the fallback after a failed tasks-axi listing did not point at the backlog file"
+  assert_not_contains "$out" "Other backlog items: tasks-axi" \
+    "the fallback after a failed tasks-axi listing pointed at the tasks-axi command that failed"
+
+  out=$(FM_FAKE_TASKS_AXI_HELD_FAIL=1 FM_SESSION_START_BUDGET_BYTES=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "FLEET_TRUNCATED: backlog reduced to in-flight ids and a captain-held count - see $home/data/backlog.md" \
+    "the reduced fallback backlog did not point at the backlog file"
 
   pass "compatible tasks-axi backlog rendering is compact, bounded, counts captain-held items exactly, and preserves recovery metadata"
 }
