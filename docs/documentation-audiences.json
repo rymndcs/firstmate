@@ -265,6 +265,10 @@
       "audience": "operator-example"
     },
     {
+      "path": "docs/examples/pr-learning-trust",
+      "audience": "operator-example"
+    },
+    {
       "path": "docs/examples/wedge-alarm",
       "audience": "operator-example"
     },

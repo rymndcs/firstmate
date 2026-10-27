@@ -66,6 +66,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pending-reply-lib.sh` | Parent-owned secondmate pending-reply expectations, recovery, and one-shot escalation |
 | `fm-secondmate-report.sh` | Optional helper to append a correlated parent status or document-pointer report       |
 | `fm-procevent-remote-reply.sh` | Relay non-destructive correlated remote-secondmate reply deltas through process events |
+| `fm-procevent-learn.sh`  | Run queued review learning at most once per comment under a process-group bound, reported through process events |
 | `fm-gate-refuse-lib.sh`  | Shared no-mistakes gate-context refusal for fleet lifecycle entrypoints               |
 | `fm-watch-arm.sh`        | Verified home-scoped watcher arm wrapper with loud cycle endings and bounded lifecycle ledger |
 | `fm-watch-checkpoint.sh` | Run one bounded foreground watcher checkpoint for Codex-style supervision            |
@@ -100,7 +101,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-poll.sh`          | Provide the byte-static watcher program for validated PR/MR-poll sidecars           |
 | `fm-pr-check-migrate.sh` | Quarantine older task polls without execution and rebuild only canonical polls       |
 | `fm-pr-check.sh`         | Record validated `pr=` and `pr_head=` values, then atomically arm the static PR poll |
-| `fm-pr-activity.sh`     | Publish durable batches of new GitHub comments and conflicts, invoking optional review learning |
+| `fm-pr-activity.sh`     | Publish durable batches of new GitHub comments and conflicts, queue trusted review learning, and retire unused activity state |
 | `fm-pr-auto-register.sh` | Discover a ship task's own GitHub PR from its status log and register it through `fm-pr-check.sh` |
 | `fm-pr-ci.sh`            | Publish a GitHub PR's CI outcome once per head to each task registered for that URL |
 | `fm-pr-merge.sh`         | Apply the configured ship-review gate, then record PR metadata and merge a task's canonical full GitHub URL |

@@ -863,6 +863,7 @@ while :; do
   # CHECK_INTERVAL, so most cycles skip this block and fall straight through.
   if [ "$(age_of "$STATE/.last-check")" -ge "$CHECK_INTERVAL" ]; then
     rejected_checks=
+    check_reason=
     for c in "$STATE"/*.check.sh; do
       [ -e "$c" ] || continue
       is_pr_poll=0
@@ -913,17 +914,19 @@ while :; do
             triage_log "merged PR poll retirement deferred because its canonical snapshot changed for $id"
           fi
         fi
-        touch "$STATE/.last-check"
-        wake "$reason"
+        [ -n "$check_reason" ] || check_reason=$reason
       fi
     done
+    FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-pr-activity.sh" sweep > /dev/null 2>&1 || true
     if [ -n "$rejected_checks" ]; then
       reason="check: rejected unauthenticated state checks:$rejected_checks"
       fm_wake_append check unauthenticated-state-checks "$reason" || exit 1
-      touch "$STATE/.last-check"
-      wake "$reason"
+      [ -n "$check_reason" ] || check_reason=$reason
     fi
     touch "$STATE/.last-check"
+    # Every due check runs before the sweep wakes, so one busy check cannot
+    # defer later ones; every observation is already durably queued.
+    [ -z "$check_reason" ] || wake "$check_reason"
   fi
 
   # On the first changed signal, linger one grace period and re-scan before

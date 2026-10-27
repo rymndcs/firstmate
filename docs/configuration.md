@@ -16,7 +16,7 @@ Each effective `FM_HOME` then contains the four private operational directories 
 `data/` holds durable private fleet records: the backlog, the project and secondmate registries, captain preferences, optional shared captain preferences, learnings, and one `data/<id>/` directory per task carrying its brief or secondmate charter, a scout's `report.md`, and any `recovery-context.md` captured before a worker is terminated.
 The `<id>/` artifacts deliberately survive teardown; `stuck-crewmate-recovery` owns when and what a recovery context records.
 
-`state/` holds volatile runtime records, each with its own named owner rather than one exhaustive tree here: task metadata and append-only status events, turn-end markers and the per-task turn-end authorization tokens described in [`docs/turnend-guard.md`](turnend-guard.md), watcher and wake-queue coordination, away-mode state, registered custom watcher checks with the content binding `bin/fm-check-register.sh` creates for them, the PR merge-poll artifacts, registration record and per-task registration lock owned by `bin/fm-pr-check.sh`, the PR CI observation receipts owned by `bin/fm-pr-ci.sh`, URL-scoped review-activity receipts and learning output owned by `bin/fm-pr-activity.sh` and the quarantine, log, and marker records owned by `bin/fm-pr-check-migrate.sh`, registered process-to-event sources and their captured results under "Process-to-event sources" below, generated X-mode artifacts and the promised-public-reply transport under "X mode" below, private secondmate config-reread generations with their retry and quarantine state, the ask-user authority gate's per-session observation ledger described in [`docs/ask-user-guard.md`](ask-user-guard.md), and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
+`state/` holds volatile runtime records, each with its own named owner rather than one exhaustive tree here: task metadata and append-only status events, turn-end markers and the per-task turn-end authorization tokens described in [`docs/turnend-guard.md`](turnend-guard.md), watcher and wake-queue coordination, away-mode state, registered custom watcher checks with the content binding `bin/fm-check-register.sh` creates for them, the PR merge-poll artifacts, registration record and per-task registration lock owned by `bin/fm-pr-check.sh`, the PR CI observation receipts owned by `bin/fm-pr-ci.sh`, URL-scoped review-activity receipts owned by `bin/fm-pr-activity.sh` with the learning logs `bin/fm-procevent-learn.sh` writes beside them, and the quarantine, log, and marker records owned by `bin/fm-pr-check-migrate.sh`, registered process-to-event sources and their captured results under "Process-to-event sources" below, generated X-mode artifacts and the promised-public-reply transport under "X mode" below, private secondmate config-reread generations with their retry and quarantine state, the ask-user authority gate's per-session observation ledger described in [`docs/ask-user-guard.md`](ask-user-guard.md), and parent-owned secondmate pending-reply records under `state/pending-replies/` (`bin/fm-pending-reply-lib.sh`).
 Watcher, Claude auto-arm, and sub-supervisor coordination records under `state/` are internal to those loops and are never hand-edited; `AGENTS.md` section 2 keeps that rule inline because it binds whenever an agent reads this directory.
 
 `config/` holds local gitignored operating choices, one file per choice, and each file's format, default, and effect are owned either by its own section below or by the backend reference that section points at, as `config/herdr-presentation-spaces` is owned by [`herdr-backend.md`](herdr-backend.md) and `config/cmux-socket-password` by [`cmux-backend.md`](cmux-backend.md).
@@ -126,6 +126,15 @@ Directives are `off` (a position-independent kill switch that disables every act
 An absent file means `auto`, i.e. default-on on macOS: the alarm exists precisely so a wedged away-mode primary is never silent, and it fires at most once per max-defer window after a genuine wedge.
 A missing or failing channel logs and falls through to the next, never crashing the daemon.
 See [`wedge-alarm.md`](wedge-alarm.md) for the current channel reference, [`verification/supervision.md`](verification/supervision.md#wedge-alarm-channels) for active evidence, and [`examples/wedge-alarm`](examples/wedge-alarm) for a copyable config.
+
+## Review-learning trust (config/pr-learning-trust)
+
+`config/pr-learning-trust` is an optional local, gitignored file naming the GitHub logins whose PR review comments feed automatic review learning.
+It holds one login per line; blank lines and text after `#` are ignored, and logins compare without case.
+An absent or empty file trusts nobody.
+Comments from other logins still wake firstmate, marked `untrusted author`, but never run learning, and the PR author's own comments never wake at all.
+Only the file grants trust: no GitHub association, team membership or commenting history adds a login.
+See [`examples/pr-learning-trust`](examples/pr-learning-trust) for a copyable file; `bin/fm-pr-activity.sh` owns how a trusted comment queues learning.
 
 ## Trace context propagation (config/trace-context / FM_TRACE_CONTEXT)
 
@@ -507,6 +516,7 @@ See [verification/public-followup.md](verification/public-followup.md) for the c
 
 A long-polling external process is registered as a *source* through its adapter, whose header and `--help` own the commands and flags.
 `bin/fm-procevent.sh` owns the generic contract; `bin/fm-procevent-lavish.sh` is the first adapter and wraps only the currently published `lavish-axi poll` interface.
+`bin/fm-procevent-learn.sh` runs the review learning that `bin/fm-pr-activity.sh` queues, and its source always retires after its single result.
 
 This section is the single owner of the runner's operating contract.
 Registration writes one private record under `state/procevent/`, and a completed result plus its immutable adapter identity are captured under `state/procevent-inbox/` before it is published.
