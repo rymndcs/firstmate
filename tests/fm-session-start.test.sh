@@ -122,7 +122,7 @@ case "${1:-}" in
         exit 9
         ;;
     esac
-    case "$*" in *'--file '*) : ;; *) printf '%s\n' 'missing explicit backlog file' >&2; exit 9 ;; esac
+    case "$*" in *'--file '*|*'--file='*) : ;; *) printf '%s\n' 'missing explicit backlog file' >&2; exit 9 ;; esac
     case "$*" in
       *'--state held'*)
         if [ -n "${FM_FAKE_TASKS_AXI_HELD_FAIL:-}" ]; then
@@ -131,9 +131,10 @@ case "${1:-}" in
         fi
         case "$*" in *'--fields hold_kind'*) : ;; *) printf '%s\n' 'missing hold_kind field' >&2; exit 9 ;; esac
         cat <<'OUT'
-count: 4
-tasks[4]{id,state,kind,repo,title,hold_kind}:
+count: 5
+tasks[5]{id,state,kind,repo,title,hold_kind}:
   compact-startup,in_flight,ship,firstmate,Compact startup digest,captain
+  title-says-queued,in_flight,ship,firstmate,"A title with ,queued, inside",captain
   held-decision,queued,captain,firstmate,"Pick, then \"ship\" the library",captain
   held-past-scan,queued,captain,firstmate,Held beyond the scanned items,captain
   external-wait,queued,ship,firstmate,Waits on upstream,external
@@ -293,6 +294,33 @@ fi
 exit 0
 SH
   chmod +x "$fakebin/no-mistakes"
+}
+
+# make_fake_git_gated_after_drain <fakebin> <home>: the first worktree check
+# once the wake queue is empty - the drain's own watcher guard, after the drain
+# has written and deleted its records - blocks the same way; every other call
+# runs the real git.
+make_fake_git_gated_after_drain() {
+  local fakebin=$1 home=$2 real_git
+  real_git=$(PATH=$BASE_PATH command -v git)
+  cat > "$fakebin/git" <<SH
+#!/usr/bin/env bash
+if [ "\${3:-} \${4:-}" = 'rev-parse --is-inside-work-tree' ] && [ ! -s '$home/state/.wake-queue' ] \\
+  && [ ! -e "\$FM_FAKE_GATE.used" ]; then
+  : > "\$FM_FAKE_GATE.used"
+  printf 'reached\n' > "\$FM_FAKE_REACHED"
+  cat "\$FM_FAKE_GATE" > /dev/null
+fi
+exec '$real_git' "\$@"
+SH
+  chmod +x "$fakebin/git"
+}
+
+# sigint_ignored_on_entry: true when this shell started with SIGINT ignored
+# (for example as a background job of a non-interactive shell). bash can then
+# neither trap nor restore it, so a child cannot be interrupted with INT.
+sigint_ignored_on_entry() {
+  [ "$(bash -c 'trap "echo caught" INT; kill -INT $$')" != caught ]
 }
 
 # make_fake_tmux_secondmate_recovery <fakebin>: a stateful tmux boundary
@@ -1185,13 +1213,14 @@ EOF
 
 # --- interrupted run: drained wakes still print -----------------------------
 
-# interrupt_session_start <sig> <run-dir> <home> <root> <fakebin>: start session
-# start in the background, wait on the <run-dir>/reached FIFO until a gated
-# fake blocks, send <sig>, open the gate and wait for the exit, all without a
-# timed wait. Job control keeps INT deliverable to a background run; the
-# wrapper records the script's pid, then reports its exit on the same FIFO.
+# interrupt_session_start <sigs> <run-dir> <home> <root> <fakebin>: start
+# session start in the background, wait on the <run-dir>/reached FIFO until a
+# gated fake blocks, send each signal in <sigs> in turn, open the gate and wait
+# for the exit, all without a timed wait. Job control keeps INT deliverable to a
+# background run; the wrapper records the script's pid, then reports its exit
+# on the same FIFO, and its stderr drops the shell's notice of a killed run.
 interrupt_session_start() {
-  local sig=$1 run=$2 home=$3 root=$4 fakebin=$5 line group
+  local sigs=$1 run=$2 home=$3 root=$4 fakebin=$5 line group sig
   mkdir -p "$run"
   mkfifo "$run/reached" "$run/gate"
   set -m
@@ -1202,21 +1231,31 @@ interrupt_session_start() {
       FM_FAKE_REACHED="$run/reached" FM_FAKE_GATE="$run/gate" \
       "$SESSION_START" > "$run/out" 2>&1
     printf 'exited\n' > "$run/reached"
-  } &
+  } 2>/dev/null &
   group=$!
   set +m
   read -r line < "$run/reached"
-  [ "$line" = reached ] || fail "$sig run exited before its gated step: $(cat "$run/out")"
-  kill -"$sig" "$(cat "$run/pid")"
+  [ "$line" = reached ] || fail "$sigs run exited before its gated step: $(cat "$run/out")"
+  for sig in $sigs; do
+    kill -"$sig" "$(cat "$run/pid")"
+  done
   printf 'release\n' > "$run/gate"
   read -r line < "$run/reached"
   wait "$group"
 }
 
-test_interrupted_run_prints_never_cut_head() {
-  local sig rec root home fakebin out
-  for sig in TERM HUP INT; do
-    rec=$(new_world "interrupted-$sig")
+# skip_int_if_ignored <sig>: true, with a SKIP line, for INT when this shell
+# started with SIGINT ignored, so the test reports why instead of failing.
+skip_int_if_ignored() {
+  [ "$1" = INT ] && sigint_ignored_on_entry || return 1
+  pass "SKIP (SIGINT ignored on entry, so INT cannot reach session start): $2"
+}
+
+test_killed_liveness_probe_leaves_wakes_queued() {
+  local sigs rec root home fakebin n=0
+  for sigs in KILL 'TERM KILL'; do
+    n=$((n + 1))
+    rec=$(new_world "killed-probe-$n")
     IFS='|' read -r root home fakebin <<EOF
 $rec
 EOF
@@ -1225,6 +1264,29 @@ EOF
     make_fake_tmux_gated "$fakebin"
     printf '%s\n' manual > "$home/config/backlog-backend"
     printf 'window=fm-sess:hung\nkind=ship\n' > "$home/state/task-hung.meta"
+    append_wake "$home/state" signal task-wake "done: WAKE-RECORD-MUST-SURVIVE" || fail "seed wake failed"
+
+    interrupt_session_start "$sigs" "$home/../interrupt" "$home" "$root" "$fakebin"
+
+    [ "$(grep -c 'WAKE-RECORD-MUST-SURVIVE' "$home/state/.wake-queue")" = 1 ] \
+      || fail "$sigs during a hung liveness check did not leave the wake record queued: $(cat "$home/../interrupt/out")"
+  done
+
+  pass "a run killed during a hung liveness check, with or without TERM first, leaves its wake records queued"
+}
+
+test_interrupted_drain_prints_drained_wakes() {
+  local sig rec root home fakebin out
+  for sig in TERM HUP INT; do
+    skip_int_if_ignored "$sig" "an interrupted drain prints its records" && continue
+    rec=$(new_world "interrupted-drain-$sig")
+    IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+    make_fake_toolchain "$fakebin"
+    make_fake_ps_claude "$fakebin"
+    make_fake_git_gated_after_drain "$fakebin" "$home"
+    printf '%s\n' manual > "$home/config/backlog-backend"
     append_wake "$home/state" signal task-wake "done: WAKE-RECORD-MUST-SURVIVE" || fail "seed wake failed"
 
     interrupt_session_start "$sig" "$home/../interrupt" "$home" "$root" "$fakebin"
@@ -1240,12 +1302,13 @@ EOF
     assert_not_contains "$out" "NEXT STEP" "$sig run printed a digest it never finished"
   done
 
-  pass "a run stopped by TERM, HUP or INT after the wake drain still prints LOCK, BOOTSTRAP and the drained wake records"
+  pass "a run stopped by TERM, HUP or INT after the drain wrote its records still prints LOCK, BOOTSTRAP and the drained wake records"
 }
 
 test_interrupted_bootstrap_prints_only_finished_steps() {
   local sig rec root home fakebin out
   for sig in TERM HUP INT; do
+    skip_int_if_ignored "$sig" "an interrupted bootstrap prints only finished steps" && continue
     rec=$(new_world "interrupted-bootstrap-$sig")
     IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -1272,6 +1335,19 @@ EOF
 
 # --- fleet-state digest: compact backlog rendering --------------------------
 
+# assert_held_hint_lists_count <out> <path>: the reduced backlog's "list them
+# with" command, run on <path>, prints exactly as many rows as the count it
+# follows.
+assert_held_hint_lists_count() {
+  local out=$1 path=$2 line count cmd rows
+  line=$(printf '%s\n' "$out" | grep '^Captain-held items: ') || fail "no reduced captain-held line: $out"
+  count=${line#Captain-held items: }
+  count=${count%% *}
+  cmd=${line#* - list them with: }
+  rows=$(PATH=$path bash -c "$cmd" | grep -c .)
+  [ "$rows" = "$count" ] || fail "the captain-held hint lists $rows row(s), not the $count it counts: $cmd"
+}
+
 write_long_body_backlog() {
   local path=$1
   cat > "$path" <<'EOF'
@@ -1292,7 +1368,7 @@ EOF
 }
 
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata() {
-  local rec root home fakebin out log
+  local rec root home fakebin out log held_cmd
   rec=$(new_world backlog-compact-tasks-axi)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -1305,12 +1381,13 @@ EOF
   printf 'window=fm-sess:compact\nworktree=%s\nproject=firstmate\nkind=ship\n' "$home/projects/firstmate" \
     > "$home/state/compact-startup.meta"
   log="$home/tasks-axi.log"
+  held_cmd="tasks-axi list --file=$home/data/backlog.md --state held --fields hold_kind | grep -E '^  [^,]+,queued,.*,captain\$'"
 
   out=$(FM_FAKE_TASKS_AXI_LOG="$log" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
   assert_contains "$out" "compact backlog listing (tasks-axi; in-flight and captain-held items only; max 80 item(s) scanned; task bodies omitted)" \
     "compatible tasks-axi backend did not render the compact backlog listing"
-  assert_contains "$out" "$(printf 'In flight (2):\ncompact-startup - Compact startup digest\nlong-title-task - Restore deleted-trigger names in automation logs https://github.com/advisorfirst...\nCaptain-held (2 in the backlog; 1 of them within the scanned items listed below - list all with: tasks-axi list --file=%s --state held --fields hold_kind):\nheld-decision - Pick, then "ship" the library\n' "$home/data/backlog.md")" \
+  assert_contains "$out" "$(printf 'In flight (2):\ncompact-startup - Compact startup digest\nlong-title-task - Restore deleted-trigger names in automation logs https://github.com/advisorfirst...\nCaptain-held (2 in the backlog; 1 of them within the scanned items listed below - list all with: %s):\nheld-decision - Pick, then "ship" the library\n' "$held_cmd")" \
     "tasks-axi listing did not render in-flight and captain-held items as id - title under the exact captain-held count"
   assert_not_contains "$out" "(truncated," "tasks-axi listing kept the truncated-title suffix"
   assert_not_contains "$out" "done-captain-item" "tasks-axi listing printed a done item as captain-held"
@@ -1332,8 +1409,9 @@ EOF
     "session start did not count captain-held items over every held item"
 
   out=$(FM_SESSION_START_BUDGET_BYTES=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
-  assert_contains "$out" "Captain-held items: 2 - list them with: tasks-axi list --file=$home/data/backlog.md --state held --fields hold_kind" \
+  assert_contains "$out" "Captain-held items: 2 - list them with: $held_cmd" \
     "the reduced backlog did not give the exact captain-held count"
+  assert_held_hint_lists_count "$out" "$fakebin:$BASE_PATH"
 
   out=$(FM_FAKE_TASKS_AXI_HELD_FAIL=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   assert_contains "$out" "$(printf 'tasks-axi compact listing failed; falling back to title-line rendering.\nHELD-LISTING-FAILED')" \
@@ -1345,7 +1423,7 @@ EOF
 }
 
 test_backlog_compact_manual_backend_skips_indented_bodies() {
-  local rec root home fakebin out
+  local rec root home fakebin out held_cmd
   rec=$(new_world backlog-compact-manual)
   IFS='|' read -r root home fakebin <<EOF
 $rec
@@ -1354,6 +1432,7 @@ EOF
   make_fake_ps_claude "$fakebin"
   printf '%s\n' manual > "$home/config/backlog-backend"
   write_long_body_backlog "$home/data/backlog.md"
+  held_cmd="awk '/^##[[:space:]]/ { q = /^##[[:space:]]+Queued[[:space:]]*\$/; next } q && /^[-*][[:space:]]/ && index(\$0, \"(hold-kind: captain)\")' $home/data/backlog.md"
 
   out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
 
@@ -1375,8 +1454,20 @@ EOF
   assert_contains "$out" "(scanned 2 of 3 backlog item(s); raise FM_SESSION_START_BACKLOG_LIMIT to scan more)" \
     "manual rendering did not report that its scan bound hid items"
   assert_not_contains "$out" "held-decision" "manual rendering listed an item past its scan bound"
-  assert_contains "$out" "Captain-held (1 in the backlog; 0 of them within the scanned items listed below - list all with: grep -n 'hold-kind: captain' $home/data/backlog.md):" \
+  assert_contains "$out" "Captain-held (1 in the backlog; 0 of them within the scanned items listed below - list all with: $held_cmd):" \
     "manual rendering did not count captain-held items over the whole file"
+
+  out=$(FM_SESSION_START_BUDGET_BYTES=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "Captain-held items: 1 - list them with: $held_cmd" \
+    "the reduced manual backlog did not give the exact captain-held count"
+  assert_held_hint_lists_count "$out" "$fakebin:$BASE_PATH"
+
+  # Only bullets directly under a "## Queued" heading count, whatever trails it.
+  printf '# Backlog\n\n## In flight\n- [ ] inflight-held - In flight (hold-kind: captain)\n\n## Queued  \n- [ ] queued-held - Queued (hold-kind: captain)\n  a body line (hold-kind: captain)\n- [ ] queued-external - Waits upstream (hold-kind: external)\n\n## Queued later\n- [ ] later-held - Under another heading (hold-kind: captain)\n' \
+    > "$home/data/backlog.md"
+  out=$(FM_SESSION_START_BUDGET_BYTES=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "Captain-held items: 1 - list them with: " "the manual count did not count only queued captain-held bullets"
+  assert_held_hint_lists_count "$out" "$fakebin:$BASE_PATH"
 
   pass "manual backlog rendering lists only in-flight and captain-held items without hold reasons"
 }
@@ -1667,12 +1758,13 @@ EOF
   #   CONTEXT preamble, absent-file markers                   725
   #   captain.md 15500 + learnings.md 5600 + CLAUDE.local.md
   #   6600 + projects.md 6400, each with its label          34455
-  #   FLEET STATE after all of (b), (c) and (d)               4082
+  #   FLEET STATE after all of (b), (c) and (d)               4188
   #   NEXT STEP                                                864
-  #   total                                                 45626 of 46080
+  #   total                                                 45732 of 46080
   # Level (c) alone leaves the 69-item backlog listing (~7 KB) in place, so
-  # (d) is what makes room; only ~450 bytes stay spare. Ambient bootstrap and
-  # guard output varies by machine; another environment measured 44808.
+  # (d) is what makes room; only ~350 bytes stay spare. Ambient bootstrap and
+  # guard output varies by machine; another environment measured about 800
+  # bytes less.
   [ "$bytes" -le 46080 ] || fail "real-size digest is $bytes bytes, over the 46080-byte budget"
   assert_not_contains "$out" "STOP:" "a real-size rule file was deferred"
   assert_contains "$out" "$(cat "$home/data/captain.md")" "real-size captain.md was not printed in full"
@@ -1688,7 +1780,7 @@ EOF
   assert_contains "$out" "FLEET_TRUNCATED: backlog reduced to in-flight ids and a captain-held count - see read $home/data/backlog.md" \
     "real-size digest did not name the backlog shortening"
   assert_not_contains "$out" "FLEET_TRUNCATED: orphan" "real-size digest claimed an orphan shortening with no orphans"
-  assert_contains "$out" "$(printf 'inflight-task-09\nCaptain-held items: 60 - list them with: grep -n %s %s' "'hold-kind: captain'" "$home/data/backlog.md")" \
+  assert_contains "$out" "$(printf 'inflight-task-09\nCaptain-held items: 60 - list them with: %s %s' "awk '/^##[[:space:]]/ { q = /^##[[:space:]]+Queued[[:space:]]*\$/; next } q && /^[-*][[:space:]]/ && index(\$0, \"(hold-kind: captain)\")'" "$home/data/backlog.md")" \
     "reduced backlog did not keep in-flight ids and the captain-held count"
   assert_contains "$out" "$(printf -- '--- worker-task-07 ---\nwindow=firstmate:fm-worker-task-07\nkind=ship\nharness=claude\nmodel=claude-opus-5-5\nmode=no-mistakes\npr=https://github.com/example/firstmate/pull/107\nendpoint: alive (backend=tmux)\nlast status line')" \
     "reduced meta did not keep exactly the window, kind, harness, model, mode and pr lines"
@@ -2056,7 +2148,8 @@ test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
 test_composition_invokes_real_scripts
-test_interrupted_run_prints_never_cut_head
+test_killed_liveness_probe_leaves_wakes_queued
+test_interrupted_drain_prints_drained_wakes
 test_interrupted_bootstrap_prints_only_finished_steps
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_compact_manual_backend_skips_indented_bodies

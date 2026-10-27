@@ -22,8 +22,9 @@
 # sweeps - is an opt-in FM_BOOTSTRAP_DETECT_ONLY=1 flag on fm-bootstrap.sh
 # itself (default unset/0 = unchanged behavior), not a fork.
 #
-# ORDERING, and why LOCK now runs before BOOTSTRAP (the old AGENTS.md order
-# was bootstrap-then-lock):
+# ORDERING (the printed order; the wake drain is printed third but runs last,
+# see WAKE DRAIN TIMING below), and why LOCK now runs before BOOTSTRAP (the old
+# AGENTS.md order was bootstrap-then-lock):
 #
 #   1. lock          - acquire the per-home session lock FIRST, before any
 #                       mutating step runs.
@@ -47,7 +48,8 @@
 #                       (bin/fm-backend.sh's fm_backend_agent_state;
 #                       docs/remote-secondmates.md).
 #   3. wake-drain     - mutates the durable wake queue, so it also only runs
-#                       when locked. When locked, the raw drained records print
+#                       when locked, and it runs last, just before the one
+#                       print. When locked, the raw drained records print
 #                       prominently as this turn's FIRST work queue; a bounded,
 #                       clearly labeled historical status-event annotation may
 #                       follow a valid 'signal' record but never replaces that
@@ -116,9 +118,22 @@
 #   STOP: rule file not printed - read <absolute path> in full with your
 #   file-read tool before any other action (<bytes> bytes)
 # Nothing is copied to state/; the digest stays read-only.
-# A run stopped by TERM, HUP or INT before that one print prints an
-# INTERRUPTED line and the LOCK, BOOTSTRAP and WAKE QUEUE output of the steps
-# that finished, so drained wake records are never lost.
+#
+# WAKE DRAIN TIMING: the drain removes records from the queue as it reads them,
+# and this script holds them only in memory until its one print, so the drain
+# runs after every other step, the endpoint-liveness reads included, still
+# under the session lock, and its output is measured before any budget
+# decision. A run stopped by any signal, KILL included, before the drain leaves
+# every record queued for the next run. A run stopped by TERM, HUP or INT
+# prints, once its running step ends, an INTERRUPTED line and the LOCK,
+# BOOTSTRAP and WAKE QUEUE output of the steps that finished, so a run stopped
+# during or after the drain prints the drained records. One window remains: a
+# KILL from the moment fm-wake-drain.sh writes its records until this script's
+# print completes - the rest of fm-wake-drain.sh (its annotations, PR
+# auto-registration and watcher guard) and the in-memory budget assembly -
+# loses the records that run drained.
+# Because the fleet reads come first, a PR the drain registers in this run is
+# recorded in its state/<id>.meta but is not in the printed copy.
 #
 # The supervision operating instructions are emitted after the wake queue and
 # before context: exactly ONE operating block for the detected primary harness,
@@ -161,6 +176,7 @@
 # The captain-held count covers the whole backlog, not only the scanned items:
 # one more `tasks-axi list --state held` call, or the whole data/backlog.md in
 # manual mode; when the scan stopped short the listing says how many it shows.
+# The command it prints for listing them prints exactly the counted rows.
 # When compatible tasks-axi is selected and available, the shared tasks-axi
 # backend probe remains the compatibility owner and this script filters
 # `tasks-axi list` output carrying the compact identity fields plus hold_kind,
@@ -257,7 +273,7 @@ pi_extension_loaded() {
 
 # render_head: everything LOCK, BOOTSTRAP and WAKE QUEUE print, then the
 # extension diagnostic and supervision block. A signal waits for the running
-# step to finish, so a run stopped during bootstrap has BOOT_OUT but no drain
+# step to finish, so a run stopped before the drain has BOOT_OUT but no drain
 # output yet, and stops before the WAKE QUEUE it never drained.
 # shellcheck disable=SC2329 # Invoked through capture and the EXIT trap.
 render_head() {
@@ -338,22 +354,7 @@ else
   )
 fi
 
-# --- 3. wake-drain -------------------------------------------------------
-# Drained records are this turn's first work queue (AGENTS.md section 8); the
-# drain also runs fm-guard.sh internally on the locked path, so the
-# tangle/watcher-liveness alarms land right here too, ahead of the bulk digest
-# below. The read-only path never touches the queue because it lacks mutation
-# authority, and another session may be actively draining it. It still runs
-# fm-guard.sh directly with non-mutating advisory text, so the same alarms
-# surface without repair commands.
-if [ "$READ_ONLY" -eq 1 ]; then
-  [ -s "$STATE/.wake-queue" ] && QLEN=$(grep -c . "$STATE/.wake-queue" 2>/dev/null || printf '0')
-  GUARD_OUT=$(FM_GUARD_READ_ONLY=1 "$SCRIPT_DIR/fm-guard.sh" 2>&1)
-else
-  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
-fi
-
-# --- 4. supervision operating instructions ----------------------------------
+# --- 3. supervision operating instructions ----------------------------------
 AFK_PRESENT=0
 [ -e "$STATE/.afk" ] && AFK_PRESENT=1
 X_MODE_PRESENT=0
@@ -388,10 +389,7 @@ capture "$SCRIPT_DIR/fm-supervision-instructions.sh" \
   --x-mode "$X_MODE_PRESENT"
 SUPERVISION_OUT=$CAPTURED
 
-capture render_head
-HEAD_TEXT=$CAPTURED
-
-# --- 5. context digest: rule files -----------------------------------------
+# --- 4. context digest: rule files -----------------------------------------
 # Index order is the printed order; RULE_FILL_ORDER is the budget priority.
 # shellcheck disable=SC2329 # Invoked through capture.
 render_context_preamble() {
@@ -482,7 +480,7 @@ while [ "$i" -lt "$RULE_COUNT" ]; do
   i=$((i + 1))
 done
 
-# --- 6. fleet-state digest -------------------------------------------------
+# --- 5. fleet-state digest -------------------------------------------------
 # Every source is read once here; render_fleet only re-renders these strings
 # at the shortening level the budget allows.
 abs_path "$DATA/backlog.md"
@@ -616,12 +614,14 @@ if [ -f "$DATA/backlog.md" ]; then
     [ "$BACKLOG_MODE" = tasks-axi ] || BACKLOG_RECORDS=$(backlog_records_manual "$DATA/backlog.md")
   fi
 fi
+# BACKLOG_HELD_CMD prints exactly the rows the captain-held count counts:
+# queued items whose hold kind is captain, never in-flight or other holds.
 if [ "$BACKLOG_MODE" = tasks-axi ]; then
   BACKLOG_OTHER_CMD="tasks-axi list --file=$BACKLOG_ABS"
-  BACKLOG_HELD_CMD="tasks-axi list --file=$BACKLOG_ABS --state held --fields hold_kind"
+  BACKLOG_HELD_CMD="tasks-axi list --file=$BACKLOG_ABS --state held --fields hold_kind | grep -E '^  [^,]+,queued,.*,captain\$'"
 else
   BACKLOG_OTHER_CMD="read $BACKLOG_ABS"
-  BACKLOG_HELD_CMD="grep -n 'hold-kind: captain' $BACKLOG_ABS"
+  BACKLOG_HELD_CMD="awk '/^##[[:space:]]/ { q = /^##[[:space:]]+Queued[[:space:]]*\$/; next } q && /^[-*][[:space:]]/ && index(\$0, \"(hold-kind: captain)\")' $BACKLOG_ABS"
 fi
 
 # render_backlog <reduced 0|1>
@@ -857,7 +857,7 @@ render_fleet() {
   printf '%s' "$FLEET_TAIL"
 }
 
-# --- 7. closing reminder -----------------------------------------------
+# --- 6. closing reminder -----------------------------------------------
 # Generated from what this run actually printed, so it never tells the reader
 # to skip a file that was not printed in full.
 # shellcheck disable=SC2329 # Invoked through capture.
@@ -937,6 +937,25 @@ Re-read a file only if this digest flagged it ABSENT (then rebuild or create
 it per AGENTS.md) or its contents looked unparseable/corrupt.
 EOF
 }
+
+# --- 7. wake drain, last before the print -------------------------------
+# Drained records are this turn's first work queue (AGENTS.md section 8); the
+# drain also runs fm-guard.sh internally on the locked path, so the
+# tangle/watcher-liveness alarms land in WAKE QUEUE too, ahead of the bulk digest.
+# It runs after every other step, still under the session lock, so a run killed
+# before it leaves every record queued; its output is never cut and is measured
+# in the head below before any budget decision. The read-only path never touches
+# the queue because it lacks mutation authority, and another session may be
+# actively draining it. It still runs fm-guard.sh directly with non-mutating
+# advisory text, so the same alarms surface without repair commands.
+if [ "$READ_ONLY" -eq 1 ]; then
+  [ -s "$STATE/.wake-queue" ] && QLEN=$(grep -c . "$STATE/.wake-queue" 2>/dev/null || printf '0')
+  GUARD_OUT=$(FM_GUARD_READ_ONLY=1 "$SCRIPT_DIR/fm-guard.sh" 2>&1)
+else
+  DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
+fi
+capture render_head
+HEAD_TEXT=$CAPTURED
 
 # --- 8. assemble under the byte budget ---------------------------------
 # assemble: DIGEST and its byte size in REPLY, from the current decisions.
