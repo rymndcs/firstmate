@@ -116,6 +116,9 @@
 #   STOP: rule file not printed - read <absolute path> in full with your
 #   file-read tool before any other action (<bytes> bytes)
 # Nothing is copied to state/; the digest stays read-only.
+# A run stopped by TERM, HUP or INT before that one print prints an
+# INTERRUPTED line and the LOCK, BOOTSTRAP and WAKE QUEUE output of the steps
+# that finished, so drained wake records are never lost.
 #
 # The supervision operating instructions are emitted after the wake queue and
 # before context: exactly ONE operating block for the detected primary harness,
@@ -155,10 +158,14 @@
 # Only in-flight items and captain-held items (queued with hold_kind captain)
 # print, each as `<id> - <title>`, followed by one line pointing at the rest;
 # hold reasons and bodies stay out of the startup digest.
+# The captain-held count covers the whole backlog, not only the scanned items:
+# one more `tasks-axi list --state held` call, or the whole data/backlog.md in
+# manual mode; when the scan stopped short the listing says how many it shows.
 # When compatible tasks-axi is selected and available, the shared tasks-axi
 # backend probe remains the compatibility owner and this script filters
 # `tasks-axi list` output carrying the compact identity fields plus hold_kind,
-# never body.
+# never body; a title tasks-axi truncated ends in "..." instead of its
+# "(truncated, ...)" note.
 # When manual mode is selected, or tasks-axi is unavailable or incompatible,
 # the same filter applies to data/backlog.md's section headings and item title
 # lines.
@@ -194,6 +201,9 @@ STATUS_TAIL=${FM_SESSION_START_STATUS_TAIL:-3}
 case "$STATUS_TAIL" in ''|*[!0-9]*) STATUS_TAIL=3 ;; esac
 BACKLOG_LIMIT=${FM_SESSION_START_BACKLOG_LIMIT:-80}
 case "$BACKLOG_LIMIT" in ''|*[!0-9]*|0) BACKLOG_LIMIT=80 ;; esac
+# The captain-held count must cover every held item, not only the scanned ones,
+# so its listing limit sits far above any real backlog.
+BACKLOG_HELD_COUNT_LIMIT=1000000
 SESSION_BUDGET_BYTES=${FM_SESSION_START_BUDGET_BYTES:-46080}
 case "$SESSION_BUDGET_BYTES" in ''|*[!0-9]*|0) SESSION_BUDGET_BYTES=46080 ;; esac
 
@@ -245,6 +255,61 @@ pi_extension_loaded() {
   [ "$marker_version" = "$expected_version" ] && [ "$marker_pid" = "$lock_pid" ]
 }
 
+# render_head: everything LOCK, BOOTSTRAP and WAKE QUEUE print, then the
+# extension diagnostic and supervision block. A signal waits for the running
+# step to finish, so a run stopped during bootstrap has BOOT_OUT but no drain
+# output yet, and stops before the WAKE QUEUE it never drained.
+# shellcheck disable=SC2329 # Invoked through capture and the EXIT trap.
+render_head() {
+  section "SESSION START - $FM_HOME"
+  subsection "LOCK"
+  printf '%s\n' "$LOCK_OUT"
+  if [ "$READ_ONLY" -eq 1 ]; then
+    BAR='●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+    printf '%s\n' "$BAR"
+    printf '●  READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED\n'
+    printf '●  %s\n' "$LOCK_OUT"
+    printf '●  Skipping every mutating step: PR-check migration, stale Herdr child\n'
+    printf '●  cleanup, shared no-mistakes daemon rooting, secondmate convergence,\n'
+    printf '●  secondmate liveness, pending remote handoff retry, X-mode artifacts,\n'
+    printf '●  fleet sync, and wake-queue drain. Detect-only bootstrap diagnostics\n'
+    printf '●  and the rest of this read-only-safe digest still ran below.\n'
+    printf '●  Operate read-only until this resolves - do not spawn, steer, merge, or\n'
+    printf '●  otherwise mutate fleet state from this session.\n'
+    printf '%s\n' "$BAR"
+  fi
+
+  subsection "BOOTSTRAP"
+  if [ -n "$BOOT_OUT" ]; then
+    printf '%s\n' "$BOOT_OUT"
+  else
+    printf '(silent - all good)\n'
+  fi
+
+  [ -n "${DRAIN_OUT+set}${GUARD_OUT+set}" ] || return 0
+  subsection "WAKE QUEUE"
+  if [ "$READ_ONLY" -eq 1 ]; then
+    printf 'skipped (read-only session) - %s record(s) remain queued because this session lacks verified fleet-lock ownership.\n' "$QLEN"
+    [ -n "$GUARD_OUT" ] && printf '%s\n' "$GUARD_OUT"
+  elif [ -n "$DRAIN_OUT" ]; then
+    printf '%s\n' "$DRAIN_OUT"
+  else
+    printf '(no queued wakes)\n'
+  fi
+
+  printf '%s' "$EXTENSION_DIAG"
+  printf '%s' "$SUPERVISION_OUT"
+}
+
+# print_head_on_exit: the EXIT trap until the final print. The wake drain
+# removes records from the queue as it reads them, so a run stopped before the
+# final print still prints the never-cut head it gathered.
+# shellcheck disable=SC2329 # Invoked by the EXIT trap.
+print_head_on_exit() {
+  printf 'INTERRUPTED: session start stopped before its digest was complete; rerun it for the rest.\n'
+  render_head
+}
+
 # --- 1. lock -----------------------------------------------------------
 LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
 LOCK_RC=$?
@@ -254,6 +319,14 @@ if [ "$READ_ONLY" -eq 0 ]; then
   rm -f "$STATE/.captain-hold"
   fm_trace_context_session_start "$CONFIG" "$STATE/.trace-context-effective"
 fi
+unset DRAIN_OUT GUARD_OUT
+QLEN=0
+EXTENSION_DIAG=
+SUPERVISION_OUT=
+trap print_head_on_exit EXIT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+trap 'exit 130' INT
 
 # --- 2. bootstrap --------------------------------------------------------
 if [ "$READ_ONLY" -eq 1 ]; then
@@ -273,9 +346,6 @@ fi
 # authority, and another session may be actively draining it. It still runs
 # fm-guard.sh directly with non-mutating advisory text, so the same alarms
 # surface without repair commands.
-QLEN=0
-GUARD_OUT=
-DRAIN_OUT=
 if [ "$READ_ONLY" -eq 1 ]; then
   [ -s "$STATE/.wake-queue" ] && QLEN=$(grep -c . "$STATE/.wake-queue" 2>/dev/null || printf '0')
   GUARD_OUT=$(FM_GUARD_READ_ONLY=1 "$SCRIPT_DIR/fm-guard.sh" 2>&1)
@@ -318,46 +388,6 @@ capture "$SCRIPT_DIR/fm-supervision-instructions.sh" \
   --x-mode "$X_MODE_PRESENT"
 SUPERVISION_OUT=$CAPTURED
 
-# shellcheck disable=SC2329 # Invoked through capture.
-render_head() {
-  section "SESSION START - $FM_HOME"
-  subsection "LOCK"
-  printf '%s\n' "$LOCK_OUT"
-  if [ "$READ_ONLY" -eq 1 ]; then
-    BAR='●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
-    printf '%s\n' "$BAR"
-    printf '●  READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED\n'
-    printf '●  %s\n' "$LOCK_OUT"
-    printf '●  Skipping every mutating step: PR-check migration, stale Herdr child\n'
-    printf '●  cleanup, shared no-mistakes daemon rooting, secondmate convergence,\n'
-    printf '●  secondmate liveness, pending remote handoff retry, X-mode artifacts,\n'
-    printf '●  fleet sync, and wake-queue drain. Detect-only bootstrap diagnostics\n'
-    printf '●  and the rest of this read-only-safe digest still ran below.\n'
-    printf '●  Operate read-only until this resolves - do not spawn, steer, merge, or\n'
-    printf '●  otherwise mutate fleet state from this session.\n'
-    printf '%s\n' "$BAR"
-  fi
-
-  subsection "BOOTSTRAP"
-  if [ -n "$BOOT_OUT" ]; then
-    printf '%s\n' "$BOOT_OUT"
-  else
-    printf '(silent - all good)\n'
-  fi
-
-  subsection "WAKE QUEUE"
-  if [ "$READ_ONLY" -eq 1 ]; then
-    printf 'skipped (read-only session) - %s record(s) remain queued because this session lacks verified fleet-lock ownership.\n' "$QLEN"
-    [ -n "$GUARD_OUT" ] && printf '%s\n' "$GUARD_OUT"
-  elif [ -n "$DRAIN_OUT" ]; then
-    printf '%s\n' "$DRAIN_OUT"
-  else
-    printf '(no queued wakes)\n'
-  fi
-
-  printf '%s' "$EXTENSION_DIAG"
-  printf '%s' "$SUPERVISION_OUT"
-}
 capture render_head
 HEAD_TEXT=$CAPTURED
 
@@ -462,6 +492,7 @@ STATE_ABS=$REPLY
 
 # backlog_records_tasks_axi: reads `tasks-axi list` output on stdin and emits
 # "inflight|held <TAB> id <TAB> title" records plus one "scanned" record.
+# tasks-axi's own "... (truncated, ...)" title suffix shortens to "...".
 backlog_records_tasks_axi() {
   awk '
     function parse(line,   i, c, n, inq, f, len) {
@@ -509,6 +540,7 @@ backlog_records_tasks_axi() {
       id = F[col["id"]]; state = F[col["state"]]; title = F[col["title"]]
       hold = ("hold_kind" in col) ? F[col["hold_kind"]] : ""
       gsub(/\t/, " ", title)
+      sub(/ *\.\.\. \(truncated, [0-9]+ chars total - use show [^ ]+ --full to see complete text\)$/, "...", title)
       if (state == "in_flight") print "inflight\t" id "\t" title
       else if (state == "queued" && hold == "captain") print "held\t" id "\t" title
       next
@@ -519,7 +551,8 @@ backlog_records_tasks_axi() {
 }
 
 # backlog_records_manual <path>: the same records from data/backlog.md title
-# lines, scanning at most BACKLOG_LIMIT items.
+# lines, scanning at most BACKLOG_LIMIT items, plus one "heldtotal" record
+# counting the captain-held items in the whole file.
 backlog_records_manual() {
   awk -v max="$BACKLOG_LIMIT" '
     /^##[[:space:]]+/ {
@@ -534,6 +567,8 @@ backlog_records_manual() {
     }
     state != "" && /^[-*][[:space:]]+/ {
       total++
+      captain_held = (state == "queued" && index($0, "(hold-kind: captain)"))
+      if (captain_held) held_total++
       if (total > max) next
       line = $0
       sub(/^[-*][[:space:]]+(\[[ xX]\][[:space:]]+)?/, "", line)
@@ -543,11 +578,12 @@ backlog_records_manual() {
       sub(/^[[:space:]]+-[[:space:]]+/, "", title)
       if (match(title, /[[:space:]]+(\([a-z][a-z_-]*:[[:space:]]|blocked-by:)/)) title = substr(title, 1, RSTART - 1)
       if (state == "inflight") print "inflight\t" id "\t" title
-      else if (state == "queued" && index($0, "(hold-kind: captain)")) print "held\t" id "\t" title
+      else if (captain_held) print "held\t" id "\t" title
     }
     END {
       shown = (total > max) ? max : total
       printf "scanned\t%d\t%d\n", shown, total
+      printf "heldtotal\t%d\t\n", held_total
     }
   ' "$1"
 }
@@ -562,9 +598,14 @@ if [ -f "$DATA/backlog.md" ]; then
     BACKLOG_MODE=manual
     BACKLOG_SOURCE='manual backend'
     if fm_tasks_axi_backend_available "$CONFIG"; then
-      if TASKS_AXI_OUT=$(tasks-axi list --file "$DATA/backlog.md" --limit "$BACKLOG_LIMIT" --fields hold_kind 2>&1); then
+      # The second, unbounded held listing makes the captain-held count exact
+      # even when the scan stops short; either failure falls back to the file.
+      if TASKS_AXI_OUT=$(tasks-axi list --file "$DATA/backlog.md" --limit "$BACKLOG_LIMIT" --fields hold_kind 2>&1) \
+        && TASKS_AXI_RECORDS=$(printf '%s\n' "$TASKS_AXI_OUT" | backlog_records_tasks_axi) \
+        && TASKS_AXI_OUT=$(tasks-axi list --file "$DATA/backlog.md" --state held --limit "$BACKLOG_HELD_COUNT_LIMIT" --fields hold_kind 2>&1); then
         BACKLOG_MODE=tasks-axi
-        BACKLOG_RECORDS=$(printf '%s\n' "$TASKS_AXI_OUT" | backlog_records_tasks_axi)
+        held_count=$(printf '%s\n' "$TASKS_AXI_OUT" | backlog_records_tasks_axi | grep -c '^held')
+        BACKLOG_RECORDS=$TASKS_AXI_RECORDS$'\n'"heldtotal"$'\t'"$held_count"
       else
         BACKLOG_SOURCE=fallback
         printf -v BACKLOG_NOTICE 'tasks-axi compact listing failed; falling back to title-line rendering.\n%s\n' "$TASKS_AXI_OUT"
@@ -586,7 +627,7 @@ fi
 # render_backlog <reduced 0|1>
 # shellcheck disable=SC2329 # Invoked through capture.
 render_backlog() {
-  local reduced=$1 kind id title shown=0 total=0 inflight=0 held=0
+  local reduced=$1 kind id title shown=0 total=0 inflight=0 held=0 held_total=0
   subsection "data/backlog.md"
   case "$BACKLOG_MODE" in
     absent) printf 'ABSENT\n'; return ;;
@@ -603,6 +644,7 @@ render_backlog() {
     case "$kind" in
       inflight) inflight=$((inflight + 1)) ;;
       held) held=$((held + 1)) ;;
+      heldtotal) held_total=$id ;;
       scanned) shown=$id; total=$title ;;
     esac
   done <<EOF
@@ -620,9 +662,14 @@ EOF
 $BACKLOG_RECORDS
 EOF
   if [ "$reduced" -eq 1 ]; then
-    printf 'Captain-held items: %s - list them with: %s\n' "$held" "$BACKLOG_HELD_CMD"
+    printf 'Captain-held items: %s - list them with: %s\n' "$held_total" "$BACKLOG_HELD_CMD"
   else
-    printf 'Captain-held (%s):\n' "$held"
+    if [ "$held" -eq "$held_total" ]; then
+      printf 'Captain-held (%s):\n' "$held"
+    else
+      printf 'Captain-held (%s in the backlog; %s of them within the scanned items listed below - list all with: %s):\n' \
+        "$held_total" "$held" "$BACKLOG_HELD_CMD"
+    fi
     while IFS=$'\t' read -r kind id title; do
       [ "$kind" = held ] && printf '%s - %s\n' "$id" "$title"
     done <<EOF
@@ -938,5 +985,6 @@ while :; do
   level=$((level + 1))
 done
 
+trap - EXIT
 printf '%s' "$DIGEST"
 exit 0
