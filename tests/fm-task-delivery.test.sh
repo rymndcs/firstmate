@@ -416,6 +416,8 @@ test_promote_carries_the_brief_review_contract() {
         || fail "contract promotion failed for $mode/$review: $out"
       file="$home/data/$id/ship-review.md"
       brief="$home/data/$id/brief.md"
+      [ "$(head -n 1 "$file")" = '# Planning and review contract' ] \
+        || fail "$mode/$review: the promoted review file does not open with the planning and review contract"
       brief_contract=$(awk '/^3\. /{copy=1; next} /^4\. /{exit} copy {sub(/^   /, ""); print}' "$brief")
       [ -n "$brief_contract" ] || fail "$mode/$review: the scaffolded brief carries no review contract to compare against"
       while IFS= read -r line; do
