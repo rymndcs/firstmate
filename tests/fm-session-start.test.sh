@@ -1180,6 +1180,32 @@ EOF
   pass "herdr endpoint liveness is reported per task: alive for a live pane, dead for a gone one"
 }
 
+test_pr_registered_by_drain_is_in_printed_meta() {
+  local rec root home fakebin out
+  rec=$(new_world drain-registers-pr)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+
+  printf 'kind=ship\n' > "$home/state/task-pr.meta"
+  printf 'done: PR https://github.com/o/r/pull/7 checks green\n' > "$home/state/task-pr.status"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  grep -qx 'pr=https://github.com/o/r/pull/7' "$home/state/task-pr.meta" \
+    || fail "the wake drain did not register the PR, so this test proves nothing: $(cat "$home/state/task-pr.meta")"
+  printf '%s\n' "$out" | awk '/^--- task-pr ---$/ { found = 1; next } found && /^endpoint: / { exit } found' \
+    | grep -qx 'pr=https://github.com/o/r/pull/7' \
+    || fail "the printed task record predates the PR the drain registered: $out"
+  assert_contains "$(next_step_section "$out")" "Printed in full above - do NOT re-read now: state/*.meta." \
+    "NEXT STEP no longer says the task records were printed in full"
+
+  pass "a PR the wake drain registers appears in the printed task record that NEXT STEP calls complete"
+}
+
 # --- composition: real scripts run, not reimplemented ------------------------
 
 test_composition_invokes_real_scripts() {
@@ -1331,6 +1357,56 @@ EOF
   done
 
   pass "a run stopped by TERM, HUP or INT during bootstrap prints only the steps that finished and leaves the queue intact"
+}
+
+# A rule file larger than any pipe buffer keeps the final print writing into a
+# reader that has taken one byte, so the signal lands mid-print with no timed
+# wait.
+test_signal_during_final_print_does_not_cut_the_digest() {
+  local sig rec root home fakebin run group rc
+  for sig in TERM HUP INT; do
+    skip_int_if_ignored "$sig" "a signal during the final print does not cut the digest" && continue
+    rec=$(new_world "signal-during-print-$sig")
+    IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+    make_fake_toolchain "$fakebin"
+    make_fake_ps_claude "$fakebin"
+    printf '%s\n' manual > "$home/config/backlog-backend"
+    write_sized_file "$home/data/captain.md" 300000 CAPTAIN
+    append_wake "$home/state" signal task-wake "done: WAKE-RECORD-PRINTED-ONCE" || fail "seed wake failed"
+    run="$home/../print-signal"
+    mkdir -p "$run"
+    mkfifo "$run/out"
+
+    set -m
+    {
+      /bin/sh -c 'printf "%s\n" "$$" > "$1"; shift; exec "$@"' sh "$run/pid" \
+        env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+        FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" \
+        FM_SESSION_START_BUDGET_BYTES=1000000 \
+        "$SESSION_START" > "$run/out" 2> "$run/err"
+      printf '%s\n' "$?" > "$run/rc"
+    } 2>/dev/null &
+    group=$!
+    set +m
+    exec 3< "$run/out"
+    dd bs=1 count=1 <&3 > "$run/digest" 2>/dev/null
+    kill -"$sig" "$(cat "$run/pid")"
+    cat <&3 >> "$run/digest"
+    exec 3<&-
+    wait "$group"
+    rc=$(cat "$run/rc")
+
+    [ "$rc" = 0 ] || fail "$sig during the final print stopped the run (exit $rc): $(cat "$run/err")"
+    grep -qx 'CAPTAIN-LAST' "$run/digest" || fail "$sig during the final print cut data/captain.md short"
+    [ "$(tail -n 1 "$run/digest")" = 'it per AGENTS.md) or its contents looked unparseable/corrupt.' ] \
+      || fail "$sig during the final print cut the digest before the end of NEXT STEP: $(tail -n 3 "$run/digest")"
+    [ "$(grep -c 'WAKE-RECORD-PRINTED-ONCE' "$run/digest")" = 1 ] \
+      || fail "$sig during the final print did not print the drained wake record exactly once"
+  done
+
+  pass "a TERM, HUP or INT during the final print is ignored, so the whole digest still prints"
 }
 
 # --- fleet-state digest: compact backlog rendering --------------------------
@@ -2147,10 +2223,12 @@ test_status_tail_bounding
 test_orphan_status_logs_are_printed
 test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
+test_pr_registered_by_drain_is_in_printed_meta
 test_composition_invokes_real_scripts
 test_killed_liveness_probe_leaves_wakes_queued
 test_interrupted_drain_prints_drained_wakes
 test_interrupted_bootstrap_prints_only_finished_steps
+test_signal_during_final_print_does_not_cut_the_digest
 test_backlog_compact_tasks_axi_omits_bodies_and_keeps_metadata
 test_backlog_compact_manual_backend_skips_indented_bodies
 test_backlog_compact_tasks_axi_unavailable_uses_manual_fallback

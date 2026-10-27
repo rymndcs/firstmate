@@ -22,9 +22,9 @@
 # sweeps - is an opt-in FM_BOOTSTRAP_DETECT_ONLY=1 flag on fm-bootstrap.sh
 # itself (default unset/0 = unchanged behavior), not a fork.
 #
-# ORDERING (the printed order; the wake drain is printed third but runs last,
-# see WAKE DRAIN TIMING below), and why LOCK now runs before BOOTSTRAP (the old
-# AGENTS.md order was bootstrap-then-lock):
+# ORDERING (the printed order; the wake drain is printed third but runs after
+# every step that can hang, see WAKE DRAIN TIMING below), and why LOCK now runs
+# before BOOTSTRAP (the old AGENTS.md order was bootstrap-then-lock):
 #
 #   1. lock          - acquire the per-home session lock FIRST, before any
 #                       mutating step runs.
@@ -48,7 +48,8 @@
 #                       (bin/fm-backend.sh's fm_backend_agent_state;
 #                       docs/remote-secondmates.md).
 #   3. wake-drain     - mutates the durable wake queue, so it also only runs
-#                       when locked, and it runs last, just before the one
+#                       when locked, and it runs after every step that can
+#                       hang, just before the local fleet reads and the one
 #                       print. When locked, the raw drained records print
 #                       prominently as this turn's FIRST work queue; a bounded,
 #                       clearly labeled historical status-event annotation may
@@ -120,20 +121,21 @@
 # Nothing is copied to state/; the digest stays read-only.
 #
 # WAKE DRAIN TIMING: the drain removes records from the queue as it reads them,
-# and this script holds them only in memory until its one print, so the drain
-# runs after every other step, the endpoint-liveness reads included, still
-# under the session lock, and its output is measured before any budget
-# decision. A run stopped by any signal, KILL included, before the drain leaves
-# every record queued for the next run. A run stopped by TERM, HUP or INT
-# prints, once its running step ends, an INTERRUPTED line and the LOCK,
-# BOOTSTRAP and WAKE QUEUE output of the steps that finished, so a run stopped
-# during or after the drain prints the drained records. One window remains: a
-# KILL from the moment fm-wake-drain.sh writes its records until this script's
-# print completes - the rest of fm-wake-drain.sh (its annotations, PR
-# auto-registration and watcher guard) and the in-memory budget assembly -
-# loses the records that run drained.
-# Because the fleet reads come first, a PR the drain registers in this run is
-# recorded in its state/<id>.meta but is not in the printed copy.
+# and this script holds them only in memory until its one print, so every step
+# that runs a command that can hang - bootstrap, the supervision block, the
+# backlog listing and the endpoint-liveness reads - runs before the drain,
+# still under the session lock. After it come only local reads and the print:
+# the state/*.meta bodies and status tails, read then so they include a PR the
+# drain registers, and the in-memory budget assembly; the drain output is
+# measured before any budget decision. A run stopped by any signal, KILL
+# included, before the drain leaves every record queued for the next run. A run
+# stopped by TERM, HUP or INT before the final print prints, once its running
+# step ends, an INTERRUPTED line and the LOCK, BOOTSTRAP and WAKE QUEUE output
+# of the steps that finished, so a run stopped during or after the drain prints
+# the drained records. TERM, HUP and INT are ignored during the final print, so
+# they cannot cut it. One gap remains: a hard kill (KILL, or the machine
+# stopping) between the drain and the end of the print loses the records that
+# run drained.
 #
 # The supervision operating instructions are emitted after the wake queue and
 # before context: exactly ONE operating block for the detected primary harness,
@@ -712,16 +714,12 @@ status_last_line_block() {
   tail -n 1 "$1"
 }
 
+# The endpoint-liveness reads run external CLIs that can hang, so they run
+# here, before the wake drain; read_task_records runs after it.
 for meta in "$STATE"/*.meta; do
   [ -f "$meta" ] || continue
   id=$(basename "$meta" .meta)
   META_IDS[META_COUNT]=$id
-  capture cat "$meta"
-  META_TEXT[META_COUNT]=$CAPTURED
-  capture grep -E '^(window|kind|harness|model|mode|pr)=' "$meta"
-  META_REDUCED[META_COUNT]=$CAPTURED
-  [ "${META_TEXT[META_COUNT]}" = "${META_REDUCED[META_COUNT]}" ] || META_SHRINKS=1
-
   window=$(fm_meta_get "$meta" window)
   target=$(fm_backend_target_of_meta "$meta")
   if [ -n "$window" ]; then
@@ -740,34 +738,51 @@ for meta in "$STATE"/*.meta; do
     META_ENDPOINT[META_COUNT]=$'endpoint: unknown (no window recorded)\n'
     META_ENDPOINT_SHORT[META_COUNT]=${META_ENDPOINT[META_COUNT]}
   fi
-
-  status="$STATE/$id.status"
-  if [ -f "$status" ]; then
-    capture status_tail_block "$status" "$STATUS_TAIL"
-    META_TAIL[META_COUNT]=$CAPTURED
-    capture status_last_line_block "$status"
-    META_TAIL_ONE[META_COUNT]=$CAPTURED
-    [ "$(tail -n "$STATUS_TAIL" "$status")" = "$(tail -n 1 "$status")" ] || TAIL_SHRINKS=1
-  else
-    printf -v line 'status tail: (no status file yet: %s)\n' "$status"
-    META_TAIL[META_COUNT]=$line
-    META_TAIL_ONE[META_COUNT]=${META_TAIL[META_COUNT]}
-  fi
   META_COUNT=$((META_COUNT + 1))
 done
 
 ORPHAN_IDS=()
 ORPHAN_TAIL=()
 ORPHAN_COUNT=0
-for status in "$STATE"/*.status; do
-  [ -f "$status" ] || continue
-  id=$(basename "$status" .status)
-  [ -f "$STATE/$id.meta" ] && continue
-  ORPHAN_IDS[ORPHAN_COUNT]=$id
-  capture status_tail_block "$status" "$STATUS_TAIL"
-  ORPHAN_TAIL[ORPHAN_COUNT]=$CAPTURED
-  ORPHAN_COUNT=$((ORPHAN_COUNT + 1))
-done
+
+# read_task_records: every task record body and status tail, and the orphan
+# status tails. Called after the wake drain, whose PR auto-registration writes
+# pr= into state/<id>.meta, so the printed records include it.
+read_task_records() {
+  local n=0 meta status id line
+  while [ "$n" -lt "$META_COUNT" ]; do
+    meta="$STATE/${META_IDS[n]}.meta"
+    capture cat "$meta"
+    META_TEXT[n]=$CAPTURED
+    capture grep -E '^(window|kind|harness|model|mode|pr)=' "$meta"
+    META_REDUCED[n]=$CAPTURED
+    [ "${META_TEXT[n]}" = "${META_REDUCED[n]}" ] || META_SHRINKS=1
+
+    status="$STATE/${META_IDS[n]}.status"
+    if [ -f "$status" ]; then
+      capture status_tail_block "$status" "$STATUS_TAIL"
+      META_TAIL[n]=$CAPTURED
+      capture status_last_line_block "$status"
+      META_TAIL_ONE[n]=$CAPTURED
+      [ "$(tail -n "$STATUS_TAIL" "$status")" = "$(tail -n 1 "$status")" ] || TAIL_SHRINKS=1
+    else
+      printf -v line 'status tail: (no status file yet: %s)\n' "$status"
+      META_TAIL[n]=$line
+      META_TAIL_ONE[n]=$line
+    fi
+    n=$((n + 1))
+  done
+
+  for status in "$STATE"/*.status; do
+    [ -f "$status" ] || continue
+    id=$(basename "$status" .status)
+    [ -f "$STATE/$id.meta" ] && continue
+    ORPHAN_IDS[ORPHAN_COUNT]=$id
+    capture status_tail_block "$status" "$STATUS_TAIL"
+    ORPHAN_TAIL[ORPHAN_COUNT]=$CAPTURED
+    ORPHAN_COUNT=$((ORPHAN_COUNT + 1))
+  done
+}
 
 # Public commitments made through the myfirstmate relay. A promise to reply in a
 # public thread must survive compaction and restart, so it is surfaced from disk
@@ -938,15 +953,15 @@ it per AGENTS.md) or its contents looked unparseable/corrupt.
 EOF
 }
 
-# --- 7. wake drain, last before the print -------------------------------
+# --- 7. wake drain, after every step that can hang -----------------------
 # Drained records are this turn's first work queue (AGENTS.md section 8); the
 # drain also runs fm-guard.sh internally on the locked path, so the
 # tangle/watcher-liveness alarms land in WAKE QUEUE too, ahead of the bulk digest.
-# It runs after every other step, still under the session lock, so a run killed
-# before it leaves every record queued; its output is never cut and is measured
-# in the head below before any budget decision. The read-only path never touches
-# the queue because it lacks mutation authority, and another session may be
-# actively draining it. It still runs fm-guard.sh directly with non-mutating
+# It runs after every step that can hang, still under the session lock, so a run
+# killed before it leaves every record queued; its output is never cut and is
+# measured in the head below before any budget decision. The read-only path
+# never touches the queue because it lacks mutation authority, and another
+# session may be actively draining it. It still runs fm-guard.sh directly with non-mutating
 # advisory text, so the same alarms surface without repair commands.
 if [ "$READ_ONLY" -eq 1 ]; then
   [ -s "$STATE/.wake-queue" ] && QLEN=$(grep -c . "$STATE/.wake-queue" 2>/dev/null || printf '0')
@@ -956,6 +971,7 @@ else
 fi
 capture render_head
 HEAD_TEXT=$CAPTURED
+read_task_records
 
 # --- 8. assemble under the byte budget ---------------------------------
 # assemble: DIGEST and its byte size in REPLY, from the current decisions.
@@ -1004,6 +1020,8 @@ while :; do
   level=$((level + 1))
 done
 
+# The drained records are in this print, so a stop signal must not cut it.
+trap '' TERM HUP INT
 trap - EXIT
 printf '%s' "$DIGEST"
 exit 0
