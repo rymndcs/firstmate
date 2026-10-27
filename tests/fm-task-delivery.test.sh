@@ -398,7 +398,7 @@ test_promote_shares_review_boundaries_with_brief() {
 # and whole-change review contract the brief's Rules carry, and is told to read it
 # before planning rather than only before reporting done.
 test_promote_carries_the_brief_review_contract() {
-  local home mode review id out file brief brief_contract line
+  local home mode review id out file brief brief_contract expected_top promoted_top
   home="$TMP_ROOT/promote-contract/home"
   mkdir -p "$home/state" "$home/config"
   for mode in local-only direct-PR no-mistakes; do
@@ -416,15 +416,12 @@ test_promote_carries_the_brief_review_contract() {
         || fail "contract promotion failed for $mode/$review: $out"
       file="$home/data/$id/ship-review.md"
       brief="$home/data/$id/brief.md"
-      [ "$(head -n 1 "$file")" = '# Planning and review contract' ] \
-        || fail "$mode/$review: the promoted review file does not open with the planning and review contract"
       brief_contract=$(awk '/^3\. /{copy=1; next} /^4\. /{exit} copy {sub(/^   /, ""); print}' "$brief")
       [ -n "$brief_contract" ] || fail "$mode/$review: the scaffolded brief carries no review contract to compare against"
-      while IFS= read -r line; do
-        assert_grep "$line" "$file" "$mode/$review: promotion omitted a brief contract line: $line"
-      done <<EOF
-$brief_contract
-EOF
+      expected_top=$(printf '# Planning and review contract\n%s' "$brief_contract")
+      promoted_top=$(head -n "$(( $(printf '%s\n' "$expected_top" | wc -l) ))" "$file")
+      [ "$promoted_top" = "$expected_top" ] \
+        || fail "$mode/$review: the promoted review file does not open with the brief's whole planning and review contract under its heading"
       assert_contains "$out" "read the planning and review contract in $file before planning" \
         "$mode/$review: promotion did not route the worker to the contract before planning"
     done
