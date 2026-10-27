@@ -133,9 +133,10 @@
 # step ends, an INTERRUPTED line and the LOCK, BOOTSTRAP and WAKE QUEUE output
 # of the steps that finished, so a run stopped during or after the drain prints
 # the drained records. TERM, HUP and INT are ignored during the final print, so
-# they cannot cut it. One gap remains: a hard kill (KILL, or the machine
-# stopping) between the drain and the end of the print loses the records that
-# run drained.
+# they cannot cut it. Two gaps remain, and each loses the records that run
+# drained: a hard kill (KILL, or the machine stopping) between the drain and
+# the end of the print, and a second TERM, HUP or INT that lands while the
+# INTERRUPTED output is still printing.
 #
 # The supervision operating instructions are emitted after the wake queue and
 # before context: exactly ONE operating block for the detected primary harness,
