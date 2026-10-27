@@ -45,7 +45,7 @@ The registered GitHub poll additionally reads the PR's required checks, or all o
 The watcher wakes on these already queued nonterminal observations; an interrupted publication follows the queue's existing at-least-once recovery rule.
 CI observations retain the poll for later outcomes and merges; their per-task receipts survive re-registration and are removed with task cleanup.
 The same OPEN GitHub poll reads mergeability and the PR author with its state and delegates new review activity and conflict transitions to `bin/fm-pr-activity.sh`, independently of CI availability.
-Its header owns pagination, the silent first-snapshot baseline, durable last-seen IDs, batch wakes, conflict episodes, trusted review learning and activity-state retirement; `tests/fm-pr-activity.test.sh` covers them.
+Its header owns pagination, the registration-time baseline, untrusted comment excerpts, durable last-seen IDs, batch wakes, conflict episodes, trusted review learning and activity-state retirement; `tests/fm-pr-activity.test.sh` covers them.
 Review learning never runs inside the poll: each batch registers a one-shot `bin/fm-procevent-learn.sh` process-to-event source, so a slow or dead learning run cannot delay any comment, conflict or CI wake.
 Every due watcher check runs before that sweep wakes, so a busy check cannot defer a later one.
 Script headers own exact discovery precedence, check classification, and commands.

@@ -5,7 +5,7 @@
 # lock skips the task until the next poll.
 # The per-task receipt retains URL/head/outcome identities across retries,
 # re-registration and restarts. Queue before receipt, then print the observation
-# to wake the watcher; its matching queue append collapses at drain as usual.
+# to wake the watcher, which does not queue it again.
 # An interrupted publication may replay, matching the queue's at-least-once rule.
 # Usage: fm-pr-ci.sh <github-pr-url> <head-sha> ci-pass|ci-fail
 set -u

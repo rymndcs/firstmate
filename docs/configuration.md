@@ -132,7 +132,8 @@ See [`wedge-alarm.md`](wedge-alarm.md) for the current channel reference, [`veri
 `config/pr-learning-trust` is an optional local, gitignored file naming the GitHub logins whose PR review comments feed automatic review learning.
 It holds one login per line; blank lines and text after `#` are ignored, and logins compare without case.
 An absent or empty file trusts nobody.
-Comments from other logins still wake firstmate, marked `untrusted author`, but never run learning, and the PR author's own comments never wake at all.
+Comments from other logins still wake firstmate, marked `untrusted author` with their excerpt quoted as `untrusted-data`, but never run learning, and the PR author's own comments never wake at all.
+A trusted comment is marked `not installed` instead of queuing learning when the learning helper is absent.
 Only the file grants trust: no GitHub association, team membership or commenting history adds a login.
 See [`examples/pr-learning-trust`](examples/pr-learning-trust) for a copyable file; `bin/fm-pr-activity.sh` owns how a trusted comment queues learning.
 
