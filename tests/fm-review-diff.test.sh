@@ -213,6 +213,44 @@ test_default_branch_shape_still_resolves_without_a_record() {
   pass "fm-review-diff still derives fm/<task-id> when the task records no branch"
 }
 
+# bin/fm-diff-base.sh resolves origin's default in order: origin/HEAD, origin's
+# advertised HEAD, then origin/main, then origin/master. Each case removes the
+# earlier sources so the next one must answer.
+test_diff_base_discovery() {
+  local case_dir proj out
+  case_dir=$(make_case diff-base)
+  proj="$case_dir/project"
+  git -C "$proj" branch -q trunk main
+  git -C "$proj" branch -q master main
+  git -C "$proj" push -q origin trunk master
+  git -C "$proj" fetch -q origin
+  git -C "$case_dir/origin.git" symbolic-ref HEAD refs/heads/trunk
+
+  out=$("$ROOT/bin/fm-diff-base.sh" "$proj")
+  [ "$out" = origin/main ] || fail "diff-base: origin/HEAD must win over the advertised HEAD, got '$out'"
+
+  git -C "$proj" remote set-head origin --delete
+  out=$("$ROOT/bin/fm-diff-base.sh" "$proj")
+  [ "$out" = origin/trunk ] || fail "diff-base: advertised HEAD must answer without origin/HEAD, got '$out'"
+
+  git -C "$case_dir/origin.git" symbolic-ref HEAD refs/heads/missing
+  out=$("$ROOT/bin/fm-diff-base.sh" "$proj")
+  [ "$out" = origin/main ] || fail "diff-base: origin/main must answer before origin/master, got '$out'"
+
+  git -C "$proj" update-ref -d refs/remotes/origin/main
+  out=$("$ROOT/bin/fm-diff-base.sh" "$proj")
+  [ "$out" = origin/master ] || fail "diff-base: origin/master must answer last, got '$out'"
+
+  git -C "$proj" update-ref -d refs/remotes/origin/master
+  if "$ROOT/bin/fm-diff-base.sh" "$proj" > "$case_dir/out" 2> "$case_dir/stderr"; then
+    fail "diff-base: an unknown default branch must refuse"
+  fi
+  assert_contains "$(cat "$case_dir/stderr")" "git -C $proj remote set-head origin <branch>" \
+    "diff-base: refusal must name the fix"
+  pass "fm-diff-base resolves origin's default from origin/HEAD, the advertised HEAD, origin/main, then origin/master"
+}
+
+test_diff_base_discovery
 test_pr_meta_uses_pr_head_not_stale_local
 test_pr_meta_fetches_pull_head_without_recorded_sha
 test_recorded_branch_is_used_when_head_cannot_answer

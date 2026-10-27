@@ -157,6 +157,17 @@ fm_git_identity() {
   export GIT_COMMITTER_NAME=$GIT_AUTHOR_NAME GIT_COMMITTER_EMAIL=$GIT_AUTHOR_EMAIL
 }
 
+# Register a real firstmate repository for forge-only fixtures that do not
+# model project source or remote Git refs.
+fm_test_register_firstmate_project() {
+  local fixture_home=$1 alias=${2:-} repo="$1/firstmate-project"
+  fm_git_init_commit "$repo"
+  mkdir -p "$fixture_home/data" "$fixture_home/projects"
+  ln -s "$repo" "$fixture_home/projects/ai-workspace"
+  [ -z "$alias" ] || ln -s "$repo" "$alias"
+  printf '%s\n' '- ai-workspace [no-mistakes] - own home' > "$fixture_home/data/projects.md"
+}
+
 # fm_git_init_commit <dir>: create a git repo at <dir> with a README and one
 # commit. Uses an inline identity so it works whether or not fm_git_identity was
 # called.

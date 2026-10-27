@@ -469,6 +469,7 @@ make_pr_home() {  # <name>
   configure_key "$home"
   add_forge_mocks "$home"
   mkdir -p "$home/wt"
+  fm_test_register_firstmate_project "$home" "$home/project"
   fm_write_meta "$home/state/rac125-font.meta" \
     "window=fm-rac125-font" \
     "worktree=$home/wt" \

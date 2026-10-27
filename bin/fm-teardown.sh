@@ -2203,6 +2203,10 @@ if [ "$BACKEND" = herdr ]; then
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
 fi
 
+if [ -d "$WT" ] && [ "$KIND" = ship ]; then
+  "$SCRIPT_DIR/fm-protected-paths.sh" remove "$WT" "$ID" || exit 1
+fi
+
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then

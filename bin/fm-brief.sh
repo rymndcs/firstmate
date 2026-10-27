@@ -357,7 +357,8 @@ local_rules_section() {
 LOCAL_RULES_SECTION=$(local_rules_section) || exit 1
 IFS= read -r -d '' PROJECT_INSTRUCTIONS_SECTION <<'EOF' || true
 # Project instruction files
-Crewmates never edit a project's repo-tracked `CLAUDE.md`, `AGENTS.md`, `CONCEPTS.md`, `docs/solutions/`, `.claude/` or `.codex/` files without the captain's per-change permission.
+Crewmates never edit a project's repo-tracked `CLAUDE.md`, `CLAUDE.local.md`, `AGENTS.md`, `CONCEPTS.md`, `docs/solutions/`, `.claude/` or `.codex/` files without the captain's per-change permission.
+If a push refuses an unapproved protected change, append `needs-decision [key=agent-file-approval]` to the status file and stop; firstmate alone writes the approval file documented by `bin/fm-protected-paths.sh --help`.
 Firstmate's own repo keeps editing its own `AGENTS.md`, skills and docs through its normal review path.
 EOF
 
