@@ -447,7 +447,7 @@ pass 'a merged retirement drops the activity receipt in the same watcher sweep'
 later_url=https://github.com/owner/repo/pull/46
 write_pr_task zulu-earlier "project=$project"
 "$PR_CODE/bin/fm-pr-check.sh" zulu-earlier "$later_url" > /dev/null 2>&1 || fail 'registration failed'
-touch -t 202001010000 "$FM_HOME/state/zulu-earlier.pr-poll"
+touch -t 202001010000 "$FM_HOME/state/zulu-earlier.pr-registered"
 write_pr_task alpha-later "project=$project"
 "$PR_CODE/bin/fm-pr-check.sh" alpha-later "$later_url" > /dev/null 2>&1 || fail 'registration failed'
 set_items 46 issues "$(stamp=2010-01-01T00:00:00Z item 701 stranger 'Before any registration' "$later_url#issuecomment-701"),$(stamp=2021-01-01T00:00:00Z item 702 stranger 'After the earlier registration' "$later_url#issuecomment-702")"
@@ -455,3 +455,108 @@ out=$(poll_pr 46)
 assert_contains "$out" 'comment=702 ' 'a comment after the earliest live registration of a PR must wake'
 assert_not_contains "$out" 'comment=701 ' 'a comment before every registration of a PR must stay silent'
 pass 'a PR registered by several tasks takes its baseline from the earliest live registration'
+
+register_at() {  # <task-id> <pr-url> <UTC [[CC]YY]MMDDhhmm>; the registration and its poll date from then
+  write_pr_task "$1" "project=$project"
+  "$PR_CODE/bin/fm-pr-check.sh" "$1" "$2" > /dev/null 2>&1 || fail "registration of $2 failed"
+  TZ=UTC touch -t "$3" "$FM_HOME/state/$1.pr-registered" "$FM_HOME/state/$1.pr-poll"
+}
+pr_url() { printf 'https://github.com/%s/pull/%s' "${2:-owner/repo}" "$1"; }
+
+legacy=$(pr_url 50)
+register_at task-legacy "$legacy" 202001011000
+rm -f "${FM_HOME:?}/state/task-legacy.pr-registered"
+set_items 50 issues "$(stamp=2020-01-01T09:59:00Z item 940 stranger 'Before the legacy registration' "$legacy#issuecomment-940"),$(stamp=2020-01-01T10:01:00Z item 941 stranger 'After the legacy registration' "$legacy#issuecomment-941")"
+out=$(poll_pr 50)
+assert_contains "$out" 'comment=941 ' 'a poll registered before registration records existed must wake for later activity'
+assert_not_contains "$out" 'comment=940 ' 'a poll registered before registration records existed must keep its arming time as the baseline'
+moved=$(pr_url 57)
+register_at task-moved "$moved" 202001011000
+touch "$FM_HOME/state/task-moved.pr-poll"
+pr_url 56 > "$FM_HOME/state/task-moved.pr-registered"
+TZ=UTC touch -t 201001011000 "$FM_HOME/state/task-moved.pr-registered"
+set_items 57 issues "$(stamp=2021-01-01T00:00:00Z item 945 stranger 'Before this PR was armed' "$moved#issuecomment-945")"
+assert_not_contains "$(poll_pr 57)" 'comment=945 ' 'a registration record naming another PR must not date this PR'
+pass 'a poll without its own registration record keeps its arming time as the baseline'
+
+drafted=$(pr_url 51)
+register_at task-drafted "$drafted" 202001011000
+set_items 51 reviews "$(stamp=2020-01-01T10:01:00Z review 920 josh '' "$drafted#pullrequestreview-920" COMMENTED),$(stamp=2020-01-01T09:58:00Z review 921 josh 'Old review' "$drafted#pullrequestreview-921" COMMENTED)"
+set_items 51 comments "$(stamp=2020-01-01T09:59:00Z item 910 stranger 'Drafted before registration, submitted after' "$drafted#discussion_r910" '"pull_request_review_id":920'),$(stamp=2020-01-01T10:02:00Z item 911 stranger 'New reply on an old review' "$drafted#discussion_r911" '"in_reply_to_id":912,"pull_request_review_id":921'),$(stamp=2020-01-01T09:57:00Z item 912 stranger 'Published before registration' "$drafted#discussion_r912" '"pull_request_review_id":921')"
+out=$(poll_pr 51)
+assert_contains "$out" 'comment=910 ' 'an inline comment drafted before registration and submitted after it must wake'
+assert_contains "$out" 'comment=911 ' 'a reply posted after registration must wake even when its review was submitted before'
+assert_not_contains "$out" 'comment=912 ' 'an inline comment published before registration must stay silent'
+assert_not_contains "$out" 'Old review' 'a review submitted before registration must stay silent'
+pass 'inline comments date from when they were published, never earlier than their review submission'
+
+armed=$(pr_url 53)
+register_at task-armed "$armed" 202001011000
+set_items 53 issues "$(item 950 stranger 'Armed with nothing pending' "$armed#issuecomment-950")"
+assert_contains "$(poll_pr 53)" 'comment=950 ' 'fixture: the armed PR did not publish'
+armed_receipt="$FM_HOME/state/.pr-activity-$(printf '%s' "$armed" | shasum -a 256 | awk '{print $1}')"
+"$PR_CODE/bin/fm-pr-activity.sh" sweep
+assert_present "$armed_receipt" 'an armed PR with no pending learning must keep its activity receipt'
+assert_not_contains "$(poll_pr 53)" 'comment=950 ' 'an armed PR must not repeat activity after a sweep'
+pass 'a sweep keeps the activity state of every armed PR'
+
+upper=$(pr_url 54)
+register_at task-upper "$upper" 202001011000
+set_items 54 issues "$(item 955 josh 'Uppercase link' 'https://github.com/Owner/Repo/pull/54#issuecomment-955')"
+out=$(poll_pr 54)
+assert_contains "$out" 'comment=955 author=josh Uppercase link https://github.com/Owner/Repo/pull/54#issuecomment-955 [learn-from-review: queued learn-' 'an uppercase link returned for a lowercase registration must be verified and learned'
+start_learning
+grep -qxF -- "$upper https://github.com/Owner/Repo/pull/54#issuecomment-955 --repo $project" "$FM_TEST_ACTIVITY/learned" \
+  || fail 'learning receives the uppercase comment URL GitHub returned'
+pass 'returned links are verified without case in both directions'
+
+shared_low=$(pr_url 55)
+shared_up=$(pr_url 55 Owner/Repo)
+register_at task-low "$shared_low" 201001011000
+register_at task-up "$shared_up" 202001011000
+poll_case() { "$PR_CODE/bin/fm-pr-poll.sh" --validated github "$shared_up" github.com Owner/Repo 55; }
+drain_pr > /dev/null
+set_items 55 issues "$(stamp=2015-01-01T00:00:00Z item 960 stranger 'One comment on one PR' "$shared_low#issuecomment-960")"
+assert_contains "$(poll_case)" 'comment=960 ' 'the earliest registration of a PR in any casing must set its baseline'
+assert_not_contains "$(poll_pr 55)" 'comment=960 ' 'a PR registered in two casings must alert once'
+drain_pr > "$PR_TMP/case-wakes"
+[ "$(grep -c 'comment=960 ' "$PR_TMP/case-wakes")" = 1 ] || fail 'a PR registered in two casings must queue one wake'
+pass 'registrations of one PR in different casings share one activity identity'
+
+set_items 42 issues "$(item 801 stranger 'café José' "$url#issuecomment-801"),$(item 802 josh 'señor' "$url#issuecomment-802"),$(item 803 stranger 'csi\u009b31m nel\u0085end' "$url#issuecomment-803"),$(item 804 josh 'trusted\u009bcsi' "$url#issuecomment-804")"
+drain_pr > /dev/null
+out=$(poll_pr)
+assert_contains "$out" 'untrusted-data="café José"' 'an outsider excerpt must be UTF-8'
+assert_contains "$out" 'comment=802 author=josh señor ' 'a trusted excerpt must be UTF-8'
+assert_contains "$out" 'untrusted-data="csi 31m nel end"' 'C1 controls in an outsider excerpt must become spaces'
+assert_contains "$out" 'comment=804 author=josh trusted csi ' 'C1 controls in a trusted excerpt must become spaces'
+drain_pr > "$PR_TMP/utf8-wakes"
+assert_grep 'untrusted-data="café José"' "$PR_TMP/utf8-wakes" 'the queued wake must keep the UTF-8 excerpt'
+perl -MEncode -e 'local $/; decode("UTF-8", <STDIN>, Encode::FB_CROAK)' < "$PR_TMP/utf8-wakes" \
+  || fail 'the queued wake must be valid UTF-8'
+pass 'excerpts are UTF-8 with control characters replaced'
+
+bracket_home="$PR_TMP/[g]/home"
+mkdir -p "$bracket_home/state" "$bracket_home/config"
+(
+  export FM_HOME="$bracket_home" FM_STATE_OVERRIDE="$bracket_home/state"
+  write_pr_task task-bracket "project=$project"
+  register_pr task-bracket
+  set_items 42 comments ''
+  set_items 42 reviews ''
+  set_items 42 issues "$(stamp=$old_stamp item 980 stranger 'Before registration' "$url#issuecomment-980"),$(item 981 stranger 'After registration' "$url#issuecomment-981")"
+  out=$(poll_pr)
+  assert_contains "$out" 'comment=981 ' 'a home whose path has glob characters must wake for later activity'
+  assert_not_contains "$out" 'comment=980 ' 'a home whose path has glob characters must keep its registration baseline'
+)
+pass 'a state path is read literally, never as a glob'
+
+rebuilt=$(pr_url 58)
+register_at task-rebuilt "$rebuilt" 202001011000
+set_items 58 issues "$(stamp=2020-01-01T09:59:00Z item 990 stranger 'Before registration' "$rebuilt#issuecomment-990"),$(stamp=2020-01-01T10:01:00Z item 991 stranger 'After registration, before the rebuild' "$rebuilt#issuecomment-991")"
+printf '# template change\n' >> "$PR_CODE/bin/fm-pr-poll.sh"
+assert_contains "$("$PR_CODE/bin/fm-pr-check-migrate.sh" 2>&1)" 'canonical polls rebuilt' 'fixture: the template change did not rebuild the poll'
+out=$(poll_pr 58)
+assert_contains "$out" 'comment=991 ' 'a comment after registration must wake when the poll was rebuilt before the first snapshot'
+assert_not_contains "$out" 'comment=990 ' 'a rebuilt poll must keep activity before registration silent'
+pass 'a poll rebuild keeps the original registration time'

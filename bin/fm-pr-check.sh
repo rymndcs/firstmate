@@ -23,7 +23,9 @@
 # the arming that already succeeded.
 # Each registration also writes state/<id>.pr-registered, the record that
 # merge-poll retirement keeps, so automatic discovery never replaces a
-# registration or re-arms a retired merge poll.
+# registration or re-arms a retired merge poll. Its modification time is the
+# registration time bin/fm-pr-activity.sh baselines from, so only registration
+# writes it.
 # Registration holds state/<id>.pr-registration.lock, which fm-pr-ci.sh and
 # fm-pr-activity.sh also take to publish observations, and either commits the
 # pr= metadata, the armed poll and that record together or restores the task's previous pr= metadata.

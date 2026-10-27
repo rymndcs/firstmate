@@ -450,7 +450,7 @@ fm_pr_poll_revoke_final() {
 }
 
 # A sidecar is written once per arming and never rewritten in place:
-# bin/fm-pr-activity.sh reads its modification time as the poll's arming time.
+# bin/fm-pr-activity.sh dates a registration by it when no record does.
 fm_pr_poll_prepare() {
   local state=$1 id=$2 provider=$3 url=$4 host=$5 path=$6 number=$7 template=$8
   fm_pr_task_id_valid "$id" || return 1
