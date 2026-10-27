@@ -1522,7 +1522,7 @@ EOF
   assert_not_contains "$out" "OVERSIZED-BODY-LINE" "manual compact digest leaked an in-flight task body"
   assert_not_contains "$out" "QUEUED-BODY-LINE" "manual compact digest leaked a queued task body"
   assert_not_contains "$out" "(scanned " "manual rendering reported a scan bound it did not hit"
-  assert_contains "$out" "Other backlog items: read $home/data/backlog.md" \
+  assert_contains "$out" "Other backlog items: $home/data/backlog.md" \
     "manual rendering omitted the pointer to the other backlog items"
   assert_contains "$out" "or data/backlog.md" "manual compact digest omitted the data/backlog.md full-body pointer"
 
@@ -1834,11 +1834,11 @@ EOF
   #   CONTEXT preamble, absent-file markers                   725
   #   captain.md 15500 + learnings.md 5600 + CLAUDE.local.md
   #   6600 + projects.md 6400, each with its label          34455
-  #   FLEET STATE after all of (b), (c) and (d)               4188
+  #   FLEET STATE after all of (b), (c) and (d)               4205
   #   NEXT STEP                                                864
-  #   total                                                 45732 of 46080
+  #   total                                                 45749 of 46080
   # Level (c) alone leaves the 69-item backlog listing (~7 KB) in place, so
-  # (d) is what makes room; only ~350 bytes stay spare. Ambient bootstrap and
+  # (d) is what makes room; only ~330 bytes stay spare. Ambient bootstrap and
   # guard output varies by machine; another environment measured about 800
   # bytes less.
   [ "$bytes" -le 46080 ] || fail "real-size digest is $bytes bytes, over the 46080-byte budget"
@@ -1853,7 +1853,7 @@ EOF
     "real-size digest did not name the status-tail shortening"
   assert_contains "$out" "FLEET_TRUNCATED: state/*.meta bodies reduced to window, kind, harness, model, mode, pr lines - see $home/state/<id>.meta" \
     "real-size digest did not name the meta shortening"
-  assert_contains "$out" "FLEET_TRUNCATED: backlog reduced to in-flight ids and a captain-held count - see read $home/data/backlog.md" \
+  assert_contains "$out" "FLEET_TRUNCATED: backlog reduced to in-flight ids and a captain-held count - see tasks-axi list --file=$home/data/backlog.md" \
     "real-size digest did not name the backlog shortening"
   assert_not_contains "$out" "FLEET_TRUNCATED: orphan" "real-size digest claimed an orphan shortening with no orphans"
   assert_contains "$out" "$(printf 'inflight-task-09\nCaptain-held items: 60 - list them with: %s %s' "awk '/^##[[:space:]]/ { q = /^##[[:space:]]+Queued[[:space:]]*\$/; next } q && /^[-*][[:space:]]/ && index(\$0, \"(hold-kind: captain)\")'" "$home/data/backlog.md")" \
