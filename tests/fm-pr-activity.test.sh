@@ -462,6 +462,7 @@ register_at() {  # <task-id> <pr-url> <UTC [[CC]YY]MMDDhhmm>; the registration a
   TZ=UTC touch -t "$3" "$FM_HOME/state/$1.pr-registered" "$FM_HOME/state/$1.pr-poll"
 }
 pr_url() { printf 'https://github.com/%s/pull/%s' "${2:-owner/repo}" "$1"; }
+pr_state=$FM_STATE_OVERRIDE
 
 legacy=$(pr_url 50)
 register_at task-legacy "$legacy" 202001011000
@@ -499,6 +500,15 @@ armed_receipt="$FM_HOME/state/.pr-activity-$(printf '%s' "$armed" | shasum -a 25
 assert_present "$armed_receipt" 'an armed PR with no pending learning must keep its activity receipt'
 assert_not_contains "$(poll_pr 53)" 'comment=950 ' 'an armed PR must not repeat activity after a sweep'
 pass 'a sweep keeps the activity state of every armed PR'
+
+mixed_armed=$(pr_url 63 Owner/Repo)
+register_at task-mixed-armed "$mixed_armed" 202001011000
+poll_mixed_armed() { "$PR_CODE/bin/fm-pr-poll.sh" --validated github "$mixed_armed" github.com Owner/Repo 63; }
+set_items 63 issues "$(item 965 stranger 'Armed only in mixed case' "$mixed_armed#issuecomment-965")"
+assert_contains "$(poll_mixed_armed)" 'comment=965 ' 'fixture: the mixed-case armed PR did not publish'
+"$PR_CODE/bin/fm-pr-activity.sh" sweep
+assert_not_contains "$(poll_mixed_armed)" 'comment=965 ' 'a PR armed only in mixed case must not repeat activity after a sweep'
+pass 'a sweep keeps the activity state of a PR armed only in mixed case'
 
 upper=$(pr_url 54)
 register_at task-upper "$upper" 202001011000
@@ -554,9 +564,50 @@ pass 'a state path is read literally, never as a glob'
 rebuilt=$(pr_url 58)
 register_at task-rebuilt "$rebuilt" 202001011000
 set_items 58 issues "$(stamp=2020-01-01T09:59:00Z item 990 stranger 'Before registration' "$rebuilt#issuecomment-990"),$(stamp=2020-01-01T10:01:00Z item 991 stranger 'After registration, before the rebuild' "$rebuilt#issuecomment-991")"
+unrecorded=$(pr_url 59)
+register_at task-unrecorded "$unrecorded" 202001011000
+rm -f "${pr_state:?}/task-unrecorded.pr-registered"
+set_items 59 issues "$(stamp=2020-01-01T09:59:00Z item 992 stranger 'Before the unrecorded registration' "$unrecorded#issuecomment-992"),$(stamp=2020-01-01T10:01:00Z item 993 stranger 'After the unrecorded registration, before the rebuild' "$unrecorded#issuecomment-993")"
+switched=$(pr_url 60)
+register_at task-switched "$(pr_url 61)" 202001011000
+write_pr_task task-switched "project=$project" "pr=$switched"
+set_items 60 issues "$(stamp=2021-01-01T00:00:00Z item 994 stranger 'Before this PR was armed' "$switched#issuecomment-994")"
 printf '# template change\n' >> "$PR_CODE/bin/fm-pr-poll.sh"
 assert_contains "$("$PR_CODE/bin/fm-pr-check-migrate.sh" 2>&1)" 'canonical polls rebuilt' 'fixture: the template change did not rebuild the poll'
 out=$(poll_pr 58)
 assert_contains "$out" 'comment=991 ' 'a comment after registration must wake when the poll was rebuilt before the first snapshot'
 assert_not_contains "$out" 'comment=990 ' 'a rebuilt poll must keep activity before registration silent'
-pass 'a poll rebuild keeps the original registration time'
+out=$(poll_pr 59)
+assert_contains "$out" 'comment=993 ' 'a comment after a registration without a record must wake when the poll was rebuilt before the first snapshot'
+assert_not_contains "$out" 'comment=992 ' 'a rebuilt poll without a registration record must keep activity before registration silent'
+assert_not_contains "$(poll_pr 60)" 'comment=994 ' 'a rebuild for another PR than the replaced poll named must not keep its time'
+pass 'a poll rebuild keeps the original registration time, with or without a registration record'
+
+stub_failing() {  # <dir> <command> <shell case pattern matched against the arguments>
+  mkdir -p "$1"
+  printf '#!/usr/bin/env bash\ncase " $* " in %s) exit 1 ;; esac\nexec %s "$@"\n' "$3" "$(command -v "$2")" > "$1/$2"
+  chmod +x "$1/$2"
+}
+stub_failing "$PR_TMP/no-data-quarantine" mv '*/.pr-check-quarantine/*.data.*'
+stub_failing "$PR_TMP/no-time-carry" touch "*' -r '*"
+recovered=$(pr_url 62)
+register_at task-recovered "$recovered" 202001011000
+rm -f "${pr_state:?}/task-recovered.pr-registered"
+set_items 62 issues "$(stamp=2020-01-01T09:59:00Z item 996 stranger 'Before the registration' "$recovered#issuecomment-996"),$(stamp=2020-01-01T10:01:00Z item 997 stranger 'After the registration, before the interrupted rebuild' "$recovered#issuecomment-997")"
+printf '# second template change\n' >> "$PR_CODE/bin/fm-pr-poll.sh"
+PATH="$PR_TMP/no-data-quarantine:$PATH" "$PR_CODE/bin/fm-pr-check-migrate.sh" > /dev/null 2>&1 \
+  && fail 'fixture: the rebuild was not interrupted'
+assert_absent "$pr_state/task-recovered.check.sh" 'fixture: the interrupted rebuild left the poll armed'
+"$PR_CODE/bin/fm-pr-check-migrate.sh" > /dev/null 2>&1 || fail 'the interrupted rebuild must complete on retry'
+out=$(poll_pr 62)
+assert_contains "$out" 'comment=997 ' 'a rebuild completed after an interruption must keep the original registration time'
+assert_not_contains "$out" 'comment=996 ' 'a rebuild completed after an interruption must keep activity before registration silent'
+printf '# third template change\n' >> "$PR_CODE/bin/fm-pr-poll.sh"
+out=$(PATH="$PR_TMP/no-time-carry:$PATH" "$PR_CODE/bin/fm-pr-check-migrate.sh" 2>&1) && fail 'a rebuild that cannot keep the registration time must fail'
+assert_contains "$out" 'did not complete safely' 'a rebuild that cannot keep the registration time must report the incomplete migration'
+assert_absent "$pr_state/task-recovered.check.sh" 'a rebuild that cannot keep the registration time must not arm the poll'
+leftover=$(find "$pr_state" -maxdepth 1 -name '.fm-pr-poll-*' | head -1)
+[ -z "$leftover" ] || fail "a failed rebuild must remove its prepared poll files: $leftover"
+"$PR_CODE/bin/fm-pr-check-migrate.sh" > /dev/null 2>&1 || fail 'a failed rebuild must complete on retry'
+assert_present "$pr_state/task-recovered.check.sh" 'a failed rebuild must arm the poll on retry'
+pass 'an interrupted or failed rebuild rolls back and completes on retry'

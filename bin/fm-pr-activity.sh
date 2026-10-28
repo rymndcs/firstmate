@@ -13,10 +13,11 @@
 # Registration is the baseline: the earliest registration of the URL among
 # armed state/<id>.pr-poll sidecars, dated by the task's state/<id>.pr-registered
 # record when it names the sidecar's URL (fm-pr-check.sh writes it, and a
-# fm-pr-check-migrate.sh rebuild leaves it), else by the sidecar itself. Until a
-# URL's first successful snapshot, items published before that time are
-# recorded as seen without a wake, and later ones wake even after earlier failed
-# snapshots; after it, every new item wakes. A review is published when
+# fm-pr-check-migrate.sh rebuild leaves it), else by the sidecar itself, whose
+# time a rebuild for the same URL keeps. Until a URL's first successful
+# snapshot, items published before that time are recorded as seen without a
+# wake, and later ones wake even after earlier failed snapshots; after it,
+# every new item wakes. A review is published when
 # submitted, any other item when created, and an inline comment no earlier than
 # its review's submission, so a drafted comment dates from its review.
 # The PR author's own comments, pending reviews and empty review bodies are

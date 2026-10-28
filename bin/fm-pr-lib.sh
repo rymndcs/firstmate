@@ -451,8 +451,10 @@ fm_pr_poll_revoke_final() {
 
 # A sidecar is written once per arming and never rewritten in place:
 # bin/fm-pr-activity.sh dates a registration by it when no record does.
+# A rebuild is not a registration: given the sidecar it replaces as the ninth
+# argument, a rebuild for the same URL keeps that sidecar's time.
 fm_pr_poll_prepare() {
-  local state=$1 id=$2 provider=$3 url=$4 host=$5 path=$6 number=$7 template=$8
+  local state=$1 id=$2 provider=$3 url=$4 host=$5 path=$6 number=$7 template=$8 replaced=${9:-}
   fm_pr_task_id_valid "$id" || return 1
   fm_pr_url_parse "$url" || return 1
   [ "$provider" = "$FM_PR_PROVIDER" ] || return 1
@@ -500,6 +502,11 @@ fm_pr_poll_prepare() {
     || ! chmod 0600 "$FM_PR_POLL_CHECK_TMP" \
     || ! fm_pr_private_file_valid "$FM_PR_POLL_CHECK_TMP" 600 "$FM_PR_POLL_STATE_DEVICE" \
     || ! cmp -s "$template" "$FM_PR_POLL_CHECK_TMP"; then
+    fm_pr_poll_cleanup
+    return 1
+  fi
+  if fm_pr_poll_data_parse "$replaced" && [ "$FM_PR_DATA_URL" = "$url" ] \
+    && ! touch -r "$replaced" "$FM_PR_POLL_DATA_TMP"; then
     fm_pr_poll_cleanup
     return 1
   fi

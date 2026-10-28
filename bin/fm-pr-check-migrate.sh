@@ -2,7 +2,8 @@
 # Non-executing migration for watcher PR checks created by older Firstmate
 # versions. Legacy check files are never run, sourced, or parsed by Bash.
 # Pending validated merged-poll retirements finish first. Canonical polls are
-# then rebuilt from validated metadata, remaining provenance-bound polls and
+# then rebuilt from validated metadata, keeping the time of a replaced poll for
+# the same URL (fm_pr_poll_prepare), remaining provenance-bound polls and
 # registered custom checks remain armed, and every other task poll is
 # quarantined for private review. A current X-mode shim is preserved by exact
 # content, while the recognized older byte-static shim is refreshed in place.
@@ -513,8 +514,10 @@ metadata_pr_is_canonical() {
   MIGRATION_NUMBER=$FM_PR_META_NUMBER
 }
 
+# MIGRATION_QUARANTINED names the quarantined artifact, empty when none existed.
 quarantine_artifact() {
   local source=$1 prefix=$2 kind=$3 destination source_device
+  MIGRATION_QUARANTINED=
   [ -e "$source" ] || [ -L "$source" ] || return 0
   [ -f "$source" ] && [ ! -L "$source" ] || return 1
   quarantine_dir_valid || return 1
@@ -538,7 +541,8 @@ quarantine_artifact() {
   [ "$(fm_pr_file_mode "$destination")" = 600 ] || return 1
   [ "$(fm_pr_file_device "$destination")" = "$STATE_DEVICE" ] || return 1
   [ "$(fm_pr_file_link_count "$destination")" = 1 ] || return 1
-  [ ! -e "$source" ] && [ ! -L "$source" ]
+  [ ! -e "$source" ] && [ ! -L "$source" ] || return 1
+  MIGRATION_QUARANTINED=$destination
 }
 
 diagnostic_file_contains() {
@@ -782,7 +786,7 @@ record_ambiguous_failure() {
 }
 
 canonical_repair_from_pending() {
-  local id=$1 meta data registration provider url host path number check
+  local id=$1 meta data registration provider url host path number check replaced
   meta="$STATE/$id.meta"
   data="$STATE/$id.pr-poll"
   registration="$STATE/$id.pr-poll-registration"
@@ -796,10 +800,11 @@ canonical_repair_from_pending() {
   path=$MIGRATION_PATH
   number=$MIGRATION_NUMBER
   quarantine_artifact "$data" "$id" data || return 1
+  replaced=$MIGRATION_QUARANTINED
   quarantine_artifact "$registration" "$id" registration || return 1
   [ ! -e "$data" ] && [ ! -L "$data" ] || return 1
   [ ! -e "$registration" ] && [ ! -L "$registration" ] || return 1
-  fm_pr_poll_prepare "$STATE" "$id" "$provider" "$url" "$host" "$path" "$number" "$TEMPLATE" || return 1
+  fm_pr_poll_prepare "$STATE" "$id" "$provider" "$url" "$host" "$path" "$number" "$TEMPLATE" "$replaced" || return 1
   fm_pr_poll_publish_prepared || return 1
   canonical_terminal_success "$id"
 }
@@ -1051,8 +1056,9 @@ if migration_needed; then
         fi
         if quarantine_artifact "$check" "$prefix" check \
           && quarantine_artifact "$data" "$prefix" data \
+          && replaced=$MIGRATION_QUARANTINED \
           && quarantine_artifact "$registration" "$prefix" registration \
-          && fm_pr_poll_prepare "$STATE" "$id" "$provider" "$url" "$host" "$path" "$number" "$TEMPLATE" \
+          && fm_pr_poll_prepare "$STATE" "$id" "$provider" "$url" "$host" "$path" "$number" "$TEMPLATE" "$replaced" \
           && fm_pr_poll_publish_prepared \
           && complete_canonical_outcome "$id"; then
           :
