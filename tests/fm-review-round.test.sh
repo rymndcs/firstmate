@@ -3,6 +3,8 @@ set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+unset FM_STATE_OVERRIDE
+
 TMP_ROOT=$(fm_test_tmproot fm-review-round)
 TASK_REPO="$TMP_ROOT/task"
 FIXTURE_HOME="$TMP_ROOT/home"
