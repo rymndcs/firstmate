@@ -12,11 +12,13 @@ fi
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 LAB=$(fm_test_tmproot fm-review-round-live)
+trap 'rm -rf "${LAB:?}"' EXIT
 mkdir -p "$LAB/home/state" "$LAB/repo"
 git -C "$LAB/repo" init -q
 printf 'Tiny launcher smoke fixture.\n' > "$LAB/repo/README.md"
 LAUNCHER="$ROOT/bin/fm-review-round.sh"
 export FM_HOME="$LAB/home"
+export FM_STATE_OVERRIDE="$FM_HOME/state"
 checked=0
 for harness in codex claude; do
   if ! command -v "$harness" >/dev/null 2>&1; then

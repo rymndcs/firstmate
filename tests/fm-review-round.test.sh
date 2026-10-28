@@ -524,3 +524,150 @@ prepare reviewer
   FAKE_REVIEW_CALLS="$TMP_ROOT/calls.jsonl" "$TASK_HOME/bin/fm-review-round.sh" reviewer --task "$TOKEN" --round "$ROUND") >/dev/null
 assert_capture codex || fail 'script-root home lookup depended on worker cwd'
 pass 'review-round: script path locates home when worker environment omits FM_HOME'
+
+
+python3 - "$ROOT" "$TMP_ROOT" "$FIXTURE_HOME" "$FAKEBIN" <<'PYTEST'
+import json, os, pathlib, re, subprocess, sys
+root, temp, roles, fakebin = map(pathlib.Path, sys.argv[1:])
+lab = temp / 'operational-paths'
+lab.mkdir()
+launcher = root / 'bin/fm-review-round.sh'
+worker = temp / 'task'
+env = os.environ.copy()
+for key in ['FM_HOME', 'FM_STATE_OVERRIDE', 'FM_DATA_OVERRIDE', 'FM_CONFIG_OVERRIDE']:
+    env.pop(key, None)
+env.update(HOME=str(roles), PATH=str(fakebin) + ':' + env['PATH'],
+           FAKE_REVIEW_CALLS=str(temp / 'calls.jsonl'))
+failures = []
+
+def launch(case, run_env, prefix=''):
+    token = subprocess.check_output([str(launcher), '--init', 'probe'], cwd=worker, env=env, text=True).strip()
+    args = [str(launcher), 'reviewer', '--task', token, '--round', '1']
+    input_file = subprocess.check_output(args + ['--path', 'input'], cwd=worker, env=env, text=True).strip()
+    pathlib.Path(input_file).write_text('Fixture request.\n')
+    result = subprocess.run(['bash', '-eu', '-c', prefix + '\nexec "$@"', 'fixture'] + args,
+                            cwd=worker, env=run_env, text=True, capture_output=True)
+    if result.returncode:
+        failures.append(f'{case}: exit {result.returncode}: {result.stderr.strip()}')
+        return
+    data = json.loads(pathlib.Path(result.stdout.strip()).read_text())
+    args = data['args']
+    if args[args.index('--model') + 1] != 'owning-model':
+        failures.append(f'{case}: selected stale default metadata: {args}')
+    else:
+        print(f'ok - {case}: owning runtime metadata selected after cwd change')
+
+meta = 'kind=scout\nharness=codex\nmodel=owning-model\neffort=high\n'
+home = lab / 'direct home'
+(home / 'state').mkdir(parents=True)
+(home / 'state/probe.meta').write_text(meta.replace('owning-model', 'stale-model'))
+alternate = lab / 'alternate state'
+alternate.mkdir()
+(alternate / 'probe.meta').write_text(meta)
+for location in [str(alternate), os.path.relpath(alternate, worker)]:
+    launch('R1-2 direct override ' + location, dict(env, FM_HOME=str(home), FM_STATE_OVERRIDE=location))
+for runtime in ['codex', 'claude']:
+    (alternate / 'probe.meta').write_text(meta.replace('harness=codex', 'harness=' + runtime))
+    launch('R1-2 override runtime ' + runtime, dict(env, FM_HOME=str(home), FM_STATE_OVERRIDE=str(alternate)))
+
+fake_root = lab / 'fake-root/bin'
+fake_root.mkdir(parents=True)
+guard = fake_root / 'fm-guard.sh'
+guard.write_text('#!/bin/sh\nexit 0\n')
+guard.chmod(0o755)
+for configured in [False, True]:
+    for state_kind in ['default', 'relative', 'absolute']:
+        case = f'R1-1/R1-2 promotion configured={configured} state={state_kind}'
+        owner = lab / f'owner {configured} {state_kind}'
+        (owner / 'home/state').mkdir(parents=True)
+        (owner / 'home/config').mkdir()
+        (owner / 'relative data').mkdir()
+        state = owner / ('home/state' if state_kind == 'default' else 'alternate state')
+        state.mkdir(exist_ok=True)
+        (state / 'probe.meta').write_text(meta)
+        if state_kind != 'default':
+            (owner / 'home/state/probe.meta').write_text(meta.replace('owning-model', 'stale-model'))
+        if configured:
+            (owner / 'home/config/ship-review.md').write_text('<!-- FM_REVIEW_LAUNCH_SLOT -->\n')
+        promote_env = dict(env, FM_HOME='home', FM_DATA_OVERRIDE='relative data', FM_ROOT_OVERRIDE=str(fake_root.parent))
+        if state_kind != 'default':
+            promote_env['FM_STATE_OVERRIDE'] = str(state) if state_kind == 'absolute' else 'alternate state'
+        result = subprocess.run([str(root / 'bin/fm-brief.sh'), 'probe', 'fixture', '--mode', 'local-only', '--checks', 'targeted'],
+                                cwd=owner, env=promote_env, text=True, capture_output=True)
+        if result.returncode:
+            failures.append(f'{case}: brief failed: {result.stderr}')
+        else:
+            brief = (owner / 'relative data/probe/brief.md').read_text()
+            for index, command in enumerate(re.findall(r'`(export FM_HOME=[^`]+)`', brief)):
+                launch(f'R1-2 brief {configured}/{state_kind} block={index}', dict(env, FM_STATE_OVERRIDE='/wrong-state'), command)
+        result = subprocess.run([str(root / 'bin/fm-promote.sh'), 'probe', '--mode', 'local-only', '--yolo', 'off'],
+                                cwd=owner, env=promote_env, text=True, capture_output=True)
+        if result.returncode:
+            failures.append(f'{case}: promotion failed: {result.stderr}')
+            continue
+        review = owner / 'relative data/probe/ship-review.md'
+        exports = re.findall(r'`(export FM_HOME=[^`]+)`', review.read_text())
+        if len(exports) != (2 if configured else 1):
+            failures.append(f'{case}: missing generated environment instructions')
+        for index, command in enumerate(exports):
+            launch(f'{case} block={index}', dict(env, FM_HOME='/wrong-home', FM_STATE_OVERRIDE='/wrong-state'), command)
+        if str(review) not in result.stdout:
+            failures.append(f'{case}: next instruction persists a relative review-file path: {result.stdout.strip()}')
+
+for name in ['FM_HOME', 'FM_STATE_OVERRIDE', 'FM_DATA_OVERRIDE']:
+    (state / 'probe.meta').write_text(meta)
+    original_meta = (state / 'probe.meta').read_bytes()
+    refused_env = dict(promote_env)
+    missing = 'missing directory ' + name
+    refused_env[name] = missing
+    result = subprocess.run([str(root / 'bin/fm-promote.sh'), 'probe', '--mode', 'local-only', '--yolo', 'off'],
+                            cwd=owner, env=refused_env, text=True, capture_output=True)
+    if result.returncode == 0 or name not in result.stderr:
+        failures.append(f'R1-1 invalid {name}: omitted resolution diagnostic: {result.stderr}')
+    if (state / 'probe.meta').read_bytes() != original_meta:
+        failures.append(f'R1-1 invalid {name}: changed task metadata before refusing')
+    if (owner / missing).exists():
+        failures.append(f'R1-1 invalid {name}: created the unresolvable directory')
+
+smoke = lab / 'smoke'
+(smoke / 'fakebin').mkdir(parents=True)
+(smoke / 'tmp').mkdir()
+shim = '''#!/usr/bin/env python3
+import json, os, pathlib, sys
+a = sys.argv[1:]
+k = pathlib.Path(sys.argv[0]).name
+if a == ['--version']: print('fixture 1'); sys.exit(0)
+if a == ['--help']: print('--effort <level>'); sys.exit(0)
+if os.environ.get('SMOKE_FAIL'): sys.exit(23)
+if k == 'codex':
+ pathlib.Path(a[a.index('--output-last-message') + 1]).write_text('SMOKE_OK codex')
+ print('model: gpt-6.1-sol\\nreasoning effort: high')
+else: print(json.dumps({'type':'result', 'is_error':False, 'result':'SMOKE_OK claude', 'modelUsage':{'claude-opus-fixture':{}}}))
+'''
+for name in ['codex', 'claude']:
+    path = smoke / 'fakebin' / name
+    path.write_text(shim)
+    path.chmod(0o755)
+for failing in [False, True]:
+    smoke_tmp = smoke / 'tmp' / str(failing)
+    smoke_tmp.mkdir()
+    smoke_env = dict(env, TMPDIR=str(smoke_tmp), FM_REVIEW_ROUND_LIVE='1', FM_STATE_OVERRIDE='/wrong-state',
+                     PATH=str(smoke / 'fakebin') + ':' + env['PATH'])
+    if failing:
+        smoke_env['SMOKE_FAIL'] = '1'
+    result = subprocess.run(['bash', str(root / 'tests/fm-review-round-live-e2e.test.sh')],
+                            cwd=worker, env=smoke_env, text=True, capture_output=True)
+    if (result.returncode != 0) != failing:
+        failures.append(f'R1-3 smoke failure={failing}: unexpected exit {result.returncode}: {result.stderr}')
+    if not failing and '# checked 2 installed supported harness(es)' not in result.stdout:
+        failures.append(f'R1-3 inert smoke did not exercise both harnesses: {result.stdout}')
+    leftovers = list(smoke_tmp.iterdir())
+    if leftovers:
+        failures.append(f'R1-3 smoke failure={failing}: left fixture roots: {leftovers}')
+    else:
+        print(f'ok - R1-3 smoke failure={failing}: parent removed fixture')
+if failures:
+    print('\n'.join('not ok - ' + failure for failure in failures), file=sys.stderr)
+    sys.exit(1)
+PYTEST
+pass 'review-round: promoted home/state paths and live-smoke parent cleanup survive process boundaries'

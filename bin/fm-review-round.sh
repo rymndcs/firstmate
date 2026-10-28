@@ -30,10 +30,12 @@
 # input. Round input supplies target, local merge-base, round, final-round flag,
 # full ledger, approved findings (fixer), and previous handoff path. Workers
 # orchestrate the adv-review-loop skill; this launcher never decides findings.
-# Runtime comes only from $FM_HOME/state/<task-id>.meta, with the task id
-# recovered from the initialized token. FM_HOME defaults to this script's repo
+# Runtime comes only from $FM_HOME/state/<task-id>.meta, or the same task file
+# under FM_STATE_OVERRIDE when set. The task id comes from the initialized token.
+# FM_HOME defaults to this script's repo
 # root, never the worker's current directory; generated instructions export the
-# owning home explicitly for shared-code/secondmate use. Read meta each launch.
+# owning home and resolved state directory for shared-code/secondmate use.
+# Read meta each launch.
 # Supported review harnesses: codex and claude. Missing metadata, harness/model,
 # an unresolved default model, or missing/default Codex effort refuses launch.
 # Claude effort is optional and passed only when claude --help exposes --effort.
@@ -110,7 +112,7 @@ AGENT_FILE="$HOME/.claude/agents/adv-$ROLE.md"
 PROMPT=$(cat "$AGENT_FILE" && printf '\n\n# This round\n' && cat "$INPUT") || die 'could not build role prompt'
 SCRIPT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 REVIEW_HOME=${FM_HOME:-$SCRIPT_ROOT}
-META="$REVIEW_HOME/state/$TASK_ID.meta"
+META="${FM_STATE_OVERRIDE:-$REVIEW_HOME/state}/$TASK_ID.meta"
 [ -f "$META" ] && [ -r "$META" ] || die "task $TASK_ID: missing readable runtime metadata: $META"
 RUNTIME=$(awk '/^harness=/ { sub(/^harness=/, ""); print; exit }' "$META")
 MODEL=$(awk '/^model=/ { sub(/^model=/, ""); print; exit }' "$META")
