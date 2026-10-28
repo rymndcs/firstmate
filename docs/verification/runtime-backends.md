@@ -6,6 +6,29 @@ This record contains reusable version-scoped evidence for active runtime guarant
 The backend guides own current setup, safety boundaries, and limitations.
 Exact task chronology, branch names, temporary homes, local paths, process ids, thread ids, and delivery transcripts remain in private reports or PR evidence.
 
+## Review role launcher
+
+Verified on 2026-10-28 with codex-cli 0.160.0 and Claude Code 2.1.312.
+The launcher's header and `--help` own runtime selection and supported harnesses.
+Refresh the credentialed smoke after upgrading either supported CLI:
+
+```sh
+FM_REVIEW_ROUND_LIVE=1 bin/fm-test-run.sh tests/fm-review-round-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - review launcher: codex-cli 0.160.0 model=gpt-6.1-sol reply=SMOKE_OK codex
+ok - review launcher: 2.1.312 (Claude Code) model=claude-opus-5-5 reply=SMOKE_OK claude
+# checked 2 installed supported harness(es)
+```
+
+The smoke runs from a throwaway Git repository with separate fake task records and never reads a live task record.
+The Codex diagnostics also reported `reasoning effort: high`.
+Claude's installed help advertised `--effort <level>`, and its JSON result identified the Opus model above.
+The portable argv, refusal, and evidence-preservation regressions run with `bin/fm-test-run.sh tests/fm-review-round.test.sh`.
+
 ## tmux
 
 Foreground-process behavior was verified on 2026-07-07 with tmux 3.6a on macOS.

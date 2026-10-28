@@ -30,21 +30,20 @@
 # input. Round input supplies target, local merge-base, round, final-round flag,
 # full ledger, approved findings (fixer), and previous handoff path. Workers
 # orchestrate the adv-review-loop skill; this launcher never decides findings.
-# The dated captain rule below is compiled from data/captain.md, not read from
-# private home files at runtime. Local date selects the runtime; no fallback.
+# Runtime comes only from $FM_HOME/state/<task-id>.meta, with the task id
+# recovered from the initialized token. FM_HOME defaults to this script's repo
+# root, never the worker's current directory; generated instructions export the
+# owning home explicitly for shared-code/secondmate use. Read meta each launch.
+# Supported review harnesses: codex and claude. Missing metadata, harness/model,
+# an unresolved default model, or missing/default Codex effort refuses launch.
+# Claude effort is optional and passed only when claude --help exposes --effort.
+# Other harnesses refuse rather than switching to another runtime or model.
 set -euo pipefail
 unset CDPATH
-
-CAPTAIN_REVIEW_CODEX_THROUGH=2026-10-11
-CAPTAIN_REVIEW_CODEX_MODEL=gpt-6.1-sol
-CAPTAIN_REVIEW_CODEX_REASONING=high
-CAPTAIN_REVIEW_CLAUDE_MODEL=opus
 
 die() { printf 'fm-review-round.sh: %s\n' "$*" >&2; exit 1; }
 usage() {
   sed -n '2,/^set -/p' "${BASH_SOURCE[0]}" | sed '$d; s/^# \{0,1\}//'
-  printf '\nCaptain review runtime rule: Codex %s (%s reasoning) through %s inclusive; then Claude %s.\n' \
-    "$CAPTAIN_REVIEW_CODEX_MODEL" "$CAPTAIN_REVIEW_CODEX_REASONING" "$CAPTAIN_REVIEW_CODEX_THROUGH" "$CAPTAIN_REVIEW_CLAUDE_MODEL"
 }
 
 case "${1:-}" in
@@ -109,17 +108,34 @@ esac
 AGENT_FILE="$HOME/.claude/agents/adv-$ROLE.md"
 [ -f "$AGENT_FILE" ] && [ -r "$AGENT_FILE" ] || die "missing readable role definition: $AGENT_FILE"
 PROMPT=$(cat "$AGENT_FILE" && printf '\n\n# This round\n' && cat "$INPUT") || die 'could not build role prompt'
-TODAY=$(date +%F) || die 'could not read local date'
-[[ "$TODAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "invalid local date: $TODAY"
-if [[ "$TODAY" > "$CAPTAIN_REVIEW_CODEX_THROUGH" ]]; then
-  RUNTIME=claude
+SCRIPT_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+REVIEW_HOME=${FM_HOME:-$SCRIPT_ROOT}
+META="$REVIEW_HOME/state/$TASK_ID.meta"
+[ -f "$META" ] && [ -r "$META" ] || die "task $TASK_ID: missing readable runtime metadata: $META"
+RUNTIME=$(awk '/^harness=/ { sub(/^harness=/, ""); print; exit }' "$META")
+MODEL=$(awk '/^model=/ { sub(/^model=/, ""); print; exit }' "$META")
+EFFORT=$(awk '/^effort=/ { sub(/^effort=/, ""); print; exit }' "$META")
+[ -n "$RUNTIME" ] || die "task $TASK_ID: missing harness in $META"
+[ -n "$MODEL" ] && [ "$MODEL" != default ] || die "task $TASK_ID: missing explicit model in $META"
+case "$RUNTIME" in
+  codex|claude) ;;
+  *) die "task $TASK_ID: unsupported review harness '$RUNTIME' in $META; supported: codex, claude" ;;
+esac
+command -v "$RUNTIME" >/dev/null 2>&1 || die "task $TASK_ID: required runtime is unavailable: $RUNTIME"
+if [ "$RUNTIME" = claude ]; then
   command -v jq >/dev/null 2>&1 || die 'jq is required to extract the Claude role reply'
-  COMMAND=(claude -p --output-format json --model "$CAPTAIN_REVIEW_CLAUDE_MODEL" --dangerously-skip-permissions -- "$PROMPT")
+  COMMAND=(claude -p --output-format json --model "$MODEL")
+  if [ -n "$EFFORT" ] && [ "$EFFORT" != default ]; then
+    CLAUDE_HELP=$(claude --help) || die "task $TASK_ID: cannot inspect claude --help for effort support"
+    if [[ "$CLAUDE_HELP" == *'--effort '* ]]; then
+      COMMAND+=(--effort "$EFFORT")
+    fi
+  fi
+  COMMAND+=(--dangerously-skip-permissions -- "$PROMPT")
 else
-  RUNTIME=codex
-  COMMAND=(codex exec --output-last-message "$OUTPUT" --model "$CAPTAIN_REVIEW_CODEX_MODEL" -c "model_reasoning_effort=\"$CAPTAIN_REVIEW_CODEX_REASONING\"" --dangerously-bypass-approvals-and-sandbox -- "$PROMPT")
+  [ -n "$EFFORT" ] && [ "$EFFORT" != default ] || die "task $TASK_ID: missing explicit Codex effort in $META"
+  COMMAND=(codex exec --output-last-message "$OUTPUT" --model "$MODEL" -c "model_reasoning_effort=\"$EFFORT\"" --dangerously-bypass-approvals-and-sandbox -- "$PROMPT")
 fi
-command -v "$RUNTIME" >/dev/null 2>&1 || die "required runtime is unavailable: $RUNTIME"
 DIAGNOSTICS="$OUTPUT.diagnostics"
 EVIDENCE=("$OUTPUT" "$DIAGNOSTICS")
 if [ "$RUNTIME" = claude ]; then

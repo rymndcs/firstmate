@@ -312,6 +312,7 @@ test_promote_carries_the_configured_review_step() {
   assert_contains "$out" "follow the review step in $review before reporting done" \
     "the promoted ship instructions did not name the review step"
   assert_grep 'fm-review-round.sh' "$review" 'promotion omitted the role launcher'
+  assert_grep "export FM_HOME=$home" "$review" 'promoted review instructions omitted owning home'
   assert_grep '--init promote-r1' "$review" 'promotion omitted fresh task files'
   assert_grep '--path input' "$review" 'input destination was not queried'
   assert_grep '--path report' "$review" 'report destination was not queried'

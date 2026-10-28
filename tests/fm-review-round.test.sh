@@ -7,6 +7,13 @@ TMP_ROOT=$(fm_test_tmproot fm-review-round)
 TASK_REPO="$TMP_ROOT/task"
 FIXTURE_HOME="$TMP_ROOT/home"
 FAKEBIN="$TMP_ROOT/fakebin"
+TASK_HOME="$TMP_ROOT/firstmate home"
+mkdir -p "$TASK_HOME/state"
+select_runtime() {
+  printf "harness=%s\nmodel=%s\neffort=%s\n" "$1" "${2:-$1-task-model}" "${3:-medium}" > "$TASK_HOME/state/first-task.meta"
+}
+select_runtime codex
+printf "harness=codex\nmodel=query-model\neffort=high\n" > "$TASK_HOME/state/query-regression.meta"
 mkdir -p "$TASK_REPO" "$FIXTURE_HOME/.claude/agents" "$FAKEBIN"
 TASK_REPO=$(cd "$TASK_REPO" && pwd -P)
 git -C "$TASK_REPO" init -q
@@ -16,6 +23,9 @@ cat > "$FAKEBIN/codex" <<'PY'
 #!/usr/bin/env python3
 import json, os, pathlib, sys
 args = sys.argv[1:]
+if args == ['--help']:
+    print('  --effort <level>' if not os.environ.get('FAKE_NO_EFFORT') else 'Usage: claude')
+    sys.exit(0)
 data = {'runtime': os.path.basename(sys.argv[0]), 'args': args}
 with open(os.environ['FAKE_REVIEW_CALLS'], 'a') as calls:
     calls.write(json.dumps(data) + '\n')
@@ -79,12 +89,12 @@ assert_one_call() {
 }
 
 launch() {
-  (cd "$TASK_REPO" && env HOME="$FIXTURE_HOME" PATH="$FAKEBIN:$PATH" \
+  (cd "$TASK_REPO" && env FM_HOME="$TASK_HOME" HOME="$FIXTURE_HOME" PATH="$FAKEBIN:$PATH" \
     FAKE_REVIEW_CALLS="$TMP_ROOT/calls.jsonl" FAKE_REVIEW_DATE="${FAKE_REVIEW_DATE:-2026-10-06}" "$ROOT/bin/fm-review-round.sh" "$@")
 }
 
 out=$(launch --help)
-assert_contains "$out" 'Codex gpt-6.1-sol (high reasoning) through 2026-10-11 inclusive; then Claude opus.' 'help omitted the current runtime rule'
+assert_contains "$out" 'state/<task-id>.meta' 'help omitted runtime metadata owner'
 
 
 legacy=$(launch --init caller-path-regression)
@@ -93,25 +103,26 @@ case "$legacy" in /*) legacy_dir=$legacy ;; *) legacy_dir="$REVIEW_ROOT/$legacy"
 printf 'Target: task\n' > "$legacy_dir/old-input.md"
 cp "$legacy_dir/old-input.md" "$legacy_dir/-round.md"
 legacy_launch() {
-  (cd "$legacy_dir" && env HOME="$FIXTURE_HOME" PATH="$FAKEBIN:$PATH" \
-    FAKE_REVIEW_CALLS="$TMP_ROOT/calls.jsonl" FAKE_REVIEW_DATE="$FAKE_REVIEW_DATE" "$ROOT/bin/fm-review-round.sh" "$@")
+  (cd "$legacy_dir" && env FM_HOME="$TASK_HOME" HOME="$FIXTURE_HOME" PATH="$FAKEBIN:$PATH" \
+    FAKE_REVIEW_CALLS="$TMP_ROOT/calls.jsonl" FAKE_REVIEW_DATE="${FAKE_REVIEW_DATE:-2030-01-01}" "$ROOT/bin/fm-review-round.sh" "$@")
 }
 path_failures=0
-for day in 2026-10-06 2026-10-12; do
+for runtime in codex claude; do
+  select_runtime "$runtime"
   for role in reviewer fixer; do
     for value in "$legacy_dir/old-input.md" -round.md ./-round.md; do
       before=$(call_count)
       rc=0
-      out=$(FAKE_REVIEW_DATE="$day" legacy_launch "$role" --round 1 --in "$value" --out "$legacy_dir/$day-$role-${#value}.out" 2>&1) || rc=$?
+      out=$(legacy_launch "$role" --round 1 --in "$value" --out "$legacy_dir/$runtime-$role-${#value}.out" 2>&1) || rc=$?
       if [ "$rc" -eq 0 ] || [[ "$out" != *'unknown option: --in'* ]] || [ "$(call_count)" -ne "$before" ]; then
-        printf 'not ok - %s/%s caller --in path was not rejected at the interface: exit=%s %s\n' "$day" "$role" "$rc" "$out" >&2
+        printf 'not ok - %s/%s caller --in path was not rejected at the interface: exit=%s %s\n' "$runtime" "$role" "$rc" "$out" >&2
         path_failures=$((path_failures + 1))
       fi
     done
     rc=0
-    out=$(FAKE_REVIEW_DATE="$day" legacy_launch "$role" --round 1 --out -round.out --in "$legacy_dir/old-input.md" 2>&1) || rc=$?
+    out=$(legacy_launch "$role" --round 1 --out -round.out --in "$legacy_dir/old-input.md" 2>&1) || rc=$?
     if [ "$rc" -eq 0 ] || [[ "$out" != *'unknown option: --out'* ]]; then
-      printf 'not ok - %s/%s caller --out path was not rejected at the interface: %s\n' "$day" "$role" "$out" >&2
+      printf 'not ok - %s/%s caller --out path was not rejected at the interface: %s\n' "$runtime" "$role" "$out" >&2
       path_failures=$((path_failures + 1))
     fi
   done
@@ -184,7 +195,9 @@ PY
 }
 
 query_failures=0
-for day in 2026-10-06 2026-10-12; do
+for runtime in codex claude; do
+  select_runtime "$runtime"
+  cp "$TASK_HOME/state/first-task.meta" "$TASK_HOME/state/query-regression.meta"
   for role in reviewer fixer; do
     for value in '' elsewhere; do
       for trailing in none valid; do
@@ -205,17 +218,17 @@ for day in 2026-10-06 2026-10-12; do
           query_args=("$role" --task "$query_token" --round 1 --path "$value")
           [ "$trailing" != valid ] || query_args+=(--path input)
           rc=0
-          out=$(FAKE_REVIEW_DATE="$day" launch "${query_args[@]}" 2>&1) || rc=$?
+          out=$(launch "${query_args[@]}" 2>&1) || rc=$?
           inventory_after=$(artifact_inventory "$query_dir")
           if [ "$rc" -eq 0 ] || [[ "$out" != *'unknown path query'* ]] || \
             [ "$(call_count)" -ne "$before" ] || [ "$inventory_after" != "$inventory_before" ]; then
             printf 'not ok - %s/%s query=%q trailing=%s evidence=%s exit=%s calls=%s inventory_unchanged=%s: %s\n' \
-              "$day" "$role" "$value" "$trailing" "$evidence" "$rc" "$(( $(call_count) - before ))" \
+              "$runtime" "$role" "$value" "$trailing" "$evidence" "$rc" "$(( $(call_count) - before ))" \
               "$([ "$inventory_after" = "$inventory_before" ] && echo yes || echo no)" "$out" >&2
             query_failures=$((query_failures + 1))
           elif [ "$evidence" = fresh ]; then
             before=$(call_count)
-            out=$(FAKE_REVIEW_DATE="$day" launch "$role" --task "$query_token" --round 1)
+            out=$(launch "$role" --task "$query_token" --round 1)
             assert_one_call "$before"
             [ "$out" = "$query_reply" ] || fail 'malformed query consumed the intended launch slot'
             [ "$(cat "$query_input")" = 'Target: query-only request' ] || fail 'intended launch changed input'
@@ -225,10 +238,10 @@ for day in 2026-10-06 2026-10-12; do
     done
     rc=0
     before=$(call_count)
-    out=$(FAKE_REVIEW_DATE="$day" launch "$role" --path elsewhere --task '' --round invalid 2>&1) || rc=$?
+    out=$(launch "$role" --path elsewhere --task '' --round invalid 2>&1) || rc=$?
     [ "$rc" -ne 0 ] || fail 'malformed query before invalid task/round was accepted'
     if [[ "$out" != *'unknown path query'* ]] || [ "$(call_count)" -ne "$before" ]; then
-      printf 'not ok - %s/%s query was not rejected at option intake: %s\n' "$day" "$role" "$out" >&2
+      printf 'not ok - %s/%s query was not rejected at option intake: %s\n' "$runtime" "$role" "$out" >&2
       query_failures=$((query_failures + 1))
     fi
   done
@@ -268,10 +281,10 @@ data = json.loads(pathlib.Path(output).read_text())
 assert data['runtime'] == runtime, data
 args = data['args']
 if runtime == 'codex':
-    expected = ['exec', '--output-last-message', output, '--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="high"',
+    expected = ['exec', '--output-last-message', output, '--model', 'codex-task-model', '-c', 'model_reasoning_effort="medium"',
                 '--dangerously-bypass-approvals-and-sandbox', '--']
 else:
-    expected = ['-p', '--output-format', 'json', '--model', 'opus', '--dangerously-skip-permissions', '--']
+    expected = ['-p', '--output-format', 'json', '--model', 'claude-task-model', '--effort', 'medium', '--dangerously-skip-permissions', '--']
 prompt = (pathlib.Path(home) / '.claude/agents' / f'adv-{role}.md').read_text()
 prompt += '\n\n# This round\n' + pathlib.Path(input_file).read_text()
 assert args == expected + [prompt.rstrip('\n')], args
@@ -289,43 +302,44 @@ PY
 }
 
 export CDPATH="$TMP_ROOT:$TASK_REPO"
-for day in 2026-10-04 2026-10-11 2026-10-12; do
-  runtime=codex
-  [ "$day" != 2026-10-12 ] || runtime=claude
+for runtime in codex claude; do
+  select_runtime "$runtime"
   for role in reviewer fixer; do
     prepare "$role"
     before=$(call_count)
-    out=$(FAKE_REVIEW_DATE="$day" run_role)
+    out=$(run_role)
     assert_one_call "$before"
     [ "$out" = "$OUTPUT" ] || fail 'CDPATH polluted reply path'
-    assert_capture "$runtime" || fail "$day/$role prompt or runtime differs"
+    assert_capture "$runtime" || fail "$runtime/$role prompt or runtime differs"
   done
 done
+select_runtime claude
 for role in reviewer fixer; do
   prepare "$role"
   before=$(call_count)
-  FAKE_REVIEW_DATE=2026-10-12 FAKE_REVIEW_MODE=json-padding run_role >/dev/null
+  FAKE_REVIEW_DATE=2026-10-28 FAKE_REVIEW_MODE=json-padding run_role >/dev/null
   assert_one_call "$before"
   assert_capture claude || fail 'valid padded JSON refused'
 done
-pass 'review-round: inclusive dated models, exact prompts and one invocation survive CDPATH'
+pass 'review-round: task models and effort, exact prompts and one invocation survive CDPATH'
 
-for day in 2026-10-06 2026-10-12; do
+for runtime in codex claude; do
+  select_runtime "$runtime"
   for role in reviewer fixer; do
     for mode in stderr whitespace events; do
       prepare "$role"
       before=$(call_count)
       rc=0
-      out=$(FAKE_REVIEW_DATE="$day" FAKE_REVIEW_MODE="$mode" run_role 2>&1) || rc=$?
+      out=$(FAKE_REVIEW_MODE="$mode" run_role 2>&1) || rc=$?
       assert_one_call "$before"
-      [ "$rc" -ne 0 ] || fail "$day/$role accepted $mode without meaningful role reply"
+      [ "$rc" -ne 0 ] || fail "$runtime/$role accepted $mode without meaningful role reply"
       assert_contains "$out" 'role reply' 'missing reply refusal lacked reason'
       assert_contains "$out" "$OUTPUT.diagnostics" 'missing preserved diagnostics path'
       case "$mode" in
         stderr) assert_grep 'runtime ready; no assistant reply' "$OUTPUT.diagnostics" 'stderr lost' ;;
         events)
           evidence="$OUTPUT.diagnostics"
-          [ "$day" != 2026-10-12 ] || evidence="$OUTPUT.runtime.json"
+          [ "$runtime" != claude ] || evidence="$OUTPUT.runtime.json"
           assert_grep 'tool/event log; no assistant reply' "$evidence" 'stdout lost'
           ;;
         whitespace) [ -s "$OUTPUT" ] || fail 'whitespace evidence lost' ;;
@@ -335,12 +349,13 @@ for day in 2026-10-06 2026-10-12; do
 done
 pass 'review-round: both runtimes and roles refuse diagnostics, events and whitespace as replies'
 
+select_runtime claude
 for role in reviewer fixer; do
   for mode in success-error error-success duplicate-success extra-object object-first array malformed trailing missing-error-flag scalar null error-result tool-result nonstring-result; do
     prepare "$role"
     before=$(call_count)
     rc=0
-    out=$(FAKE_REVIEW_DATE=2026-10-12 FAKE_REVIEW_MODE="$mode" run_role 2>&1) || rc=$?
+    out=$(FAKE_REVIEW_MODE="$mode" run_role 2>&1) || rc=$?
     assert_one_call "$before"
     [ "$rc" -ne 0 ] || fail "Claude $role accepted $mode as one valid result"
     assert_contains "$out" 'no valid role reply' 'invalid result lacks reason'
@@ -352,7 +367,7 @@ for role in reviewer fixer; do
     diagnostics_before=$(cksum < "$OUTPUT.diagnostics")
     before=$(call_count)
     rc=0
-    out=$(FAKE_REVIEW_DATE=2026-10-12 run_role 2>&1) || rc=$?
+    out=$(run_role 2>&1) || rc=$?
     [ "$rc" -ne 0 ] || fail 'invalid-result retry reused evidence'
     [ "$(call_count)" -eq "$before" ] || fail 'invalid-result retry launched'
     [ "$(cksum < "$OUTPUT.runtime.json")" = "$raw_before" ] || fail 'retry changed raw result'
@@ -361,26 +376,27 @@ for role in reviewer fixer; do
 done
 pass 'review-round: Claude requires exactly one valid result; retry preserves invalid evidence'
 
-for day in 2026-10-06 2026-10-12; do
+for runtime in codex claude; do
+  select_runtime "$runtime"
   for role in reviewer fixer; do
     prepare "$role"
     before=$(call_count)
     rc=0
-    out=$(FAKE_REVIEW_DATE="$day" FAKE_REVIEW_FAIL=1 run_role 2>&1) || rc=$?
+    out=$(FAKE_REVIEW_FAIL=1 run_role 2>&1) || rc=$?
     assert_one_call "$before"
     expect_code 23 "$rc" 'role failure must propagate'
     assert_contains "$out" "$OUTPUT" 'failure omitted reply path'
     assert_grep 'deliberate role failure' "$OUTPUT.diagnostics" 'failure lost stderr'
     before=$(call_count)
     rc=0
-    out=$(FAKE_REVIEW_DATE="$day" run_role 2>&1) || rc=$?
+    out=$(run_role 2>&1) || rc=$?
     [ "$rc" -ne 0 ] || fail 'retry overwrote failed evidence'
     [ "$(call_count)" -eq "$before" ] || fail 'retry launched over old evidence'
     [ "$(cat "$OUTPUT.diagnostics")" = 'deliberate role failure' ] || fail 'retry changed diagnostics'
     prepare "$role"
     before=$(call_count)
     rc=0
-    out=$(FAKE_REVIEW_DATE="$day" FAKE_REVIEW_EMPTY=1 run_role 2>&1) || rc=$?
+    out=$(FAKE_REVIEW_EMPTY=1 run_role 2>&1) || rc=$?
     assert_one_call "$before"
     [ "$rc" -ne 0 ] || fail 'absent reply passed'
     assert_contains "$out" 'role reply' 'missing reply lacks reason'
@@ -388,9 +404,10 @@ for day in 2026-10-06 2026-10-12; do
 done
 pass 'review-round: failure codes propagate and failed or absent replies preserve evidence'
 
-for day in 2026-10-06 2026-10-12; do
+for runtime in codex claude; do
+  select_runtime "$runtime"
   suffixes=('' .diagnostics)
-  [ "$day" != 2026-10-12 ] || suffixes+=(.runtime.json)
+  [ "$runtime" != claude ] || suffixes+=(.runtime.json)
   for suffix in "${suffixes[@]}"; do
     for kind in existing symlink; do
       prepare reviewer
@@ -399,7 +416,7 @@ for day in 2026-10-06 2026-10-12; do
       if [ "$kind" = existing ]; then cp "$sentinel" "$OUTPUT$suffix"; else ln -s "$sentinel" "$OUTPUT$suffix"; fi
       before=$(call_count)
       rc=0
-      out=$(FAKE_REVIEW_DATE="$day" run_role 2>&1) || rc=$?
+      out=$(run_role 2>&1) || rc=$?
       [ "$rc" -ne 0 ] || fail 'existing evidence overwritten'
       [ "$(call_count)" -eq "$before" ] || fail 'existing evidence allowed launch'
       [ "$(cat "$OUTPUT$suffix")" = 'previous evidence' ] || fail 'evidence changed'
@@ -410,6 +427,7 @@ for day in 2026-10-06 2026-10-12; do
 done
 pass 'review-round: existing reply and sidecars, including symlinks, survive without launching'
 
+select_runtime codex
 prepare reviewer
 printf 'outside\n' > "$TMP_ROOT/outside.md"
 ln -s "$TMP_ROOT/outside.md" "$INPUT.link"
@@ -439,3 +457,70 @@ for file in "$OUTPUT" "$OUTPUT.diagnostics"; do
   [ "$(cksum < "$file")" = "$saved" ] || fail 'successful evidence changed'
 done
 pass 'review-round: derived inputs remain regular files; other tasks and root leftovers survive'
+
+select_runtime codex
+for role in reviewer fixer; do
+  prepare "$role"
+  FAKE_REVIEW_DATE=2030-01-01 run_role >/dev/null
+  assert_capture codex || fail 'date switched a Codex task to another runtime'
+done
+pass 'review-round: dates after the retired cutoff keep the task runtime for reviewer and fixer'
+
+for record in missing harness model effort default-effort unsupported-default; do
+  prepare reviewer
+  case "$record" in
+    missing) mv "$TASK_HOME/state/first-task.meta" "$TASK_HOME/saved.meta"; expected='metadata' ;;
+    harness) printf 'model=test\neffort=high\n' > "$TASK_HOME/state/first-task.meta"; expected='harness' ;;
+    model) printf 'harness=codex\neffort=high\n' > "$TASK_HOME/state/first-task.meta"; expected='model' ;;
+    effort) printf 'harness=codex\nmodel=test\n' > "$TASK_HOME/state/first-task.meta"; expected='effort' ;;
+    default-effort) select_runtime codex codex-task-model default; expected='effort' ;;
+    unsupported-default) select_runtime codex default; expected='model' ;;
+  esac
+  before=$(call_count)
+  rc=0
+  out=$(run_role 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "$record metadata launched a role"
+  assert_contains "$out" first-task 'refusal omitted task id'
+  assert_contains "$out" "$expected" 'refusal omitted missing runtime field'
+  [ "$(call_count)" -eq "$before" ] || fail 'invalid metadata invoked a runtime'
+  assert_absent "$OUTPUT" 'invalid metadata reserved reply'
+  select_runtime codex
+done
+for runtime in opencode pi pi-signed grok kimi unknown; do
+  prepare fixer
+  select_runtime "$runtime"
+  before=$(call_count)
+  rc=0
+  out=$(run_role 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "$runtime silently switched runtime"
+  assert_contains "$out" first-task 'unsupported refusal omitted task'
+  assert_contains "$out" "$runtime" 'unsupported refusal omitted harness'
+  [ "$(call_count)" -eq "$before" ] || fail 'unsupported harness invoked another runtime'
+done
+select_runtime claude
+printf 'harness=claude\nmodel=claude-task-model\n' > "$TASK_HOME/state/first-task.meta"
+prepare reviewer
+run_role >/dev/null
+python3 - "$OUTPUT" <<'PYTEST'
+import json, pathlib, sys
+args = json.loads(pathlib.Path(sys.argv[1]).read_text())['args']
+assert '--effort' not in args, args
+assert args[args.index('--model') + 1] == 'claude-task-model', args
+PYTEST
+select_runtime claude
+prepare fixer
+FAKE_NO_EFFORT=1 run_role >/dev/null
+python3 - "$OUTPUT" <<'PYTEST'
+import json, pathlib, sys
+assert '--effort' not in json.loads(pathlib.Path(sys.argv[1]).read_text())['args']
+PYTEST
+pass 'review-round: missing runtime refuses without launch; Claude optional effort follows CLI support'
+
+select_runtime codex
+mkdir -p "$TASK_HOME/bin"
+cp "$ROOT/bin/fm-review-round.sh" "$ROOT/bin/fm-pr-lib.sh" "$TASK_HOME/bin/"
+prepare reviewer
+(cd "$TASK_REPO" && unset FM_HOME && HOME="$FIXTURE_HOME" PATH="$FAKEBIN:$PATH" \
+  FAKE_REVIEW_CALLS="$TMP_ROOT/calls.jsonl" "$TASK_HOME/bin/fm-review-round.sh" reviewer --task "$TOKEN" --round "$ROUND") >/dev/null
+assert_capture codex || fail 'script-root home lookup depended on worker cwd'
+pass 'review-round: script path locates home when worker environment omits FM_HOME'
