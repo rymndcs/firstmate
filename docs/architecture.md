@@ -21,7 +21,7 @@ No-verb wakes, such as `working:` notes and bare turn-ended signals, are benign 
 A crew that declares `paused:` for a known external wait is separately absorbed while idle and re-surfaced only on the longer pause cadence, rather than being treated as a possible wedge.
 For an ordinary crew that has stopped, the normal-mode watcher first surfaces one stale wake, then applies that same cadence to an unchanged `paused:` or durable `captain-held` endpoint only when the backend confidently reports its agent dead.
 Live or inconclusive liveness remains fail-open at that initial surface, and the secondmate idle-endpoint exemption is unchanged.
-Its initial normal-mode status signal still surfaces through the no-verb path, while away mode self-handles that routine signal and owns the later recheck.
+Its initial normal-mode status signal still surfaces through the no-verb path, while daemon-managed away mode self-handles that routine signal and owns the later recheck.
 Fresh stale panes use the same current-state read before trusting the status log, so an active run or a proven busy worker outranks an old captain-relevant status-log line left behind before validation.
 In normal mode, tmux and Herdr workers whose reconciled state is parked or done use `FM_PAUSE_RESURFACE_SECS` while idle only when the existing backend agent-liveness probe positively reports a live agent.
 Each poll probes liveness before capture, so a missing pane or an agent that exited to a bare shell surfaces once that death has persisted for one `FM_POLL` interval, independently of pane hashes and stale busy records; an unchanged dead endpoint then uses the same long recheck cadence.

@@ -937,7 +937,7 @@ $pending
 EOF
     reason="signal:$files"
     # Triage: a signal is ACTIONABLE when any of these holds (cheapest first):
-    #   - the away-mode daemon owns triage (afk) and wants every wake;
+    #   - the selected away owner triages (afk) and wants every wake;
     #   - any status file carries a captain-relevant verb;
     #   - or it is a no-verb wake (a bare turn-end, a working: note) whose crew is
     #     NOT provably working - the crew stopped its turn with no actively-running
@@ -1062,7 +1062,7 @@ EOF
             *)      clear_pause_tracking "$w" ;;
           esac
         elif afk_present; then
-          # Daemon owns triage: one-shot per distinct stale hash, as before.
+          # The selected away owner triages: one-shot per distinct stale hash.
           if [ "$(cat "$sf" 2>/dev/null || true)" != "$h" ]; then
             fm_wake_append stale "$w" "stale: $w" || exit 1
             printf '%s' "$h" > "$sf"
