@@ -1940,6 +1940,28 @@ EOF
   pass "next step delegates watcher ownership to the AFK daemon"
 }
 
+test_omp_away_full_output_has_one_owner() {
+  local rec root home fakebin out
+  rec=$(new_world omp-away-owner)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_harness "$fakebin" omp
+  : > "$home/state/.afk"
+  printf 'none\t-\tomp\n' > "$home/state/.afk-daemon-terminal"
+
+  out=$(FM_FAKE_HARNESS=omp run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+
+  assert_contains "$out" 'Mode: omp async-job supervision.' 'omp away did not select async supervision'
+  assert_contains "$out" 'Away mode is active' 'omp away lost recovery guidance'
+  assert_contains "$out" 'load /afk' 'omp away lost its policy owner'
+  assert_not_contains "$out" 'daemon owns the watcher' 'full omp digest assigns its watcher to a daemon'
+  assert_not_contains "$out" 'ensure the daemon is running' 'full omp digest starts an unsupported daemon'
+  assert_not_contains "$out" 'STOP:' 'omp away guidance exceeded the digest budget'
+  pass 'complete omp away startup output consistently selects async supervision'
+}
+
 test_supervision_block_exactly_one_and_pi_diagnostic() {
   local rec root home fakebin out block_count wake_line sup_line context_line
   rec=$(new_world pi-supervision-block)
@@ -2249,6 +2271,7 @@ test_budget_real_size_fixture_prints_every_rule_file
 test_fleet_digest_empty_fleet
 test_next_step_sources_x_mode_cadence
 test_next_step_afk_delegates_to_daemon
+test_omp_away_full_output_has_one_owner
 test_supervision_block_exactly_one_and_pi_diagnostic
 test_pi_signed_primary_uses_pi_extensions_without_identity_normalization
 test_pi_diagnostic_rejects_stale_loaded_marker

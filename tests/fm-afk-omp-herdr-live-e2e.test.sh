@@ -13,6 +13,10 @@ export HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 HERDR_LAB_SESSION=$("$HERDR_LAB_HELPER" name fm-afk-omp-inject-never-delivers)
 export HERDR_LAB_SESSION
 LAB=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-omp-live.XXXXXX")
+export FM_HOME="$LAB/home" FM_ROOT_OVERRIDE="$ROOT"
+export FM_STATE_OVERRIDE="$FM_HOME/state" STATE="$FM_HOME/state"
+export FM_CONFIG_OVERRIDE="$FM_HOME/config"
+export FM_WAKE_QUEUE="$STATE/.wake-queue" FM_WAKE_QUEUE_LOCK="$STATE/.wake-queue.lock"
 cleanup() {
   "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"
   rm -rf "${LAB:?}"
@@ -20,7 +24,7 @@ cleanup() {
 trap cleanup EXIT
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"
 export HERDR_LAB_REAL_PATH=$PATH
-mkdir -p "$LAB/shim" "$LAB/home/state" "$LAB/sessions"
+mkdir -p "$LAB/shim" "$FM_HOME/state" "$FM_HOME/config" "$LAB/sessions"
 cat > "$LAB/shim/herdr" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail

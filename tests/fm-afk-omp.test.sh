@@ -54,3 +54,78 @@ launch start
 [ "$(cat "$LAB/state/.afk-daemon-terminal")" = $'none\t-\tomp' ] || fail 'generic omp start did not select async delivery'
 launch stop
 pass 'omp return clears through the shared return owner and generic entry selects async delivery'
+python3 - "$ROOT" "$LAB" <<'PY'
+import json,os,subprocess,sys
+from pathlib import Path
+root,lab=map(Path,sys.argv[1:])
+fixture=lab/'live-isolation'
+tools=fixture/'tools'
+foreign=fixture/'unrelated'
+tools.mkdir(parents=True)
+foreign.mkdir()
+for name in ('.omp-extension-loaded','queue','config','state-sentinel'):
+    (foreign/name).write_text('unrelated '+name+'\n')
+before={p.name:p.read_bytes() for p in foreign.iterdir()}
+receipt=fixture/'receipt.json'
+calls=fixture/'calls'
+(tools/'init.mjs').write_text('''
+import {writeFileSync,existsSync} from "node:fs";
+import {pathToFileURL} from "node:url";
+const handlers=new Map();
+const {default:extension}=await import(pathToFileURL(process.env.EXTENSION_FILE).href);
+extension({on(name,fn){handlers.set(name,fn);},sendMessage(){}});
+await handlers.get("session_start")({}, {agent:{kind:"main"}});
+writeFileSync(process.env.FIXTURE_RECEIPT,JSON.stringify({env:process.env,
+  labMarker:existsSync(process.env.FM_HOME+"/state/.omp-extension-loaded")}));
+''')
+(tools/'omp').write_text('''#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then echo fixture-omp; exit 0; fi
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = -e ]; then export EXTENSION_FILE="$2"; shift 2; else shift; fi
+done
+exec node --experimental-strip-types "$FIXTURE_INIT"
+''')
+(tools/'helper').write_text('''#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FIXTURE_CALLS"
+case "$1" in
+  name) printf 'fm-lab-isolation-%s\n' "$$" ;;
+  provision|teardown) exit 0 ;;
+  run)
+    shift 2
+    case "$1 $2" in
+      'workspace create') echo '{"result":{"root_pane":{"pane_id":"fixture-pane"}}}' ;;
+      'pane run') bash "$4"; echo fixture-initialization-complete >&2; exit 73 ;;
+      *) exit 98 ;;
+    esac ;;
+  *) exit 97 ;;
+esac
+''')
+(tools/'herdr').write_text('#!/usr/bin/env bash\nexit 99\n')
+for name in ('omp','helper','herdr'):(tools/name).chmod(0o700)
+env=dict(os.environ,PATH=str(tools)+':'+os.environ['PATH'],TMPDIR=str(fixture),
+    FM_AFK_OMP_HERDR_LIVE_E2E='1',HERDR_LAB_HELPER=str(tools/'helper'),
+    FM_HOME=str(foreign),FM_STATE_OVERRIDE=str(foreign),STATE=str(foreign),
+    FM_CONFIG_OVERRIDE=str(foreign/'config'),
+    FM_WAKE_QUEUE=str(foreign/'queue'),FM_WAKE_QUEUE_LOCK=str(foreign/'lock'),
+    FIXTURE_INIT=str(tools/'init.mjs'),FIXTURE_RECEIPT=str(receipt),FIXTURE_CALLS=str(calls))
+result=subprocess.run(['bash',str(root/'tests/fm-afk-omp-herdr-live-e2e.test.sh')],
+    env=env,capture_output=True,text=True,timeout=15)
+assert receipt.exists(),(result.stdout,result.stderr)
+assert {p.name:p.read_bytes() for p in foreign.iterdir()}==before, \
+    'direct live test changed unrelated scratch state through inherited overrides'
+data=json.loads(receipt.read_text())
+assert data['labMarker'],'actual extension did not initialize in the lab state'
+child=data['env']
+home=Path(child['FM_HOME'])
+for key,value in {'FM_STATE_OVERRIDE':home/'state','STATE':home/'state',
+    'FM_CONFIG_OVERRIDE':home/'config','FM_WAKE_QUEUE':home/'state/.wake-queue',
+    'FM_WAKE_QUEUE_LOCK':home/'state/.wake-queue.lock'}.items():
+    assert child[key]==str(value),(key,child.get(key),str(value))
+assert result.returncode!=0 and 'fixture-initialization-complete' in result.stderr, \
+    'inert transport did not stop at the initialization boundary'
+operations=calls.read_text().splitlines()
+assert any(x.startswith('provision fm-lab-isolation-') for x in operations),operations
+assert operations[-1].startswith('teardown fm-lab-isolation-'),operations
+assert not list(fixture.glob('fm-afk-omp-live.*')),'live fixture did not clean its lab'
+print('ok - direct live test isolates actual extension initialization and all state/config/queue selectors')
+PY
