@@ -200,11 +200,11 @@ Harness-aware turn-end guards are structural backstops, not permission to omit t
 ### Away-mode stub
 
 Invoke the `/afk` skill when the captain says `/afk`, says they are going afk, `state/.afk` exists, an incoming message starts with `FM_INJECT_MARK`, or any `state/.subsuper-*` marker is involved.
-The skill owns the daemon procedure; these safety facts remain inline:
+The skill owns away supervision; these safety facts remain inline:
 
 - Every current away reminder uses the `away-supervisor` kind from `bin/fm-operational-input.sh` after `FM_OPERATIONAL_PREFIX` (U+2063 INVISIBLE SEPARATOR followed by `FIRSTMATE_OP: `), while the `/afk` skill owns legacy bare-marker compatibility.
-- While `state/.afk` exists, `/afk` owns delivery selection and silence; do not arm a separate watcher.
-- A marked message while away mode is active is internal escalation and does not exit away mode.
+- While `state/.afk` exists, `/afk` owns delivery selection and silence; continue its selected owner, including the omp async watcher.
+- A marked message or omp async-job completion while away mode is active is internal escalation and does not exit away mode.
 - A message beginning `/afk` refreshes away mode.
 - Any other unmarked message means the captain returned; load `/afk`, run the return owner, and do not process that message as ordinary work until its durable catch-up gate clears.
 - Away mode never expands approval authority for merges, ask-user findings, destructive actions, irreversible actions, or security-sensitive choices.

@@ -191,6 +191,8 @@ block_stop() {
       printf '●  %s task(s) in flight, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_IN_FLIGHT" "$FM_SUP_BEACON_DESC"
     elif [ "$FM_SUP_SOURCES" -gt 0 ]; then
       printf '●  %s process-event source(s) registered, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_SOURCES" "$FM_SUP_BEACON_DESC"
+    elif fm_afk_omp_selected "$STATE" || fm_afk_desktop_selected "$STATE"; then
+      printf '●  Selected away-mode delivery needs supervision, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_BEACON_DESC"
     else
       printf '●  X-mode relay polling needs supervision, but no live watcher holds this home lock (last beat: %s).\n' "$FM_SUP_BEACON_DESC"
     fi

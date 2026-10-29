@@ -40,4 +40,22 @@ with tempfile.TemporaryDirectory(prefix='.afk-isolation-check.',dir=root) as nam
     assert not (project/'state/sentinel').exists(), 'fixture backend call escaped to ambient PATH despite reintroduced terminal inputs'
     assert set((project/'state/fake-backend.calls').read_text().splitlines())=={'tmux','herdr','cmux','zellij','orca'}, 'fixture did not fake every terminal backend'
 print('ok - copied backend interfaces stay fake when terminal inputs are reintroduced')
+for existing_lock in (False,True):
+    with tempfile.TemporaryDirectory(prefix='afk-queue-isolation.') as name:
+        lab=Path(name); foreign=lab/'foreign'; foreign.mkdir()
+        queue=foreign/'queue'; lock=foreign/'lock'
+        queue.write_text('foreign queue sentinel\n')
+        if existing_lock:
+            lock.mkdir()
+            (lock/'sentinel').write_text('foreign lock sentinel\n')
+        before={str(p.relative_to(foreign)):p.read_bytes() for p in foreign.rglob('*') if p.is_file()}
+        result=subprocess.run(['bash',str(root/'tests/fm-afk-omp.test.sh')],
+            env=dict(os.environ,FM_WAKE_QUEUE=str(queue),FM_WAKE_QUEUE_LOCK=str(lock)),
+            capture_output=True,text=True,timeout=30)
+        after={str(p.relative_to(foreign)):p.read_bytes() for p in foreign.rglob('*') if p.is_file()}
+        assert after==before, f'portable watcher changed foreign queue/lock sentinels: {result.stdout}\n{result.stderr}'
+        assert lock.is_dir()==existing_lock, 'portable watcher changed foreign lock presence'
+        assert result.returncode==0, f'portable suite failed under foreign queue selectors: {result.stdout}\n{result.stderr}'
+        assert 'real one-shot watcher completes' in result.stdout, result.stdout
+print('ok - actual portable omp suite preserves foreign queue and lock sentinels')
 PY

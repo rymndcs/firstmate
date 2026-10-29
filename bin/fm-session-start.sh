@@ -804,7 +804,7 @@ fi
 render_fleet_tail() {
   subsection "AFK"
   if [ -e "$STATE/.afk" ]; then
-    printf 'present - away-mode supervision is active; the daemon owns the watcher.\n'
+    printf 'present - away-mode supervision is active; follow /afk.\n'
   else
     printf 'absent\n'
   fi
@@ -905,8 +905,7 @@ EOF
   elif [ "$AFK_PRESENT" -eq 1 ]; then
     cat <<'EOF'
 Away mode is active. Follow the supervision operating instructions block above:
-load /afk and ensure the daemon is running, because the daemon owns watcher
-supervision.
+load /afk for the selected supervision owner.
 
 EOF
   elif [ "$X_MODE_PRESENT" -eq 1 ]; then

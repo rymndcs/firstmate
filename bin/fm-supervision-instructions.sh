@@ -127,7 +127,7 @@ repair_line() {
     printf '%s\n' 'Desktop away mode uses Stop-owned recovery; load /afk and inspect the Stop hook before ending blind.'
     return 0
   fi
-  if [ "$AFK" -eq 1 ]; then
+  if [ "$AFK" -eq 1 ] && [ "$HARNESS" != omp ]; then
     printf '%s\n' 'Away mode owns watcher supervision; load /afk and ensure the daemon is running instead of starting normal supervision directly.'
     return 0
   fi
@@ -209,6 +209,8 @@ fi
 if [ "$AFK" -eq 1 ]; then
   if fm_afk_desktop_selected "$STATE"; then
     printf '%s\n' '- Away mode: active; load /afk, follow its output policy, and keep the Stop hook as the only supervision owner.'
+  elif [ "$HARNESS" = omp ]; then
+    printf '%s\n' '- Away mode: active; load /afk and retain exactly one normal omp async watcher job as the selected owner.'
   else
     printf '%s\n' '- Away mode: active; load /afk and keep normal harness supervision paused while the daemon owns the watcher.'
   fi

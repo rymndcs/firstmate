@@ -91,8 +91,7 @@
 # the ascii preset (whose "Esc" would also match prose case-insensitively) still
 # reads busy outside tool calls. The status line's spinner and elapsed
 # counter are deliberately not a signal: they stay on while any async bash job is
-# outstanding, which includes the away daemon itself, yet omp then takes input
-# as a new turn at once.
+# outstanding, yet omp then takes input as a new turn at once.
 FM_TMUX_BUSY_REGEX_DEFAULT='esc (to )?interrupt|Working\.\.\.|Ctrl\+c:cancel'
 FM_TMUX_CLAUDE_BUSY_REGEX_DEFAULT='esc to interrupt|…[[:space:]]+\([0-9]+[smh]'
 FM_TMUX_CODEX_BUSY_REGEX_DEFAULT='esc to interrupt'
