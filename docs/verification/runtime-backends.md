@@ -226,6 +226,37 @@ ok - real omp/Herdr: idle wake delivered once and acknowledged, pending draft pr
 ```
 
 
+Core read-only probes:
+
+```sh
+herdr --version
+herdr status --json | jq -c '{client:.client.protocol,server:.server.protocol}'
+herdr api schema --json | jq -c '.schemas.subscription_event["$defs"].SubscriptionEventKind.enum'
+```
+
+Observed protocol-16 compatibility shapes:
+
+```text
+herdr 0.7.5
+{"client":17,"server":17}
+["pane.output_matched","pane.agent_status_changed","pane.scroll_changed"]
+```
+
+The CLI matrix was checked directly:
+
+| Guarantee | Command shape | Result |
+| --- | --- | --- |
+| Explicit session routing | `herdr <verb> ... --session <name>` | Reached the named session even while another server was running. |
+| Literal send | `herdr pane send-text <pane> <text> --session <name>` | Left text unsubmitted until Enter. |
+| Keys | `herdr pane send-keys <pane> enter|escape|ctrl+c --session <name>` | Enter and Escape worked; Ctrl-C interrupted foreground work. |
+| Capture | `herdr pane read <pane> --source recent --lines N` | Small N could return empty below viewport height; a 200-line request plus local trim was stable. |
+| Native state | `herdr agent get <pane>` | Working and done transitions were visible; native `busy` remains positive activity evidence, while native `idle` cannot close a turn and the adapter's semantic lifecycle decides worker state. |
+| Restart | guarded named-session stop then start | Workspace, tab, pane, and labels persisted; the agent process and registration did not. |
+| Close | `herdr pane close <pane> --session <name>` | The exact one-pane task tab closed; closing a final tab could remove the workspace. |
+
+All destructive verification used `bin/fm-herdr-lab.sh` with a non-default `fm-lab-` name and a byte-identical default-session tripwire.
+No ambient `herdr server stop` command is a supported test operation.
+
 ### omp away supervision
 
 On 2026-10-29, real omp 18.12.6 on Herdr 0.9.5 protocol 22 reproduced a retained working row after handling an async-job completion while another async job remained outstanding.
@@ -288,38 +319,6 @@ The undelivered away-mode escalations on 2026-10-29 came from a pane daemon that
 The hypothesis that the daemon running as a child async job of that primary keeps omp permanently busy was refuted in the real omp/Herdr lab above: the guard returned idle after a new turn while the daemon job stayed outstanding.
 The matching cause is the retained-row reproduction: a completed async handling turn left a visible working row while native state was idle, so the rendered-busy guard refused injection.
 The daemon log records only the deferral outcome, so it cannot establish which guard branch each historical retry took.
-
-
-Core read-only probes:
-
-```sh
-herdr --version
-herdr status --json | jq -c '{client:.client.protocol,server:.server.protocol}'
-herdr api schema --json | jq -c '.schemas.subscription_event["$defs"].SubscriptionEventKind.enum'
-```
-
-Observed protocol-16 compatibility shapes:
-
-```text
-herdr 0.7.5
-{"client":17,"server":17}
-["pane.output_matched","pane.agent_status_changed","pane.scroll_changed"]
-```
-
-The CLI matrix was checked directly:
-
-| Guarantee | Command shape | Result |
-| --- | --- | --- |
-| Explicit session routing | `herdr <verb> ... --session <name>` | Reached the named session even while another server was running. |
-| Literal send | `herdr pane send-text <pane> <text> --session <name>` | Left text unsubmitted until Enter. |
-| Keys | `herdr pane send-keys <pane> enter|escape|ctrl+c --session <name>` | Enter and Escape worked; Ctrl-C interrupted foreground work. |
-| Capture | `herdr pane read <pane> --source recent --lines N` | Small N could return empty below viewport height; a 200-line request plus local trim was stable. |
-| Native state | `herdr agent get <pane>` | Working and done transitions were visible; native `busy` remains positive activity evidence, while native `idle` cannot close a turn and the adapter's semantic lifecycle decides worker state. |
-| Restart | guarded named-session stop then start | Workspace, tab, pane, and labels persisted; the agent process and registration did not. |
-| Close | `herdr pane close <pane> --session <name>` | The exact one-pane task tab closed; closing a final tab could remove the workspace. |
-
-All destructive verification used `bin/fm-herdr-lab.sh` with a non-default `fm-lab-` name and a byte-identical default-session tripwire.
-No ambient `herdr server stop` command is a supported test operation.
 
 ### Prune and respawn
 
