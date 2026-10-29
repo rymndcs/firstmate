@@ -52,7 +52,8 @@ fm_supervision_status() {
   if [ "$FM_SUP_IN_FLIGHT" -gt 0 ] \
     || [ -f "$state/x-watch.check.sh" ] \
     || [ "$FM_SUP_SOURCES" -gt 0 ] \
-    || fm_afk_desktop_selected "$state"; then
+    || fm_afk_desktop_selected "$state" \
+    || fm_afk_omp_selected "$state"; then
     FM_SUP_NEEDED=true
   fi
 
@@ -92,6 +93,11 @@ fm_supervision_unhealthy() {
 # Explicit Desktop away delivery selection; legacy records retain pane delivery.
 fm_afk_desktop_selected() {  # <state-dir>
   [ -e "$1/.afk" ] && [ "$(cat "$1/.afk-daemon-terminal" 2>/dev/null)" = $'none\t-\tdesktop' ]
+}
+
+# omp retains the normal tracked async watcher as its only away delivery owner.
+fm_afk_omp_selected() {  # <state-dir>
+  [ -e "$1/.afk" ] && [ "$(cat "$1/.afk-daemon-terminal" 2>/dev/null)" = $'none\t-\tomp' ]
 }
 
 # Shared visible-output policy for every away delivery and recovery reminder.

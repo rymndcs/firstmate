@@ -160,7 +160,7 @@ Expected submit matrix: proven pending plus busy is accepted as queued; proven p
 
 The omp supervisor-pane readers were captured from a real omp 18.12.6 TUI on tmux 3.6a on 2026-10-23, on a dedicated socket.
 omp's draft rides the composer box's bottom border row, every content row starts three columns in, and the cursor sits at the content origin when the draft is empty.
-Its loader row exists only while the agent runs and is led by the interrupt key's `key.esc` symbol (`󱊷` nerd, `⎋` unicode, `Esc` ascii) and then `Working…` or a tool's status text.
+Its loader row is led by the interrupt key's `key.esc` symbol (`󱊷` nerd, `⎋` unicode, `Esc` ascii) and then `Working…` or a tool's status text.
 The status line's spinner and elapsed counter stayed on after the reply while an async `sleep` job was outstanding, and a prompt submitted then was answered within 3 seconds, so the counter is not a busy signal.
 Observed bounded shapes, in order: an idle composer, a typed draft, a wrapped draft, the mid-tool and streaming loaders, and the status line with an async job outstanding after the reply:
 
@@ -208,10 +208,11 @@ Claude, Codex, OpenCode, Pi, pi-signed, Grok, and Kimi share that backend cleanu
 ## Herdr
 
 The compatibility floor is protocol 14.
-The latest active verification uses Herdr 0.7.5 protocol 17 on macOS aarch64, with earlier 0.7.5 protocol-16, 0.7.4, protocol-14, and 0.7.3 evidence retained where they define current behavior or fallbacks.
+The complete backend verification uses Herdr 0.7.5 protocol 17 on macOS aarch64, with earlier 0.7.5 protocol-16, 0.7.4, protocol-14, and 0.7.3 evidence retained where they define current behavior or fallbacks.
+The omp away-supervision proof below additionally uses Herdr 0.9.5 protocol 22 on macOS aarch64.
 Protocol 17 keeps every protocol-16 feature gate satisfied; the event and workspace-move floors remain 16.
 
-omp 18.12.6 away-mode delivery was verified on an isolated Herdr session on 2026-10-23 using the real `openai-codex/gpt-6.1-sol` model.
+Direct injection into an idle omp 18.12.6 pane was verified on an isolated Herdr session on 2026-10-23 using the real `openai-codex/gpt-6.1-sol` model.
 The native pane identity reported `omp` and `idle`, and the composer reader returned `empty`, `pending`, and `empty` before typing, with a draft, and after clearing it.
 Native submit status remained idle after an accepted Enter, while the actual omp transcript already contained the submitted prompt; the omp-specific cleared-composer proof therefore also acknowledges submission.
 The regression confirmed exactly one delivered away prompt, a real completed reply, and refusal to type a second wake into the captain's intact draft.
@@ -223,6 +224,63 @@ FM_OMP_HERDR_LIVE_E2E=1 tests/fm-omp-herdr-live-e2e.test.sh
 ```text
 ok - real omp/Herdr: idle wake delivered once and acknowledged, pending draft preserved
 ```
+
+
+### omp away supervision
+
+On 2026-10-29, real omp 18.12.6 on Herdr 0.9.5 protocol 22 reproduced a retained working row after handling an async-job completion while another async job remained outstanding.
+The completed handling reply was `·`, but the visible tail retained `󱊷 Draining wake queue`.
+The three readers diverged: native `agent get` reported `idle`, `fm_busy_classify herdr "$TARGET" omp primary "$STATE"` reported `unknown missing`, and `pane_is_busy "$TARGET" herdr` returned success for busy.
+`inject_msg` consequently returned 1.
+A new tool-free prompt cleared that row and made the same pane guard return idle without stopping the outstanding job.
+The earlier direct-injection proof therefore does not establish unattended pane delivery, and a rendered working row is not sufficient evidence of a live omp turn after an async completion.
+
+The retained-row probe ran these commands in the isolated lab, with `FM_SUPERVISOR_TARGET` naming its omp pane and all backend CLI calls routed through the lab helper:
+
+```sh
+. "$FM_ROOT_OVERRIDE/bin/fm-supervise-daemon.sh"
+printf 'semantic='; fm_busy_classify herdr "$FM_SUPERVISOR_TARGET" omp primary "$FM_HOME/state"; echo
+if pane_is_busy "$FM_SUPERVISOR_TARGET" herdr; then echo busy; else echo idle; fi
+inject_msg 'LAB_SHOULD_DEFER' "$FM_HOME/state"; echo "inject_rc=$?"
+```
+
+Observed output after the completed async handling turn:
+
+```text
+semantic=unknown missing
+busy
+inject_rc=1
+```
+
+After the tool-free `CLEARED` reply, the same `pane_is_busy` command printed `idle` while the original daemon job remained outstanding.
+The omp selection uses async watcher completion instead; the pane busy and draft guards for other harnesses are unchanged.
+
+The interactive primary extension, real worker-status wakes, re-arm, and return gate were verified with `anthropic/claude-opus-5-5` using:
+
+```sh
+FM_AFK_OMP_HERDR_LIVE_E2E=1 tests/fm-afk-omp-herdr-live-e2e.test.sh
+```
+
+Exact output from the 2026-10-29 run:
+
+```text
+ok - omp/18.12.6: away worker event 1 acted on and rearmed in 7.1s
+ok - omp/18.12.6: away worker event 2 acted on and rearmed in 6.5s
+ok - omp/18.12.6: shared return gate cleared and retired omp away selection
+```
+
+`tests/fm-afk-omp.test.sh` pins executable selection, owner exclusivity, refresh, no-worker continuity, actual watcher completion, and the shared return path without a harness.
+`tests/fm-daemon.test.sh` controls the clock and invokes a real notifier recorder to verify the two-minute default alarm for every primary harness, retained evidence and drafts, and the durable delivery-failure wake.
+The existing configurable notifier channels, explicit opt-out, throttle, and marker remain governed by [the wedge-alarm owner](../wedge-alarm.md).
+
+| Integration | Inspected delivery surface | Effect of this change |
+| --- | --- | --- |
+| omp on Herdr or tmux | `fm-afk-launch.sh`, `fm-afk-start.sh`, normal async watcher | Selects async completion; never starts a pane daemon. |
+| Claude terminal and Grok | Native tracked job with pane daemon | Delivery unchanged; shorter alarm deadline and durable failure wake. |
+| Codex, OpenCode, Pi and pi-signed terminal | Existing pane daemon selection and return owner | Delivery unchanged; shorter alarm deadline and durable failure wake. |
+| Claude Desktop | Stop-owned handoff and acknowledgment | Unchanged; no pane injection or rendered busy predicate. |
+| Kimi | Harness-scoped pane guard | Existing verification limit unchanged; shared alarm logic tested without claiming new primary support. |
+| Zellij, Orca and cmux | Launcher's unsupported non-visible daemon branch | Existing refusal unchanged; no new launch primitive or support claim. |
 
 
 Core read-only probes:

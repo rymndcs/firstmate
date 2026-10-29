@@ -17,7 +17,8 @@
 # enables nounset and errexit; callers that need different shell options must
 # restore them explicitly.
 #
-# This is the COMMON daemon entry for every backend. HOW it becomes a tracked
+# This is the common terminal-daemon entry; omp is refused and uses its normal
+# async watcher through the launcher instead. HOW it becomes a tracked
 # background process differs by harness/backend and is owned elsewhere:
 #   - Harnesses with a native in-pane tracked-background tool (e.g. claude, grok)
 #     run this directly via that tool, so the daemon inherits the captain pane's
@@ -119,6 +120,10 @@ fm_afk_start_main() {
     * ) echo "usage: $(basename "${BASH_SOURCE[1]:-fm-afk-start.sh}")" >&2; return 2 ;;
   esac
 
+  if fm_afk_omp_selected "$FM_AFK_STATE" || [ "$("$FM_AFK_START_DIR/fm-harness.sh")" = omp ]; then
+    echo "afk: omp uses bin/fm-afk-launch.sh start-native then bin/fm-watch-arm.sh as an async bash job; refusing pane daemon" >&2
+    return 1
+  fi
   if fm_afk_desktop_selected "$FM_AFK_STATE"; then
     echo 'afk: Desktop delivery owns away supervision; refusing pane entry' >&2
     return 1

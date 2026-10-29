@@ -1,6 +1,6 @@
 Mode: omp async-job supervision.
 
-When this session owns supervision and away mode is not active:
+When this session owns supervision, including omp away mode selected by `/afk`:
 1. Drain first with `bin/fm-wake-drain.sh`.
 2. Source `__FM_X_MODE_ENV__` first when X mode is active.
 3. First cycle: arm with omp's tracked background job, as its own call:
@@ -26,7 +26,7 @@ When the arm job's completion arrives:
 1. Run `bin/fm-wake-drain.sh` first.
 2. Read the reason line from the delivered job output.
 3. Handle `signal`, `stale`, `check`, or `heartbeat` using the harness-neutral contract in `AGENTS.md`.
-4. Ordinary wake: re-arm the next cycle with the same async `bin/fm-watch-arm.sh` call if work remains in flight or X mode still needs polling.
+4. Ordinary wake: re-arm the next cycle with the same async `bin/fm-watch-arm.sh` call if work remains in flight, X mode still needs polling, or omp away mode remains active.
 5. Do not invent a wake from an attach-status line alone.
    Drain the queue and act only on real wake records or a real watcher reason line.
    Re-arm attaches to an existing healthy cycle when one is already present and follows its verified successor chain.

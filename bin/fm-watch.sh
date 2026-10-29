@@ -9,7 +9,7 @@
 # Verified-live parked/done workers and declared external-wait pauses instead
 # use the bounded idle cadence described in docs/architecture.md.
 # Initial status signals still surface in normal mode.
-# While state/.afk exists, the daemon owns triage and this watcher queues and exits
+# While state/.afk exists, the selected away owner triages; this watcher queues and exits
 # on every wake. Printed reason lines:
 #   signal: <file>...      status/turn-end signals, surfaced when a listed status
 #                          has a captain-relevant verb OR a no-verb signal's crew
@@ -143,7 +143,7 @@ SIGNAL_GRACE=${FM_SIGNAL_GRACE:-30}   # seconds to linger after a signal so trai
 # threshold, or anything unknown) is written to the durable queue and exits, which
 # is what wakes the LLM through the background-task completion. The same classifier
 # (fm-classify-lib.sh) backs the away-mode daemon; while state/.afk exists the
-# daemon owns triage, so this watcher reverts to one-shot (enqueue + exit on every
+# selected away owner triages, so this watcher reverts to one-shot (enqueue + exit on every
 # wake) and never double-triages - and never runs the costly provably-working read.
 STALE_ESCALATE_SECS=${FM_STALE_ESCALATE_SECS:-240}  # idle secs before a provably-working stale escalates as a possible wedge
 # A busy pane is unconditional proof of liveness with no built-in duration bound,
@@ -179,10 +179,9 @@ _event_cap_key=""
 _event_cap_ok=0
 _event_cap_fails=0
 
-# afk_present: 0 while the away-mode flag exists. When set, the daemon wraps this
-# watcher and owns triage, so the watcher must behave one-shot (enqueue + exit on
-# every wake) and let the daemon classify - never absorb here, or the daemon's
-# digest/injection layer would never see the wake.
+# afk_present: 0 while the away-mode flag exists. The selected away owner
+# (omp primary async completion or daemon) owns triage, so enqueue and exit
+# on every wake rather than absorbing the event here.
 afk_present() { [ -e "$STATE/.afk" ]; }
 
 hash_pane() {

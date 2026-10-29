@@ -245,7 +245,7 @@ The adapter locates the bottom-most recognized bordered row, Claude `❯` row, C
 A working Pi, pending middle row, missing identity, incomplete separator pair, or over-tall candidate remains pending or unknown.
 An omp supervisor uses a separate bottom-anchored rounded-box scan because omp puts its final draft line in the bottom border.
 Native identity must be exactly omp in idle or done state; the complete box must end the capture, typed text on any row is pending, and a clipped box or shell output beneath it is unknown.
-The real omp/Herdr regression is `FM_OMP_HERDR_LIVE_E2E=1 tests/fm-omp-herdr-live-e2e.test.sh`.
+The idle-pane composer regression is `FM_OMP_HERDR_LIVE_E2E=1 tests/fm-omp-herdr-live-e2e.test.sh`; [runtime verification](verification/runtime-backends.md#omp-away-supervision) owns the separate omp away-continuity proof.
 
 ANSI capture preserves de-emphasized placeholder style.
 `bin/fm-composer-lib.sh` is the fleet-wide owner that strips dim or faint runs and dark truecolor placeholders while retaining bright typed input.

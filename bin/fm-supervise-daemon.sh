@@ -104,7 +104,7 @@
 #          FM_MAX_DEFER_SECS        max seconds a buffered escalation may sit
 #                                   undelivered before one normal flush attempt;
 #                                   if that cannot confirm a submit, a wedge
-#                                   alarm fires (default 300; 0 disables)
+#                                   alarm fires (default 120; 0 disables)
 #          FM_WEDGE_ALARM_CHANNEL   override config/wedge-alarm with a single
 #                                   active-alert directive for that wedge alarm
 #                                   (off|auto|osascript|herdr|command:<cmd>). An
@@ -205,7 +205,7 @@ HOUSEKEEPING_TICK_DEFAULT=15
 # Max time a buffered escalation may sit undelivered before the daemon retries
 # the normal flush path and, if that cannot confirm a submit, raises a loud wedge
 # alarm. The escape hatch makes a guard false-positive visible instead of silent.
-MAX_DEFER_SECS_DEFAULT=300
+MAX_DEFER_SECS_DEFAULT=120
 WEDGE_ALARM_TIMEOUT_SECS_DEFAULT=10
 WEDGE_ALARM_LAST_EPOCH=0
 WEDGE_ALARM_NOTIFIER_PID=
@@ -947,6 +947,16 @@ inject_wedge_alarm() {  # <state> <age-seconds>
   # the durable record whether or not any channel fires.
   if [ "$notify" -eq 1 ]; then
     wedge_alarm_notify "away-mode escalations WEDGED ${age}s undelivered - see $marker" "$marker"
+    # shellcheck disable=SC2016 # The child shell expands its own positional arguments.
+    wedge_alarm_run_bounded wake bash -c '
+      [ -w "$2" ] || exit 1
+      export FM_STATE_OVERRIDE="$2"
+      unset FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
+      . "$1"
+      fm_wake_append check away-delivery "$3"
+    ' _ "$FM_DAEMON_DIR/fm-wake-lib.sh" "$state" \
+      "check: away-delivery - escalation undelivered ${age}s; inspect $marker" >/dev/null 2>&1 \
+      || log "wedge alarm: could not persist delivery-failure wake"
   fi
 }
 
@@ -1340,6 +1350,10 @@ fm_super_main() {
   local STATE FM_AFK_STOP_HOOK=0 FM_AFK_HANDED_OFF=0
   [ "${1:-}" != --stop-hook ] || FM_AFK_STOP_HOOK=1
   STATE="$(_state_root)"
+  if fm_afk_omp_selected "$STATE"; then
+    echo 'error: omp delivery owns away supervision; refusing pane daemon' >&2
+    return 1
+  fi
   if [ "$FM_AFK_STOP_HOOK" -eq 0 ] && fm_afk_desktop_selected "$STATE"; then
     echo 'error: Desktop delivery owns away supervision; refusing pane daemon' >&2
     return 1
