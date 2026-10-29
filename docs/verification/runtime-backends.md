@@ -282,6 +282,13 @@ The existing configurable notifier channels, explicit opt-out, throttle, and mar
 | Kimi | Harness-scoped pane guard | Existing verification limit unchanged; shared alarm logic tested without claiming new primary support. |
 | Zellij, Orca and cmux | Launcher's unsupported non-visible daemon branch | Existing refusal unchanged; no new launch primitive or support claim. |
 
+#### Home incident diagnosis
+
+The undelivered away-mode escalations on 2026-10-29 came from a pane daemon that targeted `default:w3:p9`, the same pane as the live lock-owning omp primary, so a wrong target is ruled out.
+The hypothesis that the daemon running as a child async job of that primary keeps omp permanently busy was refuted in the real omp/Herdr lab above: the guard returned idle after a new turn while the daemon job stayed outstanding.
+The matching cause is the retained-row reproduction: a completed async handling turn left a visible working row while native state was idle, so the rendered-busy guard refused injection.
+The daemon log records only the deferral outcome, so it cannot establish which guard branch each historical retry took.
+
 
 Core read-only probes:
 
