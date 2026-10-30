@@ -574,8 +574,12 @@ pass 'a state path is read literally, never as a glob'
 test_rebuild_registration_time() {
   local FM_HOME="$PR_TMP/rebuild-home" FM_STATE_OVERRIDE="$PR_TMP/rebuild-home/state" pr_state
   export FM_HOME FM_STATE_OVERRIDE
-  mkdir -p "$FM_STATE_OVERRIDE"
-  pr_state=$FM_STATE_OVERRIDE
+  use_rebuild_home() {  # <name>; a migration rebuilds every poll in its home, so each scenario gets its own
+    FM_HOME="$PR_TMP/$1-home" FM_STATE_OVERRIDE="$PR_TMP/$1-home/state"
+    mkdir -p "$FM_STATE_OVERRIDE"
+    pr_state=$FM_STATE_OVERRIDE
+  }
+  use_rebuild_home rebuild
   rebuilt=$(pr_url 58)
   register_at task-rebuilt "$rebuilt" 202001011000
   set_items 58 issues "$(stamp=2020-01-01T09:59:00Z item 990 stranger 'Before registration' "$rebuilt#issuecomment-990"),$(stamp=2020-01-01T10:01:00Z item 991 stranger 'After registration, before the rebuild' "$rebuilt#issuecomment-991")"
@@ -613,6 +617,7 @@ test_rebuild_registration_time() {
   }
   stub_failing "$PR_TMP/no-data-quarantine" mv '*/.pr-check-quarantine/*.data.*'
   stub_failing "$PR_TMP/no-time-carry" touch "*' -r '*"
+  use_rebuild_home recovery
   recovered=$(pr_url 62)
   register_at task-recovered "$recovered" 204001011000
   rm -f "${pr_state:?}/task-recovered.pr-registered"
@@ -654,6 +659,7 @@ test_rebuild_registration_time() {
     || fail 'a retry must preserve the current sidecar time rather than an older quarantined registration'
   pass 'an interrupted or failed rebuild rolls back and preserves its cutoff on retry'
 
+  use_rebuild_home publish-failed
   publish_failed=$(pr_url 65)
   register_at task-publish-failed "$publish_failed" 202001011000
   rm -f "${pr_state:?}/task-publish-failed.pr-registered"
@@ -684,6 +690,7 @@ FAIL_PUBLICATION
   assert_not_contains "$out" 'comment=1000 ' 'a retry after failed publication must keep historical activity silent'
   pass 'a publication rollback preserves the registration cutoff on retry'
 
+  use_rebuild_home interrupted
   interrupted=$(pr_url 66)
   register_at task-interrupted "$interrupted" 202001011000
   rm -f "${pr_state:?}/task-interrupted.pr-registered"
