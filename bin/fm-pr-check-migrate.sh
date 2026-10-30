@@ -3,7 +3,10 @@
 # versions. Legacy check files are never run, sourced, or parsed by Bash.
 # Pending validated merged-poll retirements finish first. Canonical polls are
 # then rebuilt from validated metadata, keeping the time of a replaced poll for
-# the same URL (fm_pr_poll_prepare), remaining provenance-bound polls and
+# the same URL (fm_pr_poll_prepare). Its existing data quarantine uses
+# <id>.data.active while pending: retry uses that sidecar if the current one
+# already moved, and successful publication archives it under a random name.
+# Remaining provenance-bound polls and
 # registered custom checks remain armed, and every other task poll is
 # quarantined for private review. A current X-mode shim is preserved by exact
 # content, while the recognized older byte-static shim is refreshed in place.
@@ -514,24 +517,26 @@ metadata_pr_is_canonical() {
   MIGRATION_NUMBER=$FM_PR_META_NUMBER
 }
 
-# MIGRATION_QUARANTINED names the quarantined artifact, empty when none existed.
 quarantine_artifact() {
   local source=$1 prefix=$2 kind=$3 destination source_device
-  MIGRATION_QUARANTINED=
   [ -e "$source" ] || [ -L "$source" ] || return 0
   [ -f "$source" ] && [ ! -L "$source" ] || return 1
   quarantine_dir_valid || return 1
   source_device=$(fm_pr_file_device "$source") || return 1
   [ "$source_device" = "$STATE_DEVICE" ] || return 1
   [ "$(fm_pr_file_link_count "$source")" = 1 ] || return 1
-  [ -z "$MIGRATION_QUARANTINE_TMP" ] || rm -f -- "$MIGRATION_QUARANTINE_TMP"
-  MIGRATION_QUARANTINE_TMP=
-  MIGRATION_QUARANTINE_TMP=$(mktemp "$QUARANTINE/$prefix.$kind.XXXXXX") || return 1
-  [ -f "$MIGRATION_QUARANTINE_TMP" ] && [ ! -L "$MIGRATION_QUARANTINE_TMP" ] || return 1
-  [ "$(fm_pr_file_device "$MIGRATION_QUARANTINE_TMP")" = "$STATE_DEVICE" ] || return 1
-  destination=$MIGRATION_QUARANTINE_TMP
-  rm -f -- "$destination" || return 1
-  MIGRATION_QUARANTINE_TMP=
+  if [ "$kind" = active-data ]; then
+    destination="$QUARANTINE/$prefix.data.active"
+  else
+    [ -z "$MIGRATION_QUARANTINE_TMP" ] || rm -f -- "$MIGRATION_QUARANTINE_TMP"
+    MIGRATION_QUARANTINE_TMP=
+    MIGRATION_QUARANTINE_TMP=$(mktemp "$QUARANTINE/$prefix.$kind.XXXXXX") || return 1
+    [ -f "$MIGRATION_QUARANTINE_TMP" ] && [ ! -L "$MIGRATION_QUARANTINE_TMP" ] || return 1
+    [ "$(fm_pr_file_device "$MIGRATION_QUARANTINE_TMP")" = "$STATE_DEVICE" ] || return 1
+    destination=$MIGRATION_QUARANTINE_TMP
+    rm -f -- "$destination" || return 1
+    MIGRATION_QUARANTINE_TMP=
+  fi
   quarantine_dir_valid || return 1
   mv -- "$source" "$destination" || return 1
   [ -f "$destination" ] && [ ! -L "$destination" ] || return 1
@@ -541,8 +546,15 @@ quarantine_artifact() {
   [ "$(fm_pr_file_mode "$destination")" = 600 ] || return 1
   [ "$(fm_pr_file_device "$destination")" = "$STATE_DEVICE" ] || return 1
   [ "$(fm_pr_file_link_count "$destination")" = 1 ] || return 1
-  [ ! -e "$source" ] && [ ! -L "$source" ] || return 1
-  MIGRATION_QUARANTINED=$destination
+  [ ! -e "$source" ] && [ ! -L "$source" ]
+}
+
+quarantine_canonical_data() {
+  local id=$1 data="$STATE/$1.pr-poll" active="$QUARANTINE/$1.data.active"
+  if [ -e "$data" ] || [ -L "$data" ]; then
+    quarantine_artifact "$active" "$id" data || return 1
+    quarantine_artifact "$data" "$id" active-data
+  fi
 }
 
 diagnostic_file_contains() {
@@ -745,6 +757,7 @@ complete_canonical_outcome() {
   canonical_terminal_success "$id" || return 1
   remove_diagnostic_obligation "$id" failure-canonical || return 1
   ensure_outcome_obligation "$id" canonical || return 1
+  quarantine_artifact "$QUARANTINE/$id.data.active" "$id" data || return 1
   remove_diagnostic_obligation "$id" pending-canonical
 }
 
@@ -786,7 +799,7 @@ record_ambiguous_failure() {
 }
 
 canonical_repair_from_pending() {
-  local id=$1 meta data registration provider url host path number check replaced
+  local id=$1 meta data registration provider url host path number check
   meta="$STATE/$id.meta"
   data="$STATE/$id.pr-poll"
   registration="$STATE/$id.pr-poll-registration"
@@ -799,12 +812,11 @@ canonical_repair_from_pending() {
   host=$MIGRATION_HOST
   path=$MIGRATION_PATH
   number=$MIGRATION_NUMBER
-  quarantine_artifact "$data" "$id" data || return 1
-  replaced=$MIGRATION_QUARANTINED
+  quarantine_canonical_data "$id" || return 1
   quarantine_artifact "$registration" "$id" registration || return 1
   [ ! -e "$data" ] && [ ! -L "$data" ] || return 1
   [ ! -e "$registration" ] && [ ! -L "$registration" ] || return 1
-  fm_pr_poll_prepare "$STATE" "$id" "$provider" "$url" "$host" "$path" "$number" "$TEMPLATE" "$replaced" || return 1
+  fm_pr_poll_prepare "$STATE" "$id" "$provider" "$url" "$host" "$path" "$number" "$TEMPLATE" "$QUARANTINE/$id.data.active" || return 1
   fm_pr_poll_publish_prepared || return 1
   canonical_terminal_success "$id"
 }
@@ -1055,10 +1067,9 @@ if migration_needed; then
           continue
         fi
         if quarantine_artifact "$check" "$prefix" check \
-          && quarantine_artifact "$data" "$prefix" data \
-          && replaced=$MIGRATION_QUARANTINED \
+          && quarantine_canonical_data "$id" \
           && quarantine_artifact "$registration" "$prefix" registration \
-          && fm_pr_poll_prepare "$STATE" "$id" "$provider" "$url" "$host" "$path" "$number" "$TEMPLATE" "$replaced" \
+          && fm_pr_poll_prepare "$STATE" "$id" "$provider" "$url" "$host" "$path" "$number" "$TEMPLATE" "$QUARANTINE/$id.data.active" \
           && fm_pr_poll_publish_prepared \
           && complete_canonical_outcome "$id"; then
           :
