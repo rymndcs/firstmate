@@ -186,7 +186,6 @@ family_for_basename() {
     fm-documentation-audiences.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
-    fm-push-pretool-check.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
@@ -474,7 +473,6 @@ tests/fm-pr-ci.test.sh 15875
 tests/fm-procevent.test.sh 61280
 tests/fm-protected-paths.test.sh 25447
 tests/fm-public-followup.test.sh 24618
-tests/fm-push-pretool-check.test.sh 2236
 tests/fm-quota-array-dispatch-live-e2e.test.sh 19
 tests/fm-remote-backlog-handoff.test.sh 20460
 tests/fm-remote-doctor.test.sh 7238
