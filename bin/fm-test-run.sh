@@ -182,10 +182,11 @@ family_for_basename() {
     fm-brief.test.sh|fm-vendor-auth-probe.test.sh|\
     fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
-    fm-crew-state.test.sh|fm-decision-hold-lifecycle.test.sh|fm-delivery-mode-pretool-check.test.sh|\
+    fm-crew-state.test.sh|fm-decision-hold-lifecycle.test.sh|\
     fm-documentation-audiences.test.sh|fm-grok-harness.test.sh|\
     fm-kimi-harness.test.sh|fm-herdr-lab.test.sh|fm-lint.test.sh|\
     fm-operational-input.test.sh|fm-pi-primary-types.test.sh|\
+    fm-push-pretool-check.test.sh|\
     fm-send-popup-settle.test.sh|fm-send-settle.test.sh|\
     fm-subagent-pretool-check.test.sh|\
     fm-supervision-instructions.test.sh|fm-task-delivery.test.sh|\
@@ -443,7 +444,6 @@ tests/fm-claude-stop-autoarm-live-e2e.test.sh 12
 tests/fm-claude-stop-autoarm.test.sh 60730
 tests/fm-codex-continuity-live-e2e.test.sh 17
 tests/fm-daemon.test.sh 27663
-tests/fm-delivery-mode-pretool-check.test.sh 2236
 tests/fm-documentation-audiences.test.sh 722
 tests/fm-fleet-snapshot-view.test.sh 7046
 tests/fm-fleet-sync.test.sh 16283
@@ -474,6 +474,7 @@ tests/fm-pr-ci.test.sh 15875
 tests/fm-procevent.test.sh 61280
 tests/fm-protected-paths.test.sh 25447
 tests/fm-public-followup.test.sh 24618
+tests/fm-push-pretool-check.test.sh 2236
 tests/fm-quota-array-dispatch-live-e2e.test.sh 19
 tests/fm-remote-backlog-handoff.test.sh 20460
 tests/fm-remote-doctor.test.sh 7238
