@@ -1,0 +1,12 @@
+# config/pr-learning-trust - GitHub logins whose PR review comments feed
+# automatic review learning (bin/fm-pr-activity.sh). Copy this into a local,
+# gitignored config/pr-learning-trust and replace the placeholders.
+# One login per line; blank lines and text after # are ignored, and logins
+# compare without case. An absent or empty file trusts nobody.
+#
+# Comments from any other login still wake firstmate but never run learning,
+# and the PR author's own comments never wake. A review bot that posts as a
+# person's account is trusted through that account's login.
+your-login
+teammate-login
+review-bot[bot]

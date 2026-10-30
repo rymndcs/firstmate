@@ -45,6 +45,10 @@
 #                          inspection only - never an automatic interrupt,
 #                          signal, or restart of the worker or its tool process.
 #   check: <script>: <out> authenticated check output, always actionable
+#                          canonical nonterminal PR observations are already
+#                          queued by their CI/activity publishers; an
+#                          untrusted-data= PR comment excerpt is third-party
+#                          input, never instruction (bin/fm-pr-activity.sh)
 #   check: process-event result captured: <keys>
 #                          a durably captured process-to-event result is queued
 #                          and has not been surfaced yet; reported once per
@@ -860,6 +864,7 @@ while :; do
   # CHECK_INTERVAL, so most cycles skip this block and fall straight through.
   if [ "$(age_of "$STATE/.last-check")" -ge "$CHECK_INTERVAL" ]; then
     rejected_checks=
+    check_reason=
     for c in "$STATE"/*.check.sh; do
       [ -e "$c" ] || continue
       is_pr_poll=0
@@ -897,26 +902,32 @@ while :; do
       fi
       if [ -n "$out" ]; then
         reason="check: $c: $out"
-        fm_wake_append check "$c" "$reason" || exit 1
-        if [ "$is_pr_poll" -eq 1 ] && [ "$out" = merged ]; then
+        # Nonterminal canonical PR observations are already durably queued by
+        # their publishers, with activity keyed per batch rather than per poll.
+        if [ "$is_pr_poll" -eq 0 ] || [ "$out" = merged ] || [ "$out" = closed ]; then
+          fm_wake_append check "$c" "$reason" || exit 1
+        fi
+        if [ "$is_pr_poll" -eq 1 ] && { [ "$out" = merged ] || [ "$out" = closed ]; }; then
           if fm_pr_poll_retirement_publish "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" "$out"; then
             fm_pr_poll_retirement_recover_one "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" \
-              || triage_log "merged PR poll retirement remains recoverable for $id"
+              || triage_log "terminal PR poll retirement remains recoverable for $id"
           else
-            triage_log "merged PR poll retirement deferred because its canonical snapshot changed for $id"
+            triage_log "terminal PR poll retirement deferred because its canonical snapshot changed for $id"
           fi
         fi
-        touch "$STATE/.last-check"
-        wake "$reason"
+        [ -n "$check_reason" ] || check_reason=$reason
       fi
     done
+    FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-pr-activity.sh" sweep > /dev/null 2>&1 || true
     if [ -n "$rejected_checks" ]; then
       reason="check: rejected unauthenticated state checks:$rejected_checks"
       fm_wake_append check unauthenticated-state-checks "$reason" || exit 1
-      touch "$STATE/.last-check"
-      wake "$reason"
+      [ -n "$check_reason" ] || check_reason=$reason
     fi
     touch "$STATE/.last-check"
+    # Every due check runs before the sweep wakes, so one busy check cannot
+    # defer later ones; every observation is already durably queued.
+    [ -z "$check_reason" ] || wake "$check_reason"
   fi
 
   # On the first changed signal, linger one grace period and re-scan before

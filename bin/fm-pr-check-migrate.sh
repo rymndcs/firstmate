@@ -1,8 +1,31 @@
 #!/usr/bin/env bash
 # Non-executing migration for watcher PR checks created by older Firstmate
 # versions. Legacy check files are never run, sourced, or parsed by Bash.
-# Pending validated merged-poll retirements finish first. Canonical polls are
-# then rebuilt from validated metadata, remaining provenance-bound polls and
+# Pending validated terminal-poll retirements finish first. Canonical polls are
+# then rebuilt from validated metadata, keeping the time of a replaced poll for
+# the same URL (fm_pr_poll_prepare). Its existing data quarantine uses
+# <id>.data.active while pending: retry uses that sidecar if the current one
+# already moved, and successful publication archives it under a random name.
+# Known upgrade limit: an interrupted older pending-canonical rebuild may have
+# only random-name quarantined data, with no current sidecar, .data.active
+# binding, matching registration record or prior activity baseline.
+# Repair cannot attribute that historical data to the pending attempt; its fresh
+# fallback time can silently baseline comments posted before repair.
+# Bounded in-place-update limit: an older watcher with no armed checks and valid
+# scan markers can survive the update; its first newly registered PR comment
+# batch can be flagged twice by the older process and current publisher.
+# This duplicates the alert without losing the comment; a fresh current watcher
+# uses the current once-per-batch contract.
+# Conditional downgrade limit: a reader that accepts only merged retirement
+# receipts refuses a pending CLOSED receipt. Recover it with the current reader
+# before downgrading; preserve the receipt and its bound artifacts until then.
+# Pending-rebuild activity limit: while a failed or interrupted canonical
+# rebuild leaves a URL's sidecar only at <id>.data.active, the activity sweep
+# (fm-pr-activity.sh sweep) does not count that URL as armed and removes its
+# handled receipt and learning logs. The retried rebuild keeps the registration
+# cutoff, but its next poll can re-alert comments since registration, re-raise
+# a current conflict and re-queue learning for already learned comments.
+# Remaining provenance-bound polls and
 # registered custom checks remain armed, and every other task poll is
 # quarantined for private review. A current X-mode shim is preserved by exact
 # content, while the recognized older byte-static shim is refreshed in place.
@@ -521,14 +544,18 @@ quarantine_artifact() {
   source_device=$(fm_pr_file_device "$source") || return 1
   [ "$source_device" = "$STATE_DEVICE" ] || return 1
   [ "$(fm_pr_file_link_count "$source")" = 1 ] || return 1
-  [ -z "$MIGRATION_QUARANTINE_TMP" ] || rm -f -- "$MIGRATION_QUARANTINE_TMP"
-  MIGRATION_QUARANTINE_TMP=
-  MIGRATION_QUARANTINE_TMP=$(mktemp "$QUARANTINE/$prefix.$kind.XXXXXX") || return 1
-  [ -f "$MIGRATION_QUARANTINE_TMP" ] && [ ! -L "$MIGRATION_QUARANTINE_TMP" ] || return 1
-  [ "$(fm_pr_file_device "$MIGRATION_QUARANTINE_TMP")" = "$STATE_DEVICE" ] || return 1
-  destination=$MIGRATION_QUARANTINE_TMP
-  rm -f -- "$destination" || return 1
-  MIGRATION_QUARANTINE_TMP=
+  if [ "$kind" = active-data ]; then
+    destination="$QUARANTINE/$prefix.data.active"
+  else
+    [ -z "$MIGRATION_QUARANTINE_TMP" ] || rm -f -- "$MIGRATION_QUARANTINE_TMP"
+    MIGRATION_QUARANTINE_TMP=
+    MIGRATION_QUARANTINE_TMP=$(mktemp "$QUARANTINE/$prefix.$kind.XXXXXX") || return 1
+    [ -f "$MIGRATION_QUARANTINE_TMP" ] && [ ! -L "$MIGRATION_QUARANTINE_TMP" ] || return 1
+    [ "$(fm_pr_file_device "$MIGRATION_QUARANTINE_TMP")" = "$STATE_DEVICE" ] || return 1
+    destination=$MIGRATION_QUARANTINE_TMP
+    rm -f -- "$destination" || return 1
+    MIGRATION_QUARANTINE_TMP=
+  fi
   quarantine_dir_valid || return 1
   mv -- "$source" "$destination" || return 1
   [ -f "$destination" ] && [ ! -L "$destination" ] || return 1
@@ -539,6 +566,14 @@ quarantine_artifact() {
   [ "$(fm_pr_file_device "$destination")" = "$STATE_DEVICE" ] || return 1
   [ "$(fm_pr_file_link_count "$destination")" = 1 ] || return 1
   [ ! -e "$source" ] && [ ! -L "$source" ]
+}
+
+quarantine_canonical_data() {
+  local id=$1 data="$STATE/$1.pr-poll" active="$QUARANTINE/$1.data.active"
+  if [ -e "$data" ] || [ -L "$data" ]; then
+    quarantine_artifact "$active" "$id" data || return 1
+    quarantine_artifact "$data" "$id" active-data
+  fi
 }
 
 diagnostic_file_contains() {
@@ -741,6 +776,7 @@ complete_canonical_outcome() {
   canonical_terminal_success "$id" || return 1
   remove_diagnostic_obligation "$id" failure-canonical || return 1
   ensure_outcome_obligation "$id" canonical || return 1
+  quarantine_artifact "$QUARANTINE/$id.data.active" "$id" data || return 1
   remove_diagnostic_obligation "$id" pending-canonical
 }
 
@@ -795,11 +831,11 @@ canonical_repair_from_pending() {
   host=$MIGRATION_HOST
   path=$MIGRATION_PATH
   number=$MIGRATION_NUMBER
-  quarantine_artifact "$data" "$id" data || return 1
+  quarantine_canonical_data "$id" || return 1
   quarantine_artifact "$registration" "$id" registration || return 1
   [ ! -e "$data" ] && [ ! -L "$data" ] || return 1
   [ ! -e "$registration" ] && [ ! -L "$registration" ] || return 1
-  fm_pr_poll_prepare "$STATE" "$id" "$provider" "$url" "$host" "$path" "$number" "$TEMPLATE" || return 1
+  fm_pr_poll_prepare "$STATE" "$id" "$provider" "$url" "$host" "$path" "$number" "$TEMPLATE" "$QUARANTINE/$id.data.active" || return 1
   fm_pr_poll_publish_prepared || return 1
   canonical_terminal_success "$id"
 }
@@ -1050,9 +1086,9 @@ if migration_needed; then
           continue
         fi
         if quarantine_artifact "$check" "$prefix" check \
-          && quarantine_artifact "$data" "$prefix" data \
+          && quarantine_canonical_data "$id" \
           && quarantine_artifact "$registration" "$prefix" registration \
-          && fm_pr_poll_prepare "$STATE" "$id" "$provider" "$url" "$host" "$path" "$number" "$TEMPLATE" \
+          && fm_pr_poll_prepare "$STATE" "$id" "$provider" "$url" "$host" "$path" "$number" "$TEMPLATE" "$QUARANTINE/$id.data.active" \
           && fm_pr_poll_publish_prepared \
           && complete_canonical_outcome "$id"; then
           :

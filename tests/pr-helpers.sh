@@ -60,8 +60,8 @@ esac
 FAKE
 chmod +x "$PR_TMP/fakebin/gh"
 url=https://github.com/owner/repo/pull/42
-write_pr_task() {
-  fm_write_meta "$FM_HOME/state/$1.meta" "worktree=$PR_TMP" 'kind=ship'
+write_pr_task() {  # <task-id> [extra-meta-line...]
+  fm_write_meta "$FM_HOME/state/$1.meta" "worktree=$PR_TMP" 'kind=ship' "${@:2}"
 }
 register_pr() {
   "$PR_CODE/bin/fm-pr-check.sh" "$1" "$url" > /dev/null 2> "$PR_TMP/register.err" || fail 'registration failed'

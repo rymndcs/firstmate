@@ -9,13 +9,13 @@ firstmate's always-loaded operating contract and routing index for conditional p
 ## Event-driven supervision
 
 A zero-token bash watcher (`bin/fm-watch.sh`) sleeps on the fleet, classifies detected wakes in bash, and wakes the first mate only when something is actionable.
-Actionable wakes include captain-relevant status signals, no-verb signals whose crew is not provably working, authenticated check output such as PR CI/merge polling or an X-mode mention, unexplained stale panes, provably-working stale panes that persist past `FM_STALE_ESCALATE_SECS`, bounded idle rechecks, and heartbeat backstop hits.
+Actionable wakes include captain-relevant status signals, no-verb signals whose crew is not provably working, authenticated check output such as PR CI, review-activity, conflict or merge polling or an X-mode mention, unexplained stale panes, provably-working stale panes that persist past `FM_STALE_ESCALATE_SECS`, bounded idle rechecks, and heartbeat backstop hits.
 Repeated provably-working stale escalations on the same unchanged pane add an escalation count to the wake reason and, at `FM_WEDGE_DEMAND_INSPECT_COUNT`, a `demand-deep-inspection` marker.
 A busy pane is otherwise exempt from staleness, but only until its latest `state/<id>.turn-ended` marker reaches `FM_BUSY_TURN_MAX_SECS`, or its `state/<id>.meta` spawn record reaches that age before any turn completes; past that bound it is routed through the same wedge escalation, with the identical reason, escalation count, and `demand-deep-inspection` marker, for inspection only - never an automatic interrupt, signal, or restart.
 Those actionable wakes are written to a durable local queue (`state/.wake-queue`) before detector state advances, so a missed process exit can be recovered by draining the queue.
-When a canonical validated PR poll returns exactly `merged`, the watcher appends that durable notification before publishing a private receipt bound to the poll's registration, bytes, file identities, metadata, provider, URL, and task ID.
+When a canonical validated PR poll returns exactly `merged` (either forge) or `closed` (GitHub), the watcher appends that durable notification before publishing a private receipt bound to the poll's registration, bytes, file identities, metadata, provider, URL, and task ID.
 The receipt makes retirement safely retryable across restarts: fixed-path recovery revalidates the same evidence, removes the runnable check first, removes its registration and data sidecars, removes the receipt last, and preserves task metadata including `pr=` and `pr_head=`.
-A concurrent replacement remains armed, every non-merged or invalid observation remains unchanged, and retirement never performs task or persistent-secondmate cleanup.
+A concurrent replacement remains armed, every nonterminal or invalid observation remains unchanged, and retirement never performs task or persistent-secondmate cleanup.
 `bin/fm-pr-lib.sh` owns the receipt format and strict identity mechanics, while `bin/fm-watch.sh` owns queue-before-retirement ordering.
 No-verb wakes, such as `working:` notes and bare turn-ended signals, are benign only when `bin/fm-crew-state.sh` reports positive evidence that the crew is still working: an actively running no-mistakes step attributed to that crew's current code, or an exact busy verdict from the semantic busy-state contract.
 A crew that declares `paused:` for a known external wait is separately absorbed while idle and re-surfaced only on the longer pause cadence, rather than being treated as a possible wedge.
@@ -39,11 +39,17 @@ No-change heartbeats are also benign.
 Absorbed wakes advance their suppression markers, log to `state/.watch-triage.log`, and keep the watcher blocking without a queue record or LLM turn.
 After each drain, `fm-wake-drain.sh` discovers task PR links through `bin/fm-pr-auto-register.sh` outside the queue lock, then runs the same liveness guard as the supervision scripts.
 The same discovery owner runs after spawn or resume, considers only ship tasks and GitHub PR URLs, reads only each task's own status log, and only from promotion onward for a promoted scout, never the backlog, and delegates registration to `bin/fm-pr-check.sh`.
-Discovery never replaces an existing registration, and the registration record that `bin/fm-pr-check.sh` writes survives merge-poll retirement, so repeated discovery never re-arms a retired poll.
+Discovery never replaces an existing registration, and the registration record that `bin/fm-pr-check.sh` writes survives terminal-poll retirement, so repeated discovery never re-arms a retired poll.
+`bin/fm-pr-check.sh` owns explicit re-registration after a GitHub PR reopens; spawn/resume and wake-drain discovery alone do not resume its reads.
 Registration failures report a task-specific diagnostic and leave draining or spawning successful so the next discovery can retry, and the registration's GitHub head lookup is time-bounded so a slow forge cannot stall either.
 The registered GitHub poll additionally reads the PR's required checks, or all of its checks when it has none, against a stable head and delegates CI publication to `bin/fm-pr-ci.sh`, which validates the canonical task registration, appends a durable wake before recording each URL/head/outcome receipt, and returns the observation to wake the watcher.
-The watcher's matching queue append collapses during the ordinary drain, and an interrupted publication follows the queue's existing at-least-once recovery rule.
+The watcher wakes on these already queued nonterminal observations; an interrupted publication follows the queue's existing at-least-once recovery rule.
+`bin/fm-pr-check-migrate.sh` owns the bounded in-place-update duplicate, pending-rebuild activity sweep and conditional pending-receipt downgrade limits.
 CI observations retain the poll for later outcomes and merges; their per-task receipts survive re-registration and are removed with task cleanup.
+The same OPEN GitHub poll reads mergeability and the PR author with its state and delegates new review activity and conflict transitions to `bin/fm-pr-activity.sh`, independently of CI availability.
+Its header owns pagination, the registration-time baseline, untrusted comment excerpts, durable last-seen IDs, batch wakes, conflict episodes, trusted review learning and activity-state retirement; `tests/fm-pr-activity.test.sh` covers them.
+Review learning never runs inside the poll: each batch registers a one-shot `bin/fm-procevent-learn.sh` process-to-event source, so a slow or dead learning run cannot delay any comment, conflict or CI wake.
+Every due watcher check runs before that sweep wakes, so a busy check cannot defer a later one.
 Script headers own exact discovery precedence, check classification, and commands.
 Routine watcher polling, supervision no-ops, elapsed waiting time, and absorbed benign wakes stay silent.
 A declared external wait trades that silence for one bounded recheck per pause window, so a forgotten pause cannot remain invisible indefinitely.

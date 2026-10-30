@@ -339,7 +339,12 @@ pass 'failed PR registration leaves launch successful with one diagnostic'
 fm_write_meta "$FM_HOME/state/task-cleanup.meta" 'window=firstmate:fm-task-cleanup' 'endpoint_task_id=task-cleanup' "worktree=$PR_TMP/missing-worktree" "project=$PR_TMP/project" 'kind=ship' 'mode=local-only'
 printf 'registered\n' > "$FM_HOME/state/task-cleanup.pr-registered"
 printf 'observed\n' > "$FM_HOME/state/task-cleanup.pr-ci"
+activity_key=$(printf '%s' https://github.com/owner/repo/pull/77 | shasum -a 256 | awk '{print $1}')
+printf 'issues:1\n' > "$FM_HOME/state/.pr-activity-$activity_key"
+printf 'learned\n' > "$FM_HOME/state/.pr-activity-$activity_key.learn-issues-1"
 "$PR_CODE/bin/fm-teardown.sh" task-cleanup --force > "$PR_TMP/cleanup.out" 2> "$PR_TMP/cleanup.err" || { cat "$PR_TMP/cleanup.err"; fail 'cleanup fixture failed'; }
 assert_absent "$FM_HOME/state/task-cleanup.pr-registered" 'teardown must remove the registration record'
 assert_absent "$FM_HOME/state/task-cleanup.pr-ci" 'teardown must remove CI observation receipt'
-pass 'teardown removes task-owned registration and CI receipts'
+assert_absent "$FM_HOME/state/.pr-activity-$activity_key" 'teardown must remove activity receipts no poll still uses'
+assert_absent "$FM_HOME/state/.pr-activity-$activity_key.learn-issues-1" 'teardown must remove learning logs no poll still uses'
+pass 'teardown removes task-owned registration, CI and unused activity receipts'

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Record a PR-ready task: store one validated canonical pr=<url> and the forge's
-# exact pr_head=<sha> when available, then atomically arm a static merge poll.
+# exact pr_head=<sha> when available, then atomically arm a static PR poll.
 # The watcher check source is byte-for-byte bin/fm-pr-poll.sh; task and PR data
 # live only in a private sidecar and are never interpolated into shell source.
 # A GitHub pull request URL and a GitLab merge request URL are both accepted,
@@ -22,15 +22,20 @@
 # registry prints an explicit diagnostic, and neither aborts the recording or
 # the arming that already succeeded.
 # Each registration also writes state/<id>.pr-registered, the record that
-# merge-poll retirement keeps, so automatic discovery never replaces a
-# registration or re-arms a retired merge poll.
-# Registration holds state/<id>.pr-registration.lock, which fm-pr-ci.sh also
-# takes to publish CI, and either commits the pr= metadata, the armed poll and
-# that record together or restores the task's previous pr= metadata.
+# terminal-poll retirement keeps, so automatic discovery never replaces a
+# registration or re-arms a retired poll. Its modification time is the
+# registration time bin/fm-pr-activity.sh baselines from, so only registration
+# writes it.
+# Registration holds state/<id>.pr-registration.lock, which fm-pr-ci.sh and
+# fm-pr-activity.sh also take to publish observations, and either commits the
+# pr= metadata, the armed poll and that record together or restores the task's previous pr= metadata.
 # The GitHub head lookup is bounded by FM_PR_CHECK_GH_TIMEOUT seconds (default
 # 10); a lookup that times out or fails records no pr_head.
 # --if-unregistered (fm-pr-auto-register.sh) exits 0 without changes when the
 # task already has the record or a pr= metadata line.
+# After a GitHub PR reopens, I or its worker explicitly run this command without
+# --if-unregistered to re-register it; ordinary spawn/resume and wake-drain
+# discovery do not rearm it from historical status URLs.
 # Usage: fm-pr-check.sh [--if-unregistered] <task-id> <pr-url>
 set -eu
 
@@ -110,7 +115,7 @@ if [ "$IF_UNREGISTERED" -eq 1 ] && { [ -e "$STATE/$ID.pr-registered" ] || grep -
   exit 0
 fi
 
-# A prior exact merged result may have queued its durable wake immediately
+# A prior terminal result may have queued its durable wake immediately
 # before interruption.
 # Finish only its identity-bound receipt before publishing a replacement poll.
 fm_pr_poll_retirement_recover_one "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh" || {

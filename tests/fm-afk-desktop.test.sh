@@ -476,7 +476,7 @@ return_handoff() {  # <expected-handling-payload>
 test_return_merge() {
   D=$(fixture return-merge)
   mkdir "$D/fakegh"
-  printf '#!/usr/bin/env bash\ncase " $* " in *" state "*) printf "MERGED\\n" ;; esac\n' > "$D/fakegh/gh"
+  printf '#!/usr/bin/env bash\ncase " $* " in *" state "*|*" state,mergeable,author "*) printf "MERGED\\n" ;; esac\n' > "$D/fakegh/gh"
   chmod +x "$D/fakegh/gh"
   printf 'window=fixture:fm-t1\nkind=ship\n' > "$D/state/t1.meta"
   printf 'done: PR ready https://github.com/o/r/pull/7\n' > "$D/state/t1.status"

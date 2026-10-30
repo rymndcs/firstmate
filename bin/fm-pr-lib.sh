@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Shared validation and atomic artifact helpers for merge polling on the
+# Shared validation and atomic artifact helpers for PR polling on the
 # supported forges. Callers must validate task IDs and raw PR/MR URLs before
 # constructing task paths or performing any side effect.
 #
@@ -12,7 +12,8 @@
 # consumer re-derives the identity from the stored URL and refuses any record
 # whose parts do not reconstruct that exact URL.
 #
-# A validated exact merged result is retired through a private receipt only
+# Exact merged results (both forges) and closed results (GitHub only) retire
+# through the same private receipt only
 # after its durable wake is appended.
 # The receipt binds the terminal observation to the canonical registration and
 # lets a restart finish fixed-path removal without executing state-file bytes.
@@ -449,8 +450,12 @@ fm_pr_poll_revoke_final() {
   return "$failed"
 }
 
+# A sidecar is written once per arming and never rewritten in place:
+# bin/fm-pr-activity.sh dates a registration by it when no record does.
+# A rebuild is not a registration: given the sidecar it replaces as the ninth
+# argument, a rebuild for the same URL keeps that sidecar's time.
 fm_pr_poll_prepare() {
-  local state=$1 id=$2 provider=$3 url=$4 host=$5 path=$6 number=$7 template=$8
+  local state=$1 id=$2 provider=$3 url=$4 host=$5 path=$6 number=$7 template=$8 replaced=${9:-}
   fm_pr_task_id_valid "$id" || return 1
   fm_pr_url_parse "$url" || return 1
   [ "$provider" = "$FM_PR_PROVIDER" ] || return 1
@@ -498,6 +503,11 @@ fm_pr_poll_prepare() {
     || ! chmod 0600 "$FM_PR_POLL_CHECK_TMP" \
     || ! fm_pr_private_file_valid "$FM_PR_POLL_CHECK_TMP" 600 "$FM_PR_POLL_STATE_DEVICE" \
     || ! cmp -s "$template" "$FM_PR_POLL_CHECK_TMP"; then
+    fm_pr_poll_cleanup
+    return 1
+  fi
+  if fm_pr_poll_data_parse "$replaced" && [ "$FM_PR_DATA_URL" = "$url" ] \
+    && ! touch -r "$replaced" "$FM_PR_POLL_DATA_TMP"; then
     fm_pr_poll_cleanup
     return 1
   fi
@@ -705,7 +715,10 @@ fm_pr_poll_retirement_parse() {
   [[ "$check_identity" =~ ^[0-9]+:[0-9]+$ ]] || return 1
   [[ "$reg_hash" =~ ^[0-9a-f]{64}$ ]] || return 1
   [[ "$reg_identity" =~ ^[0-9]+:[0-9]+$ ]] || return 1
-  [ "$result" = merged ] || return 1
+  case "$provider:$result" in
+    github:merged|github:closed|gitlab:merged) ;;
+    *) return 1 ;;
+  esac
   FM_PR_RETIRE_ID=$id
   FM_PR_RETIRE_PROVIDER=$provider
   FM_PR_RETIRE_URL=$url
@@ -852,7 +865,7 @@ fm_pr_poll_retirement_discard_obsolete() {
 
 fm_pr_poll_retirement_publish() {
   local state=$1 id=$2 template=$3 result=$4 receipt state_device tmp
-  [ "$result" = merged ] || return 1
+  case "$result" in merged|closed) ;; *) return 1 ;; esac
   fm_pr_poll_snapshot_matches "$state" "$id" "$template" || return 1
   state_device=$(fm_pr_file_device "$state") || return 1
   receipt="$state/$id.pr-poll-retirement"
@@ -874,7 +887,7 @@ fm_pr_poll_retirement_publish() {
       "$FM_PR_POLL_SNAPSHOT_CHECK_IDENTITY" \
       "$FM_PR_POLL_SNAPSHOT_REG_HASH" \
       "$FM_PR_POLL_SNAPSHOT_REG_IDENTITY" \
-      merged > "$tmp" \
+      "$result" > "$tmp" \
     || ! chmod 0600 "$tmp" \
     || ! fm_pr_private_file_valid "$tmp" 600 "$state_device" \
     || ! fm_pr_poll_retirement_parse "$tmp" \

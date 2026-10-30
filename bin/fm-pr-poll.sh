@@ -2,7 +2,10 @@
 # Static watcher program for a validated PR/MR poll sidecar.
 # It preserves the exact merged result for PR/MR retirement and publishes
 # GitHub check outcomes through fm-pr-ci.sh, once per head/outcome.
-# Only an OPEN PR publishes check outcomes; a closed PR stays silent.
+# One lookup reads the state with the mergeability and author that OPEN PRs
+# pass to fm-pr-activity.sh, which publishes comments and conflicts
+# independently of CI availability; GitHub CLOSED returns exactly closed for
+# authenticated retirement, while MERGED retains its exact merged result.
 # Missing, pending, malformed or failed check lookups stay silent.
 # Usage: fm-pr-poll.sh [--validated <provider> <url> <host> <path> <number>]
 # A PR with required checks uses only those (gh pr checks --required --json
@@ -77,12 +80,22 @@ case "$provider" in
       .|..|*[!A-Za-z0-9._-]*) exit 0 ;;
     esac
     [ "$url" = "https://github.com/$owner/$repo/pull/$number" ] || exit 0
-    state=$(gh pr view "$url" --json state -q .state 2>/dev/null) || exit 0
+    view=$(gh pr view "$url" --json state,mergeable,author \
+      --jq '[.state, .mergeable, (.author.login // "")] | map(. // "") | join("|")' 2>/dev/null) || exit 0
+    IFS='|' read -r state mergeable owner <<EOF
+$view
+EOF
     if [ "$state" = MERGED ]; then
       printf '%s\n' merged
       exit 0
     fi
+    if [ "$state" = CLOSED ]; then
+      printf '%s\n' closed
+      exit 0
+    fi
     [ "$state" = OPEN ] || exit 0
+    root=${FM_ROOT_OVERRIDE:-$(cd "$(dirname "$0")/.." && pwd)}
+    "$root/bin/fm-pr-activity.sh" "$url" "$mergeable" "$owner" 2>/dev/null || true
     head=$(gh pr view "$url" --json headRefOid -q .headRefOid 2>/dev/null) || exit 0
     case "$head" in ''|*[!a-fA-F0-9]*) exit 0 ;; esac
     [ "${#head}" -eq 40 ] || exit 0
@@ -109,7 +122,6 @@ case "$provider" in
     [ -n "$outcome" ] || exit 0
     current_head=$(gh pr view "$url" --json headRefOid -q .headRefOid 2>/dev/null) || exit 0
     [ "$head" = "$current_head" ] || exit 0
-    root=${FM_ROOT_OVERRIDE:-$(cd "$(dirname "$0")/.." && pwd)}
     "$root/bin/fm-pr-ci.sh" "$url" "$head" "$outcome" 2>/dev/null || true
     ;;
   gitlab)

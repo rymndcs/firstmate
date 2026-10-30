@@ -145,7 +145,7 @@ write_pr_task task-closed
 drain_pr > /dev/null
 FM_TEST_GH_HEAD=1212121212121212121212121212121212121212
 FM_TEST_GH_STATE=CLOSED
-[ -z "$(poll_pr 54)" ] || fail 'a closed PR must not publish a CI outcome'
+[ "$(poll_pr 54)" = closed ] || fail 'a closed PR must report closure without a CI outcome'
 assert_absent "$FM_HOME/state/task-closed.pr-ci" 'a closed PR must not record a CI outcome'
 drain_pr > "$PR_TMP/closed"
 assert_no_grep 'task-closed.check.sh' "$PR_TMP/closed" 'a closed PR must not deliver a CI wake'
