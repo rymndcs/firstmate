@@ -19,6 +19,12 @@
 # Conditional downgrade limit: a reader that accepts only merged retirement
 # receipts refuses a pending CLOSED receipt. Recover it with the current reader
 # before downgrading; preserve the receipt and its bound artifacts until then.
+# Pending-rebuild activity limit: while a failed or interrupted canonical
+# rebuild leaves a URL's sidecar only at <id>.data.active, the activity sweep
+# (fm-pr-activity.sh sweep) does not count that URL as armed and removes its
+# handled receipt and learning logs. The retried rebuild keeps the registration
+# cutoff, but its next poll can re-alert comments since registration, re-raise
+# a current conflict and re-queue learning for already learned comments.
 # Remaining provenance-bound polls and
 # registered custom checks remain armed, and every other task poll is
 # quarantined for private review. A current X-mode shim is preserved by exact

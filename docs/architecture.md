@@ -44,7 +44,7 @@ Discovery never replaces an existing registration, and the registration record t
 Registration failures report a task-specific diagnostic and leave draining or spawning successful so the next discovery can retry, and the registration's GitHub head lookup is time-bounded so a slow forge cannot stall either.
 The registered GitHub poll additionally reads the PR's required checks, or all of its checks when it has none, against a stable head and delegates CI publication to `bin/fm-pr-ci.sh`, which validates the canonical task registration, appends a durable wake before recording each URL/head/outcome receipt, and returns the observation to wake the watcher.
 The watcher wakes on these already queued nonterminal observations; an interrupted publication follows the queue's existing at-least-once recovery rule.
-`bin/fm-pr-check-migrate.sh` owns the bounded in-place-update duplicate and conditional pending-receipt downgrade limits.
+`bin/fm-pr-check-migrate.sh` owns the bounded in-place-update duplicate, pending-rebuild activity sweep and conditional pending-receipt downgrade limits.
 CI observations retain the poll for later outcomes and merges; their per-task receipts survive re-registration and are removed with task cleanup.
 The same OPEN GitHub poll reads mergeability and the PR author with its state and delegates new review activity and conflict transitions to `bin/fm-pr-activity.sh`, independently of CI availability.
 Its header owns pagination, the registration-time baseline, untrusted comment excerpts, durable last-seen IDs, batch wakes, conflict episodes, trusted review learning and activity-state retirement; `tests/fm-pr-activity.test.sh` covers them.
