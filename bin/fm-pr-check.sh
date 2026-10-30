@@ -22,8 +22,8 @@
 # registry prints an explicit diagnostic, and neither aborts the recording or
 # the arming that already succeeded.
 # Each registration also writes state/<id>.pr-registered, the record that
-# merge-poll retirement keeps, so automatic discovery never replaces a
-# registration or re-arms a retired merge poll. Its modification time is the
+# terminal-poll retirement keeps, so automatic discovery never replaces a
+# registration or re-arms a retired poll. Its modification time is the
 # registration time bin/fm-pr-activity.sh baselines from, so only registration
 # writes it.
 # Registration holds state/<id>.pr-registration.lock, which fm-pr-ci.sh and
@@ -33,6 +33,9 @@
 # 10); a lookup that times out or fails records no pr_head.
 # --if-unregistered (fm-pr-auto-register.sh) exits 0 without changes when the
 # task already has the record or a pr= metadata line.
+# After a GitHub PR reopens, I or its worker explicitly run this command without
+# --if-unregistered to re-register it; ordinary spawn/resume and wake-drain
+# discovery do not rearm it from historical status URLs.
 # Usage: fm-pr-check.sh [--if-unregistered] <task-id> <pr-url>
 set -eu
 
@@ -112,7 +115,7 @@ if [ "$IF_UNREGISTERED" -eq 1 ] && { [ -e "$STATE/$ID.pr-registered" ] || grep -
   exit 0
 fi
 
-# A prior exact merged result may have queued its durable wake immediately
+# A prior terminal result may have queued its durable wake immediately
 # before interruption.
 # Finish only its identity-bound receipt before publishing a replacement poll.
 fm_pr_poll_retirement_recover_one "$STATE" "$ID" "$SCRIPT_DIR/fm-pr-poll.sh" || {

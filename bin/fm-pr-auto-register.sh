@@ -15,6 +15,8 @@
 # Discovery is GitHub-only; register a GitLab merge request with fm-pr-check.sh.
 # It registers through fm-pr-check.sh --if-unregistered, which owns the
 # registration lock and skips a task that already has a registration.
+# Retirement preserves that record, including for CLOSED GitHub PRs; explicit
+# re-registration after reopen is owned by fm-pr-check.sh, never --all discovery.
 # A registration prints fm-pr-check.sh's whole output to stderr, so the
 # pr-ready guidance and Linear diagnostics arrive once, at registration, and the
 # caller's stdout stays unchanged.

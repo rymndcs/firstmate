@@ -904,15 +904,15 @@ while :; do
         reason="check: $c: $out"
         # Nonterminal canonical PR observations are already durably queued by
         # their publishers, with activity keyed per batch rather than per poll.
-        if [ "$is_pr_poll" -eq 0 ] || [ "$out" = merged ]; then
+        if [ "$is_pr_poll" -eq 0 ] || [ "$out" = merged ] || [ "$out" = closed ]; then
           fm_wake_append check "$c" "$reason" || exit 1
         fi
-        if [ "$is_pr_poll" -eq 1 ] && [ "$out" = merged ]; then
+        if [ "$is_pr_poll" -eq 1 ] && { [ "$out" = merged ] || [ "$out" = closed ]; }; then
           if fm_pr_poll_retirement_publish "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" "$out"; then
             fm_pr_poll_retirement_recover_one "$STATE" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" \
-              || triage_log "merged PR poll retirement remains recoverable for $id"
+              || triage_log "terminal PR poll retirement remains recoverable for $id"
           else
-            triage_log "merged PR poll retirement deferred because its canonical snapshot changed for $id"
+            triage_log "terminal PR poll retirement deferred because its canonical snapshot changed for $id"
           fi
         fi
         [ -n "$check_reason" ] || check_reason=$reason

@@ -4,7 +4,8 @@
 # GitHub check outcomes through fm-pr-ci.sh, once per head/outcome.
 # One lookup reads the state with the mergeability and author that OPEN PRs
 # pass to fm-pr-activity.sh, which publishes comments and conflicts
-# independently of CI availability; a closed PR stays silent.
+# independently of CI availability; GitHub CLOSED returns exactly closed for
+# authenticated retirement, while MERGED retains its exact merged result.
 # Missing, pending, malformed or failed check lookups stay silent.
 # Usage: fm-pr-poll.sh [--validated <provider> <url> <host> <path> <number>]
 # A PR with required checks uses only those (gh pr checks --required --json
@@ -86,6 +87,10 @@ $view
 EOF
     if [ "$state" = MERGED ]; then
       printf '%s\n' merged
+      exit 0
+    fi
+    if [ "$state" = CLOSED ]; then
+      printf '%s\n' closed
       exit 0
     fi
     [ "$state" = OPEN ] || exit 0

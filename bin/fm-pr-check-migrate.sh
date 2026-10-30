@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Non-executing migration for watcher PR checks created by older Firstmate
 # versions. Legacy check files are never run, sourced, or parsed by Bash.
-# Pending validated merged-poll retirements finish first. Canonical polls are
+# Pending validated terminal-poll retirements finish first. Canonical polls are
 # then rebuilt from validated metadata, keeping the time of a replaced poll for
 # the same URL (fm_pr_poll_prepare). Its existing data quarantine uses
 # <id>.data.active while pending: retry uses that sidecar if the current one
 # already moved, and successful publication archives it under a random name.
+# Known upgrade limit: an interrupted older pending-canonical rebuild may have
+# only random-name quarantined data, with no current sidecar, .data.active
+# binding, matching registration record or prior activity baseline.
+# Repair cannot attribute that historical data to the pending attempt; its fresh
+# fallback time can silently baseline comments posted before repair.
 # Remaining provenance-bound polls and
 # registered custom checks remain armed, and every other task poll is
 # quarantined for private review. A current X-mode shim is preserved by exact
