@@ -673,7 +673,8 @@ remove_pr_poll_artifacts() {
   rm -f "$state_dir/$id.check.sh" "$state_dir/$id.pr-poll" \
     "$state_dir/$id.pr-poll-registration" "$state_dir/$id.pr-poll-retirement" \
     "$state_dir/$id.check-trust" "$state_dir/$id.pr-registered" "$state_dir/$id.pr-ci" || return 1
-  FM_STATE_OVERRIDE="$state_dir" "$SCRIPT_DIR/fm-pr-activity.sh" sweep > /dev/null 2>&1 || true
+  [ ! -d "$state_dir" ] \
+    || FM_STATE_OVERRIDE="$state_dir" "$SCRIPT_DIR/fm-pr-activity.sh" sweep > /dev/null 2>&1 || true
   if fm_task_id_path_safe "$id"; then
     quarantine="$state_dir/.pr-check-quarantine"
     if [ -d "$quarantine" ] && [ ! -L "$quarantine" ]; then
