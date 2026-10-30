@@ -6,15 +6,22 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 GUARD="$ROOT/bin/fm-push-pretool-check.sh"
+TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/fm-push-guard.XXXXXX") || fail "could not create a temp dir"
+FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
+trap fm_test_cleanup EXIT
+STDERR_FILE="$TMP_ROOT/stderr"
 
+# Claude Code honours a deny only while stdout stays empty, so --claude never writes stdout.
 check_cmd() {
-  local expected=$1 cmd=$2 out code
-  out=$("$GUARD" --claude --command "$cmd" 2>&1); code=$?
+  local expected=$1 cmd=$2 out err code
+  out=$("$GUARD" --claude --command "$cmd" 2>"$STDERR_FILE"); code=$?
+  err=$(cat "$STDERR_FILE")
   expect_code "$expected" "$code" "$cmd"
+  [ -z "$out" ] || fail "$cmd: --claude writes nothing to stdout"
   if [ "$expected" -eq 0 ]; then
-    [ -z "$out" ] || fail "an allowed command has no output"
+    [ -z "$err" ] || fail "an allowed command has no output"
   else
-    assert_contains "$out" "[push-guard] refusing:" "a refused command explains why"
+    assert_contains "$err" "[push-guard] refusing:" "a refused command explains why"
   fi
 }
 
@@ -77,6 +84,13 @@ for test_locale in $test_locales; do
 0|git push
 0|git push origin
 0|git push origin HEAD
+0|git push -u origin HEAD
+0|git --no-pager push origin fm/task-branch
+0|git push -ofoo origin fm/task-branch
+0|git push --push-option=ci.skip origin fm/task-branch
+0|git push -- origin fm/task-branch
+0|git push --se origin fm/task-branch
+0|legit push -f origin fm/task-branch
 0|git -c core.x=1 status
 0|git status; echo push
 0|'git' "push" origin feature
@@ -99,6 +113,26 @@ for test_locale in $test_locales; do
 2|git push origin fm/task-branch --delete
 2|git push --prune origin fm/task-branch
 2|git push --mirror origin
+2|git push --mir origin
+2|git push --del origin fm/task-branch
+2|git push --dele origin fm/task-branch
+2|git push --force-w origin fm/task-branch
+2|git push --force-wi=fm/x origin fm/x
+2|git push --force-if origin fm/task-branch
+2|git push --forc origin fm/task-branch
+2|git push --pru origin fm/task-branch
+2|/usr/bin/git push -f origin fm/task-branch
+2|./git push --delete origin fm/task-branch
+2|git push --no-verify origin HEAD:heads/main
+2|git push --no-verify origin heads/master
+2|git push --no-verify -o x origin
+2|git push --no-verify -uo x origin
+2|git push --no-verify --push-option x origin
+2|git push --no-verify --push-opt x origin
+2|git push --no-verify --repo x origin
+2|git push --no-verify --receive-pack x origin
+2|git push --no-verify --exec x origin
+2|git push --no-verify --recurse-submodules check origin
 2|git -c core.x=1 push origin fm/task-branch
 2|git -ccore.x=1 push origin fm/task-branch
 2|git --config-env=core.x=X push origin fm/task-branch

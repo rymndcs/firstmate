@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 # PreToolUse seatbelt: refuse git pushes that rewrite or delete remote history.
 #
-# REFUSED on every push:
+# REFUSED on every push, by git invoked as `git` or by any path ending in /git:
 #
 #   - force: -f, --force, --force-with-lease, --force-if-includes, or a +refspec
-#   - ref deletion: -d, --delete, --prune, --mirror, or a refspec with an empty source
-#   - git configuration overrides before `push` (-c, --config-env, any option but -C), which can
-#     change what the push does after this check has read it
+#   - ref deletion: -d, --delete, --prune, or a refspec with an empty source
+#   - any abbreviation of those long options, since git expands an unambiguous prefix
+#   - git configuration overrides before `push` (-c, --config-env, any option but -C and
+#     --no-pager), which can change what the push does after this check has read it
 #
 # A push that may reach `main` or `master` also accepts only the small option allowlist below and
-# no tag refs. It may reach them when it names either one as a destination, names HEAD or @, uses
-# a wildcard, or names no refspec at all (which --all and --branches require), because the
-# destination then depends on the checkout or configuration rather than on the command text.
+# no tag refs. It may reach them when it names either one as a destination (bare, heads/ or
+# refs/heads/), names HEAD or @, uses a wildcard, or names no refspec at all (which --mirror, --all
+# and --branches require), because the destination then depends on the checkout or configuration
+# rather than on the command text. The value of -o, --push-option, --repo, --receive-pack, --exec
+# and --recurse-submodules is skipped, so it is never read as the remote or a refspec.
+#
+# Configuration set outside the push command line (git config in another command, GIT_CONFIG_*
+# environment variables, aliases) is outside this guard's reach.
 #
 # Push checks ignore quotes and shell syntax: a commit message or grep pattern that mentions a
 # refused push is refused too. Put such text in a file instead of the command.
@@ -20,10 +26,10 @@
 #   <PreToolUse JSON on stdin> | bin/fm-push-pretool-check.sh [--claude]
 #   bin/fm-push-pretool-check.sh --command '<cmd>'
 #
-# Exit/output contract, matching bin/fm-cd-pretool-check.sh:
+# Exit/output contract:
 #   ALLOW - exit 0 and no output.
-#   DENY  - exit 2, Claude-shaped deny object on stderr, Grok-shaped object on stdout unless
-#           --claude.
+#   DENY  - exit 2, the plain reason text on stderr, and a Grok-shaped deny object on stdout
+#           unless --claude, because Claude honours a deny only while stdout stays empty.
 #   FAIL OPEN - malformed stdin or missing jq.
 set -u
 # Command text is matched as bytes, regardless of the caller locale or awk implementation.
@@ -55,18 +61,31 @@ fi
 # Check every git ... push sequence as plain text, including quoted mentions.
 printf '%s\n' "$CMD" | awk '
   function safe(t) { return t ~ /^(-u|--set-upstream|-q|--quiet|-v|--verbose|-n|--dry-run)$/ }
-  function rewrites(t) {
-    if (t ~ /^--(force|force-with-lease|force-if-includes|delete|prune|mirror)(=|$)/) return 1
-    return t ~ /^-[A-Za-z]+$/ && t ~ /[fd]/
+  # A typed long option matches every name it is a prefix of, so force-with-lease covers --force.
+  function abbrev(t, names,    o, a, k) {
+    if (t !~ /^--[a-z]/) return 0
+    o = substr(t, 3); sub(/=.*/, "", o)
+    split(names, a, " ")
+    for (k in a) if (index(a[k], o) == 1) return 1
+    return 0
+  }
+  function rewrites(t,    b) {
+    if (abbrev(t, "force-with-lease force-if-includes delete prune")) return 1
+    b = t; sub(/o.*/, "", b)
+    return t ~ /^-[^-]/ && b ~ /[fd]/
+  }
+  function takes_value(t) {
+    if (t ~ /^-[^-o]*o$/) return 1
+    return t !~ /=/ && abbrev(t, "repo recurse-submodules receive-pack exec push-option")
   }
   function check(    n,w,g,p,i,t,d,remote,refs,trunk,unsafe) {
     n = split(segment, w, /[[:space:]]+/)
-    for (g = 1; g <= n; g++) if (w[g] == "git") {
+    for (g = 1; g <= n; g++) if (w[g] ~ /(^|\/)git$/) {
       for (p = g + 1; p <= n; p++) if (w[p] == "push") {
         for (i = g + 1; i < p; i++) {
           t = w[i]
           if (t == "-C" && i + 1 < p) { i++; continue }
-          if (t ~ /^-C./) continue
+          if (t ~ /^-C./ || t == "--no-pager") continue
           if (t ~ /^-/) bad = 1
         }
         remote = refs = trunk = unsafe = 0
@@ -76,13 +95,14 @@ printf '%s\n' "$CMD" | awk '
           if (t ~ /^-/) {
             if (rewrites(t)) bad = 1
             if (!safe(t)) unsafe = 1
+            if (takes_value(t)) i++
             continue
           }
           if (!remote) { remote = 1; continue }
           refs++
           if (t ~ /^\+/ || t ~ /^:/) bad = 1
           if (t ~ /(^|:)refs\/tags\//) unsafe = 1
-          d = t; sub(/^.*:/, "", d); sub(/^refs\/heads\//, "", d)
+          d = t; sub(/^.*:/, "", d); sub(/^(refs\/)?heads\//, "", d)
           if (d ~ /^(main|master|HEAD|@)$/ || t ~ /\*/) trunk = 1
         }
         if (!refs) trunk = 1
