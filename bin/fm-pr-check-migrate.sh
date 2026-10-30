@@ -11,6 +11,14 @@
 # binding, matching registration record or prior activity baseline.
 # Repair cannot attribute that historical data to the pending attempt; its fresh
 # fallback time can silently baseline comments posted before repair.
+# Bounded in-place-update limit: an older watcher with no armed checks and valid
+# scan markers can survive the update; its first newly registered PR comment
+# batch can be flagged twice by the older process and current publisher.
+# This duplicates the alert without losing the comment; a fresh current watcher
+# uses the current once-per-batch contract.
+# Conditional downgrade limit: a reader that accepts only merged retirement
+# receipts refuses a pending CLOSED receipt. Recover it with the current reader
+# before downgrading; preserve the receipt and its bound artifacts until then.
 # Remaining provenance-bound polls and
 # registered custom checks remain armed, and every other task poll is
 # quarantined for private review. A current X-mode shim is preserved by exact
