@@ -4,7 +4,7 @@ fm_afk_fixture_prepare() {
   local name
   while IFS= read -r name; do
     case "$name" in
-      HERDR*|TMUX*|CMUX*|ZELLIJ*|ORCA*|FM_SUPERVISOR*|FM_BACKEND*|FM_HOME|FM_ROOT*|FM_STATE_*|FM_CONFIG_*|__CFBundleIdentifier)
+      HERDR*|TMUX*|CMUX*|ZELLIJ*|ORCA*|FM_SUPERVISOR*|FM_BACKEND*|FM_HOME|FM_ROOT*|FM_STATE_*|FM_CONFIG_*|FM_WAKE_QUEUE|FM_WAKE_QUEUE_LOCK|__CFBundleIdentifier)
         unset "$name" ;;
     esac
   done < <(compgen -e)

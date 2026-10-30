@@ -26,6 +26,7 @@
 #                              record it. Idempotent: an already-running daemon
 #                              just refreshes state/.afk; a recorded-but-dead
 #                              terminal is reconciled (closed by id) first.
+#   omp start/start-native selects async-job watcher delivery without a daemon.
 #   fm-afk-launch.sh start-native
 #                              Prepare lifecycle state for a harness-native
 #                              background job and record that no terminal exists.
@@ -178,8 +179,9 @@ fm_afk_launch_flag_write() {
 }
 
 # Read the recorded terminal into FM_AFK_REC_BACKEND/FM_AFK_REC_TARGET. The third
-# field is a herdr workspace id, native, or desktop; none/-/desktop selects
-# Stop-hook delivery, and none/-/native retains harness-native pane delivery. Returns 1 when no record exists.
+# field is a herdr workspace id, native, desktop, or omp. none/-/desktop selects
+# Stop-hook delivery, none/-/native retains pane delivery, and none/-/omp retains
+# the normal async watcher. Returns 1 when no record exists.
 fm_afk_launch_record_read() {
   local extra record
   FM_AFK_REC_BACKEND=""; FM_AFK_REC_TARGET=""; extra=""
@@ -195,7 +197,7 @@ fm_afk_launch_record_read() {
   case "$FM_AFK_REC_BACKEND" in
     herdr) [ -n "$extra" ] ;;
     tmux) : ;;
-    none) [ "$FM_AFK_REC_TARGET" = - ] && { [ "$extra" = native ] || [ "$extra" = desktop ]; } ;;
+    none) [ "$FM_AFK_REC_TARGET" = - ] && { [ "$extra" = native ] || [ "$extra" = desktop ] || [ "$extra" = omp ]; } ;;
     *) return 2 ;;
   esac || { fm_afk_launch_log "daemon terminal record is malformed; refusing to act on it"; return 2; }
 }
@@ -469,6 +471,11 @@ fm_afk_launch_create_tmux() {  # <captain-target> <captain-backend>
 }
 
 fm_afk_launch_start() {
+  if [ "$("$FM_AFK_LAUNCH_DIR/fm-harness.sh")" = omp ]; then
+    fm_afk_launch_start_omp
+    return
+  fi
+  fm_afk_omp_selected "$FM_AFK_LAUNCH_STATE" && { fm_afk_launch_log "omp owns away supervision; stop it before selecting pane delivery"; return 1; }
   local captain_target captain_backend backup artifact had_afk=0 result
   if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
@@ -539,6 +546,11 @@ fm_afk_launch_start() {
 }
 
 fm_afk_launch_start_native() {
+  if [ "$("$FM_AFK_LAUNCH_DIR/fm-harness.sh")" = omp ]; then
+    fm_afk_launch_start_omp
+    return
+  fi
+  fm_afk_omp_selected "$FM_AFK_LAUNCH_STATE" && { fm_afk_launch_log "omp owns away supervision; stop it before selecting pane delivery"; return 1; }
   fm_afk_desktop_selected "$FM_AFK_LAUNCH_STATE" && { fm_afk_launch_log "Desktop owns away supervision; stop it before selecting pane delivery"; return 1; }
   local backup artifact had_afk=0 result=0
   mkdir -p "$FM_AFK_LAUNCH_STATE" || return 1
@@ -580,6 +592,27 @@ fm_afk_launch_start_native() {
     rm -rf "$backup" || result=1
   fi
   return "$result"
+}
+
+fm_afk_launch_start_omp() {
+  if [ -e "$FM_AFK_LAUNCH_STATE/.afk-return-catchup" ]; then
+    fm_afk_launch_log "return catch-up is still pending"
+    return 1
+  fi
+  if fm_afk_omp_selected "$FM_AFK_LAUNCH_STATE" && ! daemon_lock_held_by_live_daemon; then
+    fm_afk_launch_flag_write
+    return
+  fi
+  if [ -e "$FM_AFK_LAUNCH_STATE/.afk" ] || [ -e "$FM_AFK_LAUNCH_RECORD" ] || daemon_lock_held_by_live_daemon; then
+    fm_afk_launch_log "another away owner exists; stop it before selecting omp delivery"
+    return 1
+  fi
+  fm_afk_clear_stale_artifacts "$FM_AFK_LAUNCH_STATE" || return 1
+  fm_afk_launch_record_write none - omp || return 1
+  if ! fm_afk_launch_flag_write; then
+    rm -f "$FM_AFK_LAUNCH_RECORD"
+    return 1
+  fi
 }
 
 fm_afk_launch_start_desktop() {

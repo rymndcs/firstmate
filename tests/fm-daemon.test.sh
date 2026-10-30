@@ -25,6 +25,33 @@ TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
 FM_DAEMON_PRIMARY_HARNESS=claude
 export FM_DAEMON_PRIMARY_HARNESS
 
+test_short_default_delivery_alarm() {
+  local harness dir state fakebin sent clock=1000
+  for harness in claude codex opencode pi pi-signed grok kimi omp; do
+    dir=$(make_bordered_case "short-alarm-$harness")
+    state="$dir/state"; fakebin="$dir/fakebin"; sent="$dir/sent"
+    printf '╭─────────────────╮\n│ > retained draft │\n╰─────────────────╯\n' > "$dir/composer"
+    touch "$state/.afk"
+    (
+      _now() { echo "$clock"; }
+      export FM_WEDGE_ALARM_LOG="$dir/notifications" FM_WEDGE_ALARM_CHANNEL=osascript
+      export FM_DAEMON_PRIMARY_HARNESS="$harness" FM_ESCALATE_BATCH_SECS=99999
+      unset FM_MAX_DEFER_SECS
+      escalate_add "$state" 'blocked: delivery proof'
+      clock=1119
+      PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" housekeeping "$state"
+      [ ! -e "$dir/notifications" ] || fail "$harness alarm fired before its deadline"
+      clock=1121
+      PATH="$fakebin:$PATH" FM_FAKE_COMPOSER="$dir/composer" FM_FAKE_SENT="$sent" housekeeping "$state"
+      [ -s "$dir/notifications" ] || fail "$harness undelivered escalation did not actively notify within two minutes"
+      grep -q 'away-delivery' "$state/.wake-queue" || fail "$harness alarm left no durable delivery-failure wake"
+      [ -s "$state/.subsuper-escalations" ] || fail "$harness alarm discarded pending work"
+      [ ! -s "$sent" ] || fail "$harness alarm overwrote a draft"
+    ) || exit 1
+  done
+  pass 'every primary raises an active alarm and durable wake at the short default bound without touching drafts'
+}
+
 test_afk_start_refuses_when_flag_cannot_be_written() {
   local dir state out status
   dir=$(make_supercase afk-start-flag-unwritable)
@@ -1856,6 +1883,7 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
   pass "inject_msg: unrecognized composer states defer by default"
 }
 
+test_short_default_delivery_alarm
 test_afk_start_refuses_when_flag_cannot_be_written
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid

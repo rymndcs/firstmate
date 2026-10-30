@@ -75,8 +75,9 @@
 # Three moments were considered and deliberately left out, so a later reader does
 # not re-add them by reflex:
 #   session-start - bin/fm-session-start.sh already prints data/captain.md and
-#                   data/learnings.md IN FULL. A slice there would re-print what
-#                   the digest already carries, and the failure at session start
+#                   data/learnings.md IN FULL, or names each on a leading STOP
+#                   line to read first. A slice there would re-print what the
+#                   digest already carries, and the failure at session start
 #                   is skipping the digest, which a second copy does not fix.
 #   stall         - no script owns the stalled-worker moment; it is reached
 #                   through a skill. There is nothing to print from.

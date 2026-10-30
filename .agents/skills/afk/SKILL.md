@@ -2,7 +2,7 @@
 name: afk
 description: >-
   Enter away-mode supervision when the captain invokes /afk, says they are going afk, `state/.afk` exists, an incoming message starts with `FM_INJECT_MARK`, or any `state/.subsuper-*` marker is involved.
-  It sets a durable away-mode flag so the sub-supervisor daemon can self-handle routine wakes and escalate captain-relevant events plus bounded declared-external-wait rechecks as batched digests during walk-away stretches, then exits automatically when any real unmarked message returns firstmate to full per-wake responsiveness.
+  It selects one durable supervision owner, keeps authorized work moving and decisions parked during absence, then reconciles through the return gate when a real unmarked message returns firstmate to full per-wake responsiveness.
 user-invocable: true
 metadata:
   internal: true
@@ -21,7 +21,12 @@ The script header and help own exact commands and record formats.
 - In the Claude desktop app, select `start-desktop` explicitly.
   The Claude Stop hook owns the foreground coordinator and renewal; do not start a native background daemon or a separate watcher.
   The selected owner is durable and survives restart.
-- In every terminal environment, retain the existing pane delivery.
+- In an omp primary, `start` and `start-native` select the normal tracked async watcher as the only away owner.
+  Do not launch the pane daemon or run `bin/fm-afk-start.sh`.
+  Retain a healthy existing async watcher, or arm one using `docs/supervision-protocols/omp.md`.
+  Re-arm after every completion while away, even when no workers remain.
+  A watcher-job completion is internal input, not a return message.
+- In other terminal environments, retain the existing pane delivery.
   With a native tracked background tool, prepare with `start-native`, then run `FM_AFK_STATE_PREPARED=1 bin/fm-afk-start.sh` through that tool.
   On a failed native launch, use the launcher's `stop` command to roll back.
   Without a native tracked background tool, use `start` to create a non-visible tracked terminal.
@@ -52,6 +57,7 @@ The selected owner continues supervision after that fixed mark.
    Move on to other work without asking or waiting for the captain.
    An unchanged parked condition must never be retried or re-escalated.
 4. Keep the current selection as the only supervision owner.
+   In omp, handling the completion and re-arming the normal async watcher continues that same owner; it is required, including after parking a decision.
    Desktop renewal is an internal handling turn followed by another Stop; never manually arm a second cycle.
    A real global captain hold remains authoritative and suppresses automatic Desktop turns.
    Never set or clear that global hold to park an individual decision.
@@ -86,7 +92,9 @@ Repeated internal wakes and repeated return checks do not create additional summ
 
 ## Mechanisms and limits
 
-`bin/fm-supervise-daemon.sh` owns shared batching, status deduplication, stale checks, and declared-external-wait rechecks.
+omp uses the normal watcher and primary triage instead of daemon batching; `docs/supervision-protocols/omp.md` owns that wake protocol.
+The primary handles authorized work and parks decisions under the same policy above.
+`bin/fm-supervise-daemon.sh` owns batching, status deduplication, stale checks, and declared-external-wait rechecks for daemon delivery.
 Its terminal delivery retains backend existence, busy/composer guards, verified type-once submit, and configured wedge alarms; `docs/herdr-backend.md` owns their backend contracts.
 Its Desktop hook delivery retains pending evidence until explicit consumption and renews before the configured hook lifetime.
 `docs/watcher-continuity.md` owns Stop continuity, and `docs/turnend-guard.md` owns its failure backstop.

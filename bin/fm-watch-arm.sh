@@ -3,8 +3,8 @@
 #
 # The watcher (bin/fm-watch.sh) blocks until it has an actionable wake to
 # surface, then prints one reason line and exits. While state/.afk exists the
-# daemon owns triage and the watcher exits on every wake for the daemon to
-# classify. Reliability depends on arming through a mechanism that SURVIVES the
+# watcher exits on every wake for the selected away owner to classify: the
+# normal async primary for omp, otherwise the daemon. Reliability depends on arming through a mechanism that SURVIVES the
 # call and NOTIFIES on exit, so firstmate must run this script as the harness's
 # own tracked background task (e.g. run_in_background), or - for a Claude
 # primary - inside the Stop asyncRewake hook's foreground process tree

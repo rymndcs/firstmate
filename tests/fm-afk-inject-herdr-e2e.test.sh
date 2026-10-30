@@ -87,6 +87,8 @@ fm_backend_herdr_version_check || fail "version_check failed against the real in
 STATE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/fm-afk-herdr-e2e.XXXXXX")
 mkdir -p "$STATE_DIR"
 LOG_FILE="$STATE_DIR/submitted.log"
+READY_FILE="$STATE_DIR/fixture-ready"
+ACK_FILE="$STATE_DIR/fixture-ack"
 : > "$LOG_FILE"
 
 CONTAINER_RAW=$(fm_backend_herdr_container_ensure /tmp) || fail "container_ensure failed"
@@ -158,6 +160,8 @@ cat > "$LOOP_SCRIPT" <<'LOOP'
 #!/usr/bin/env bash
 MARK=$'\xE2\x81\xA3'
 LOG="$1"
+READY="$2"
+ACK="$3"
 AGENT_SOURCE=fm-test-supervisor
 AGENT_LABEL=fm-test-supervisor
 report_agent_state() {  # <idle|working>
@@ -214,9 +218,11 @@ submit_line() {
   report_agent_state working
   sleep 0.6
   report_agent_state idle
+  printf '%s\n' "$_line" > "$ACK"
 }
 
 redraw
+: > "$READY"
 while IFS= read -r -n 1 _ch; do
   if [ -z "$_ch" ]; then
     submit_line
@@ -231,9 +237,13 @@ done
 LOOP
 chmod +x "$LOOP_SCRIPT"
 
-fm_backend_herdr_send_text_line "$SUPERVISOR_TARGET" "bash '$LOOP_SCRIPT' '$LOG_FILE'" \
+fm_backend_herdr_send_text_line "$SUPERVISOR_TARGET" "bash '$LOOP_SCRIPT' '$LOG_FILE' '$READY_FILE' '$ACK_FILE'" \
   || fail "could not start the supervisor-loop script in the scratch herdr pane"
-sleep 1  # let the loop start and settle
+for _ in $(seq 1 200); do
+  [ ! -f "$READY_FILE" ] || break
+  sleep 0.05
+done
+[ -f "$READY_FILE" ] || fail "the supervisor fixture did not acknowledge startup"
 
 # --- herdr shim: forwards to the real binary, optionally swallows one Enter --
 REAL_HERDR=$(command -v herdr)
@@ -328,12 +338,17 @@ selfcheck_pane_input_pending() {
   local check_text="selfcheck-marker-12345"
   fm_backend_herdr_send_literal "$SUPERVISOR_TARGET" "$check_text" \
     || fail "selfcheck: could not send literal text to the scratch pane"
-  sleep 0.5
-  if PATH="$HERDR_SHIM_DIR:$PATH" pane_input_pending "$SUPERVISOR_TARGET" herdr; then
-    fm_backend_herdr_send_key "$SUPERVISOR_TARGET" Enter
-    sleep 0.5
-    return 0
-  fi
+  for _ in $(seq 1 100); do
+    if [ "$(PATH="$HERDR_SHIM_DIR:$PATH" fm_backend_herdr_composer_state "$SUPERVISOR_TARGET")" = pending ]; then
+      fm_backend_herdr_send_key "$SUPERVISOR_TARGET" Enter
+      for _ in $(seq 1 200); do
+        if [ "$(cat "$ACK_FILE" 2>/dev/null || true)" = "$check_text" ]; then return 0; fi
+        sleep 0.05
+      done
+      fail "the supervisor fixture did not acknowledge the self-check submission"
+    fi
+    sleep 0.05
+  done
   echo "pane_input_pending cannot detect typed text in this real-herdr environment" >&2
   fm_backend_herdr_capture "$SUPERVISOR_TARGET" 10 | sed 's/^/    /' >&2
   fm_backend_herdr_send_key "$SUPERVISOR_TARGET" Enter

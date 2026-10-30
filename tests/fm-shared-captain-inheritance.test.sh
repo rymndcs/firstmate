@@ -346,7 +346,7 @@ EOF
   assert_contains "$out" "data/captain-shared.md (shared, main-authoritative, read-only in secondmate homes)" \
     "session-start digest should label the shared captain file unmistakably"
   assert_contains "$out" "shared from primary" "session-start digest should render the shared file"
-  assert_contains "$out" "data/captain-shared.md, data/learnings.md" \
+  assert_contains "$(printf '%s\n' "$out" | grep '^Printed in full above - do NOT re-read now:')" "data/captain-shared.md" \
     "read-once reminder should include captain-shared.md"
   pass "session-start digest renders data/captain-shared.md with the shared read-only label"
 }

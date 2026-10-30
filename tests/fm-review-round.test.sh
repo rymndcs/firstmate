@@ -3,10 +3,19 @@ set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
+unset FM_STATE_OVERRIDE
+
 TMP_ROOT=$(fm_test_tmproot fm-review-round)
 TASK_REPO="$TMP_ROOT/task"
 FIXTURE_HOME="$TMP_ROOT/home"
 FAKEBIN="$TMP_ROOT/fakebin"
+TASK_HOME="$TMP_ROOT/firstmate home"
+mkdir -p "$TASK_HOME/state"
+select_runtime() {
+  printf "harness=%s\nmodel=%s\neffort=%s\n" "$1" "${2:-$1-task-model}" "${3:-medium}" > "$TASK_HOME/state/first-task.meta"
+}
+select_runtime codex
+printf "harness=codex\nmodel=query-model\neffort=high\n" > "$TASK_HOME/state/query-regression.meta"
 mkdir -p "$TASK_REPO" "$FIXTURE_HOME/.claude/agents" "$FAKEBIN"
 TASK_REPO=$(cd "$TASK_REPO" && pwd -P)
 git -C "$TASK_REPO" init -q
@@ -16,6 +25,9 @@ cat > "$FAKEBIN/codex" <<'PY'
 #!/usr/bin/env python3
 import json, os, pathlib, sys
 args = sys.argv[1:]
+if args == ['--help']:
+    print('  --effort <level>' if not os.environ.get('FAKE_NO_EFFORT') else 'Usage: claude')
+    sys.exit(0)
 data = {'runtime': os.path.basename(sys.argv[0]), 'args': args}
 with open(os.environ['FAKE_REVIEW_CALLS'], 'a') as calls:
     calls.write(json.dumps(data) + '\n')
@@ -79,12 +91,12 @@ assert_one_call() {
 }
 
 launch() {
-  (cd "$TASK_REPO" && env HOME="$FIXTURE_HOME" PATH="$FAKEBIN:$PATH" \
+  (cd "$TASK_REPO" && env FM_HOME="$TASK_HOME" HOME="$FIXTURE_HOME" PATH="$FAKEBIN:$PATH" \
     FAKE_REVIEW_CALLS="$TMP_ROOT/calls.jsonl" FAKE_REVIEW_DATE="${FAKE_REVIEW_DATE:-2026-10-06}" "$ROOT/bin/fm-review-round.sh" "$@")
 }
 
 out=$(launch --help)
-assert_contains "$out" 'Codex gpt-6.1-sol (high reasoning) through 2026-10-11 inclusive; then Claude opus.' 'help omitted the current runtime rule'
+assert_contains "$out" 'state/<task-id>.meta' 'help omitted runtime metadata owner'
 
 
 legacy=$(launch --init caller-path-regression)
@@ -93,25 +105,26 @@ case "$legacy" in /*) legacy_dir=$legacy ;; *) legacy_dir="$REVIEW_ROOT/$legacy"
 printf 'Target: task\n' > "$legacy_dir/old-input.md"
 cp "$legacy_dir/old-input.md" "$legacy_dir/-round.md"
 legacy_launch() {
-  (cd "$legacy_dir" && env HOME="$FIXTURE_HOME" PATH="$FAKEBIN:$PATH" \
-    FAKE_REVIEW_CALLS="$TMP_ROOT/calls.jsonl" FAKE_REVIEW_DATE="$FAKE_REVIEW_DATE" "$ROOT/bin/fm-review-round.sh" "$@")
+  (cd "$legacy_dir" && env FM_HOME="$TASK_HOME" HOME="$FIXTURE_HOME" PATH="$FAKEBIN:$PATH" \
+    FAKE_REVIEW_CALLS="$TMP_ROOT/calls.jsonl" FAKE_REVIEW_DATE="${FAKE_REVIEW_DATE:-2030-01-01}" "$ROOT/bin/fm-review-round.sh" "$@")
 }
 path_failures=0
-for day in 2026-10-06 2026-10-12; do
+for runtime in codex claude; do
+  select_runtime "$runtime"
   for role in reviewer fixer; do
     for value in "$legacy_dir/old-input.md" -round.md ./-round.md; do
       before=$(call_count)
       rc=0
-      out=$(FAKE_REVIEW_DATE="$day" legacy_launch "$role" --round 1 --in "$value" --out "$legacy_dir/$day-$role-${#value}.out" 2>&1) || rc=$?
+      out=$(legacy_launch "$role" --round 1 --in "$value" --out "$legacy_dir/$runtime-$role-${#value}.out" 2>&1) || rc=$?
       if [ "$rc" -eq 0 ] || [[ "$out" != *'unknown option: --in'* ]] || [ "$(call_count)" -ne "$before" ]; then
-        printf 'not ok - %s/%s caller --in path was not rejected at the interface: exit=%s %s\n' "$day" "$role" "$rc" "$out" >&2
+        printf 'not ok - %s/%s caller --in path was not rejected at the interface: exit=%s %s\n' "$runtime" "$role" "$rc" "$out" >&2
         path_failures=$((path_failures + 1))
       fi
     done
     rc=0
-    out=$(FAKE_REVIEW_DATE="$day" legacy_launch "$role" --round 1 --out -round.out --in "$legacy_dir/old-input.md" 2>&1) || rc=$?
+    out=$(legacy_launch "$role" --round 1 --out -round.out --in "$legacy_dir/old-input.md" 2>&1) || rc=$?
     if [ "$rc" -eq 0 ] || [[ "$out" != *'unknown option: --out'* ]]; then
-      printf 'not ok - %s/%s caller --out path was not rejected at the interface: %s\n' "$day" "$role" "$out" >&2
+      printf 'not ok - %s/%s caller --out path was not rejected at the interface: %s\n' "$runtime" "$role" "$out" >&2
       path_failures=$((path_failures + 1))
     fi
   done
@@ -184,7 +197,9 @@ PY
 }
 
 query_failures=0
-for day in 2026-10-06 2026-10-12; do
+for runtime in codex claude; do
+  select_runtime "$runtime"
+  cp "$TASK_HOME/state/first-task.meta" "$TASK_HOME/state/query-regression.meta"
   for role in reviewer fixer; do
     for value in '' elsewhere; do
       for trailing in none valid; do
@@ -205,17 +220,17 @@ for day in 2026-10-06 2026-10-12; do
           query_args=("$role" --task "$query_token" --round 1 --path "$value")
           [ "$trailing" != valid ] || query_args+=(--path input)
           rc=0
-          out=$(FAKE_REVIEW_DATE="$day" launch "${query_args[@]}" 2>&1) || rc=$?
+          out=$(launch "${query_args[@]}" 2>&1) || rc=$?
           inventory_after=$(artifact_inventory "$query_dir")
           if [ "$rc" -eq 0 ] || [[ "$out" != *'unknown path query'* ]] || \
             [ "$(call_count)" -ne "$before" ] || [ "$inventory_after" != "$inventory_before" ]; then
             printf 'not ok - %s/%s query=%q trailing=%s evidence=%s exit=%s calls=%s inventory_unchanged=%s: %s\n' \
-              "$day" "$role" "$value" "$trailing" "$evidence" "$rc" "$(( $(call_count) - before ))" \
+              "$runtime" "$role" "$value" "$trailing" "$evidence" "$rc" "$(( $(call_count) - before ))" \
               "$([ "$inventory_after" = "$inventory_before" ] && echo yes || echo no)" "$out" >&2
             query_failures=$((query_failures + 1))
           elif [ "$evidence" = fresh ]; then
             before=$(call_count)
-            out=$(FAKE_REVIEW_DATE="$day" launch "$role" --task "$query_token" --round 1)
+            out=$(launch "$role" --task "$query_token" --round 1)
             assert_one_call "$before"
             [ "$out" = "$query_reply" ] || fail 'malformed query consumed the intended launch slot'
             [ "$(cat "$query_input")" = 'Target: query-only request' ] || fail 'intended launch changed input'
@@ -225,10 +240,10 @@ for day in 2026-10-06 2026-10-12; do
     done
     rc=0
     before=$(call_count)
-    out=$(FAKE_REVIEW_DATE="$day" launch "$role" --path elsewhere --task '' --round invalid 2>&1) || rc=$?
+    out=$(launch "$role" --path elsewhere --task '' --round invalid 2>&1) || rc=$?
     [ "$rc" -ne 0 ] || fail 'malformed query before invalid task/round was accepted'
     if [[ "$out" != *'unknown path query'* ]] || [ "$(call_count)" -ne "$before" ]; then
-      printf 'not ok - %s/%s query was not rejected at option intake: %s\n' "$day" "$role" "$out" >&2
+      printf 'not ok - %s/%s query was not rejected at option intake: %s\n' "$runtime" "$role" "$out" >&2
       query_failures=$((query_failures + 1))
     fi
   done
@@ -268,10 +283,10 @@ data = json.loads(pathlib.Path(output).read_text())
 assert data['runtime'] == runtime, data
 args = data['args']
 if runtime == 'codex':
-    expected = ['exec', '--output-last-message', output, '--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="high"',
+    expected = ['exec', '--output-last-message', output, '--model', 'codex-task-model', '-c', 'model_reasoning_effort="medium"',
                 '--dangerously-bypass-approvals-and-sandbox', '--']
 else:
-    expected = ['-p', '--output-format', 'json', '--model', 'opus', '--dangerously-skip-permissions', '--']
+    expected = ['-p', '--output-format', 'json', '--model', 'claude-task-model', '--effort', 'medium', '--dangerously-skip-permissions', '--']
 prompt = (pathlib.Path(home) / '.claude/agents' / f'adv-{role}.md').read_text()
 prompt += '\n\n# This round\n' + pathlib.Path(input_file).read_text()
 assert args == expected + [prompt.rstrip('\n')], args
@@ -289,43 +304,44 @@ PY
 }
 
 export CDPATH="$TMP_ROOT:$TASK_REPO"
-for day in 2026-10-04 2026-10-11 2026-10-12; do
-  runtime=codex
-  [ "$day" != 2026-10-12 ] || runtime=claude
+for runtime in codex claude; do
+  select_runtime "$runtime"
   for role in reviewer fixer; do
     prepare "$role"
     before=$(call_count)
-    out=$(FAKE_REVIEW_DATE="$day" run_role)
+    out=$(run_role)
     assert_one_call "$before"
     [ "$out" = "$OUTPUT" ] || fail 'CDPATH polluted reply path'
-    assert_capture "$runtime" || fail "$day/$role prompt or runtime differs"
+    assert_capture "$runtime" || fail "$runtime/$role prompt or runtime differs"
   done
 done
+select_runtime claude
 for role in reviewer fixer; do
   prepare "$role"
   before=$(call_count)
-  FAKE_REVIEW_DATE=2026-10-12 FAKE_REVIEW_MODE=json-padding run_role >/dev/null
+  FAKE_REVIEW_DATE=2026-10-28 FAKE_REVIEW_MODE=json-padding run_role >/dev/null
   assert_one_call "$before"
   assert_capture claude || fail 'valid padded JSON refused'
 done
-pass 'review-round: inclusive dated models, exact prompts and one invocation survive CDPATH'
+pass 'review-round: task models and effort, exact prompts and one invocation survive CDPATH'
 
-for day in 2026-10-06 2026-10-12; do
+for runtime in codex claude; do
+  select_runtime "$runtime"
   for role in reviewer fixer; do
     for mode in stderr whitespace events; do
       prepare "$role"
       before=$(call_count)
       rc=0
-      out=$(FAKE_REVIEW_DATE="$day" FAKE_REVIEW_MODE="$mode" run_role 2>&1) || rc=$?
+      out=$(FAKE_REVIEW_MODE="$mode" run_role 2>&1) || rc=$?
       assert_one_call "$before"
-      [ "$rc" -ne 0 ] || fail "$day/$role accepted $mode without meaningful role reply"
+      [ "$rc" -ne 0 ] || fail "$runtime/$role accepted $mode without meaningful role reply"
       assert_contains "$out" 'role reply' 'missing reply refusal lacked reason'
       assert_contains "$out" "$OUTPUT.diagnostics" 'missing preserved diagnostics path'
       case "$mode" in
         stderr) assert_grep 'runtime ready; no assistant reply' "$OUTPUT.diagnostics" 'stderr lost' ;;
         events)
           evidence="$OUTPUT.diagnostics"
-          [ "$day" != 2026-10-12 ] || evidence="$OUTPUT.runtime.json"
+          [ "$runtime" != claude ] || evidence="$OUTPUT.runtime.json"
           assert_grep 'tool/event log; no assistant reply' "$evidence" 'stdout lost'
           ;;
         whitespace) [ -s "$OUTPUT" ] || fail 'whitespace evidence lost' ;;
@@ -335,12 +351,13 @@ for day in 2026-10-06 2026-10-12; do
 done
 pass 'review-round: both runtimes and roles refuse diagnostics, events and whitespace as replies'
 
+select_runtime claude
 for role in reviewer fixer; do
   for mode in success-error error-success duplicate-success extra-object object-first array malformed trailing missing-error-flag scalar null error-result tool-result nonstring-result; do
     prepare "$role"
     before=$(call_count)
     rc=0
-    out=$(FAKE_REVIEW_DATE=2026-10-12 FAKE_REVIEW_MODE="$mode" run_role 2>&1) || rc=$?
+    out=$(FAKE_REVIEW_MODE="$mode" run_role 2>&1) || rc=$?
     assert_one_call "$before"
     [ "$rc" -ne 0 ] || fail "Claude $role accepted $mode as one valid result"
     assert_contains "$out" 'no valid role reply' 'invalid result lacks reason'
@@ -352,7 +369,7 @@ for role in reviewer fixer; do
     diagnostics_before=$(cksum < "$OUTPUT.diagnostics")
     before=$(call_count)
     rc=0
-    out=$(FAKE_REVIEW_DATE=2026-10-12 run_role 2>&1) || rc=$?
+    out=$(run_role 2>&1) || rc=$?
     [ "$rc" -ne 0 ] || fail 'invalid-result retry reused evidence'
     [ "$(call_count)" -eq "$before" ] || fail 'invalid-result retry launched'
     [ "$(cksum < "$OUTPUT.runtime.json")" = "$raw_before" ] || fail 'retry changed raw result'
@@ -361,26 +378,27 @@ for role in reviewer fixer; do
 done
 pass 'review-round: Claude requires exactly one valid result; retry preserves invalid evidence'
 
-for day in 2026-10-06 2026-10-12; do
+for runtime in codex claude; do
+  select_runtime "$runtime"
   for role in reviewer fixer; do
     prepare "$role"
     before=$(call_count)
     rc=0
-    out=$(FAKE_REVIEW_DATE="$day" FAKE_REVIEW_FAIL=1 run_role 2>&1) || rc=$?
+    out=$(FAKE_REVIEW_FAIL=1 run_role 2>&1) || rc=$?
     assert_one_call "$before"
     expect_code 23 "$rc" 'role failure must propagate'
     assert_contains "$out" "$OUTPUT" 'failure omitted reply path'
     assert_grep 'deliberate role failure' "$OUTPUT.diagnostics" 'failure lost stderr'
     before=$(call_count)
     rc=0
-    out=$(FAKE_REVIEW_DATE="$day" run_role 2>&1) || rc=$?
+    out=$(run_role 2>&1) || rc=$?
     [ "$rc" -ne 0 ] || fail 'retry overwrote failed evidence'
     [ "$(call_count)" -eq "$before" ] || fail 'retry launched over old evidence'
     [ "$(cat "$OUTPUT.diagnostics")" = 'deliberate role failure' ] || fail 'retry changed diagnostics'
     prepare "$role"
     before=$(call_count)
     rc=0
-    out=$(FAKE_REVIEW_DATE="$day" FAKE_REVIEW_EMPTY=1 run_role 2>&1) || rc=$?
+    out=$(FAKE_REVIEW_EMPTY=1 run_role 2>&1) || rc=$?
     assert_one_call "$before"
     [ "$rc" -ne 0 ] || fail 'absent reply passed'
     assert_contains "$out" 'role reply' 'missing reply lacks reason'
@@ -388,9 +406,10 @@ for day in 2026-10-06 2026-10-12; do
 done
 pass 'review-round: failure codes propagate and failed or absent replies preserve evidence'
 
-for day in 2026-10-06 2026-10-12; do
+for runtime in codex claude; do
+  select_runtime "$runtime"
   suffixes=('' .diagnostics)
-  [ "$day" != 2026-10-12 ] || suffixes+=(.runtime.json)
+  [ "$runtime" != claude ] || suffixes+=(.runtime.json)
   for suffix in "${suffixes[@]}"; do
     for kind in existing symlink; do
       prepare reviewer
@@ -399,7 +418,7 @@ for day in 2026-10-06 2026-10-12; do
       if [ "$kind" = existing ]; then cp "$sentinel" "$OUTPUT$suffix"; else ln -s "$sentinel" "$OUTPUT$suffix"; fi
       before=$(call_count)
       rc=0
-      out=$(FAKE_REVIEW_DATE="$day" run_role 2>&1) || rc=$?
+      out=$(run_role 2>&1) || rc=$?
       [ "$rc" -ne 0 ] || fail 'existing evidence overwritten'
       [ "$(call_count)" -eq "$before" ] || fail 'existing evidence allowed launch'
       [ "$(cat "$OUTPUT$suffix")" = 'previous evidence' ] || fail 'evidence changed'
@@ -410,6 +429,7 @@ for day in 2026-10-06 2026-10-12; do
 done
 pass 'review-round: existing reply and sidecars, including symlinks, survive without launching'
 
+select_runtime codex
 prepare reviewer
 printf 'outside\n' > "$TMP_ROOT/outside.md"
 ln -s "$TMP_ROOT/outside.md" "$INPUT.link"
@@ -439,3 +459,217 @@ for file in "$OUTPUT" "$OUTPUT.diagnostics"; do
   [ "$(cksum < "$file")" = "$saved" ] || fail 'successful evidence changed'
 done
 pass 'review-round: derived inputs remain regular files; other tasks and root leftovers survive'
+
+select_runtime codex
+for role in reviewer fixer; do
+  prepare "$role"
+  FAKE_REVIEW_DATE=2030-01-01 run_role >/dev/null
+  assert_capture codex || fail 'date switched a Codex task to another runtime'
+done
+pass 'review-round: dates after the retired cutoff keep the task runtime for reviewer and fixer'
+
+for record in missing harness model effort default-effort unsupported-default; do
+  prepare reviewer
+  case "$record" in
+    missing) mv "$TASK_HOME/state/first-task.meta" "$TASK_HOME/saved.meta"; expected='metadata' ;;
+    harness) printf 'model=test\neffort=high\n' > "$TASK_HOME/state/first-task.meta"; expected='harness' ;;
+    model) printf 'harness=codex\neffort=high\n' > "$TASK_HOME/state/first-task.meta"; expected='model' ;;
+    effort) printf 'harness=codex\nmodel=test\n' > "$TASK_HOME/state/first-task.meta"; expected='effort' ;;
+    default-effort) select_runtime codex codex-task-model default; expected='effort' ;;
+    unsupported-default) select_runtime codex default; expected='model' ;;
+  esac
+  before=$(call_count)
+  rc=0
+  out=$(run_role 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "$record metadata launched a role"
+  assert_contains "$out" first-task 'refusal omitted task id'
+  assert_contains "$out" "$expected" 'refusal omitted missing runtime field'
+  [ "$(call_count)" -eq "$before" ] || fail 'invalid metadata invoked a runtime'
+  assert_absent "$OUTPUT" 'invalid metadata reserved reply'
+  select_runtime codex
+done
+for runtime in opencode pi pi-signed grok kimi unknown; do
+  prepare fixer
+  select_runtime "$runtime"
+  before=$(call_count)
+  rc=0
+  out=$(run_role 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "$runtime silently switched runtime"
+  assert_contains "$out" first-task 'unsupported refusal omitted task'
+  assert_contains "$out" "$runtime" 'unsupported refusal omitted harness'
+  [ "$(call_count)" -eq "$before" ] || fail 'unsupported harness invoked another runtime'
+done
+select_runtime claude
+printf 'harness=claude\nmodel=claude-task-model\n' > "$TASK_HOME/state/first-task.meta"
+prepare reviewer
+run_role >/dev/null
+python3 - "$OUTPUT" <<'PYTEST'
+import json, pathlib, sys
+args = json.loads(pathlib.Path(sys.argv[1]).read_text())['args']
+assert '--effort' not in args, args
+assert args[args.index('--model') + 1] == 'claude-task-model', args
+PYTEST
+select_runtime claude
+prepare fixer
+FAKE_NO_EFFORT=1 run_role >/dev/null
+python3 - "$OUTPUT" <<'PYTEST'
+import json, pathlib, sys
+assert '--effort' not in json.loads(pathlib.Path(sys.argv[1]).read_text())['args']
+PYTEST
+pass 'review-round: missing runtime refuses without launch; Claude optional effort follows CLI support'
+
+select_runtime codex
+mkdir -p "$TASK_HOME/bin"
+cp "$ROOT/bin/fm-review-round.sh" "$ROOT/bin/fm-pr-lib.sh" "$TASK_HOME/bin/"
+prepare reviewer
+(cd "$TASK_REPO" && unset FM_HOME && HOME="$FIXTURE_HOME" PATH="$FAKEBIN:$PATH" \
+  FAKE_REVIEW_CALLS="$TMP_ROOT/calls.jsonl" "$TASK_HOME/bin/fm-review-round.sh" reviewer --task "$TOKEN" --round "$ROUND") >/dev/null
+assert_capture codex || fail 'script-root home lookup depended on worker cwd'
+pass 'review-round: script path locates home when worker environment omits FM_HOME'
+
+
+python3 - "$ROOT" "$TMP_ROOT" "$FIXTURE_HOME" "$FAKEBIN" <<'PYTEST'
+import json, os, pathlib, re, subprocess, sys
+root, temp, roles, fakebin = map(pathlib.Path, sys.argv[1:])
+lab = temp / 'operational-paths'
+lab.mkdir()
+launcher = root / 'bin/fm-review-round.sh'
+worker = temp / 'task'
+env = os.environ.copy()
+for key in ['FM_HOME', 'FM_STATE_OVERRIDE', 'FM_DATA_OVERRIDE', 'FM_CONFIG_OVERRIDE']:
+    env.pop(key, None)
+env.update(HOME=str(roles), PATH=str(fakebin) + ':' + env['PATH'],
+           FAKE_REVIEW_CALLS=str(temp / 'calls.jsonl'))
+failures = []
+
+def launch(case, run_env, prefix=''):
+    token = subprocess.check_output([str(launcher), '--init', 'probe'], cwd=worker, env=env, text=True).strip()
+    args = [str(launcher), 'reviewer', '--task', token, '--round', '1']
+    input_file = subprocess.check_output(args + ['--path', 'input'], cwd=worker, env=env, text=True).strip()
+    pathlib.Path(input_file).write_text('Fixture request.\n')
+    result = subprocess.run(['bash', '-eu', '-c', prefix + '\nexec "$@"', 'fixture'] + args,
+                            cwd=worker, env=run_env, text=True, capture_output=True)
+    if result.returncode:
+        failures.append(f'{case}: exit {result.returncode}: {result.stderr.strip()}')
+        return
+    data = json.loads(pathlib.Path(result.stdout.strip()).read_text())
+    args = data['args']
+    if args[args.index('--model') + 1] != 'owning-model':
+        failures.append(f'{case}: selected stale default metadata: {args}')
+    else:
+        print(f'ok - {case}: owning runtime metadata selected after cwd change')
+
+meta = 'kind=scout\nharness=codex\nmodel=owning-model\neffort=high\n'
+home = lab / 'direct home'
+(home / 'state').mkdir(parents=True)
+(home / 'state/probe.meta').write_text(meta.replace('owning-model', 'stale-model'))
+alternate = lab / 'alternate state'
+alternate.mkdir()
+(alternate / 'probe.meta').write_text(meta)
+for location in [str(alternate), os.path.relpath(alternate, worker)]:
+    launch('R1-2 direct override ' + location, dict(env, FM_HOME=str(home), FM_STATE_OVERRIDE=location))
+for runtime in ['codex', 'claude']:
+    (alternate / 'probe.meta').write_text(meta.replace('harness=codex', 'harness=' + runtime))
+    launch('R1-2 override runtime ' + runtime, dict(env, FM_HOME=str(home), FM_STATE_OVERRIDE=str(alternate)))
+
+fake_root = lab / 'fake-root/bin'
+fake_root.mkdir(parents=True)
+guard = fake_root / 'fm-guard.sh'
+guard.write_text('#!/bin/sh\nexit 0\n')
+guard.chmod(0o755)
+for configured in [False, True]:
+    for state_kind in ['default', 'relative', 'absolute']:
+        case = f'R1-1/R1-2 promotion configured={configured} state={state_kind}'
+        owner = lab / f'owner {configured} {state_kind}'
+        (owner / 'home/state').mkdir(parents=True)
+        (owner / 'home/config').mkdir()
+        (owner / 'relative data').mkdir()
+        state = owner / ('home/state' if state_kind == 'default' else 'alternate state')
+        state.mkdir(exist_ok=True)
+        (state / 'probe.meta').write_text(meta)
+        if state_kind != 'default':
+            (owner / 'home/state/probe.meta').write_text(meta.replace('owning-model', 'stale-model'))
+        if configured:
+            (owner / 'home/config/ship-review.md').write_text('<!-- FM_REVIEW_LAUNCH_SLOT -->\n')
+        promote_env = dict(env, FM_HOME='home', FM_DATA_OVERRIDE='relative data', FM_ROOT_OVERRIDE=str(fake_root.parent))
+        if state_kind != 'default':
+            promote_env['FM_STATE_OVERRIDE'] = str(state) if state_kind == 'absolute' else 'alternate state'
+        result = subprocess.run([str(root / 'bin/fm-brief.sh'), 'probe', 'fixture', '--mode', 'local-only', '--checks', 'targeted'],
+                                cwd=owner, env=promote_env, text=True, capture_output=True)
+        if result.returncode:
+            failures.append(f'{case}: brief failed: {result.stderr}')
+        else:
+            brief = (owner / 'relative data/probe/brief.md').read_text()
+            for index, command in enumerate(re.findall(r'`(export FM_HOME=[^`]+)`', brief)):
+                launch(f'R1-2 brief {configured}/{state_kind} block={index}', dict(env, FM_STATE_OVERRIDE='/wrong-state'), command)
+        result = subprocess.run([str(root / 'bin/fm-promote.sh'), 'probe', '--mode', 'local-only', '--yolo', 'off'],
+                                cwd=owner, env=promote_env, text=True, capture_output=True)
+        if result.returncode:
+            failures.append(f'{case}: promotion failed: {result.stderr}')
+            continue
+        review = owner / 'relative data/probe/ship-review.md'
+        exports = re.findall(r'`(export FM_HOME=[^`]+)`', review.read_text())
+        if len(exports) != (2 if configured else 1):
+            failures.append(f'{case}: missing generated environment instructions')
+        for index, command in enumerate(exports):
+            launch(f'{case} block={index}', dict(env, FM_HOME='/wrong-home', FM_STATE_OVERRIDE='/wrong-state'), command)
+        if str(review) not in result.stdout:
+            failures.append(f'{case}: next instruction persists a relative review-file path: {result.stdout.strip()}')
+
+for name in ['FM_HOME', 'FM_STATE_OVERRIDE', 'FM_DATA_OVERRIDE']:
+    (state / 'probe.meta').write_text(meta)
+    original_meta = (state / 'probe.meta').read_bytes()
+    refused_env = dict(promote_env)
+    missing = 'missing directory ' + name
+    refused_env[name] = missing
+    result = subprocess.run([str(root / 'bin/fm-promote.sh'), 'probe', '--mode', 'local-only', '--yolo', 'off'],
+                            cwd=owner, env=refused_env, text=True, capture_output=True)
+    if result.returncode == 0 or name not in result.stderr:
+        failures.append(f'R1-1 invalid {name}: omitted resolution diagnostic: {result.stderr}')
+    if (state / 'probe.meta').read_bytes() != original_meta:
+        failures.append(f'R1-1 invalid {name}: changed task metadata before refusing')
+    if (owner / missing).exists():
+        failures.append(f'R1-1 invalid {name}: created the unresolvable directory')
+
+smoke = lab / 'smoke'
+(smoke / 'fakebin').mkdir(parents=True)
+(smoke / 'tmp').mkdir()
+shim = '''#!/usr/bin/env python3
+import json, os, pathlib, sys
+a = sys.argv[1:]
+k = pathlib.Path(sys.argv[0]).name
+if a == ['--version']: print('fixture 1'); sys.exit(0)
+if a == ['--help']: print('--effort <level>'); sys.exit(0)
+if os.environ.get('SMOKE_FAIL'): sys.exit(23)
+if k == 'codex':
+ pathlib.Path(a[a.index('--output-last-message') + 1]).write_text('SMOKE_OK codex')
+ print('model: gpt-6.1-sol\\nreasoning effort: high')
+else: print(json.dumps({'type':'result', 'is_error':False, 'result':'SMOKE_OK claude', 'modelUsage':{'claude-opus-fixture':{}}}))
+'''
+for name in ['codex', 'claude']:
+    path = smoke / 'fakebin' / name
+    path.write_text(shim)
+    path.chmod(0o755)
+for failing in [False, True]:
+    smoke_tmp = smoke / 'tmp' / str(failing)
+    smoke_tmp.mkdir()
+    smoke_env = dict(env, TMPDIR=str(smoke_tmp), FM_REVIEW_ROUND_LIVE='1', FM_STATE_OVERRIDE='/wrong-state',
+                     PATH=str(smoke / 'fakebin') + ':' + env['PATH'])
+    if failing:
+        smoke_env['SMOKE_FAIL'] = '1'
+    result = subprocess.run(['bash', str(root / 'tests/fm-review-round-live-e2e.test.sh')],
+                            cwd=worker, env=smoke_env, text=True, capture_output=True)
+    if (result.returncode != 0) != failing:
+        failures.append(f'R1-3 smoke failure={failing}: unexpected exit {result.returncode}: {result.stderr}')
+    if not failing and '# checked 2 installed supported harness(es)' not in result.stdout:
+        failures.append(f'R1-3 inert smoke did not exercise both harnesses: {result.stdout}')
+    leftovers = list(smoke_tmp.iterdir())
+    if leftovers:
+        failures.append(f'R1-3 smoke failure={failing}: left fixture roots: {leftovers}')
+    else:
+        print(f'ok - R1-3 smoke failure={failing}: parent removed fixture')
+if failures:
+    print('\n'.join('not ok - ' + failure for failure in failures), file=sys.stderr)
+    sys.exit(1)
+PYTEST
+pass 'review-round: promoted home/state paths and live-smoke parent cleanup survive process boundaries'

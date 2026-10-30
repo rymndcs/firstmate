@@ -1038,6 +1038,7 @@ test_ship_review_step_is_appended_only_when_configured() {
     "the ship brief did not carry the configured review step with its placeholders filled"
   assert_grep 'Literal & and \\ survive.' "$brief" "the review text's literal characters were altered"
   assert_grep 'fm-review-round.sh' "$brief" 'the brief did not carry the bundled launcher'
+  assert_grep "export FM_HOME=$home" "$brief" 'review instructions omitted owning home'
   assert_grep '--init brief-review-r1' "$brief" 'the brief did not initialize fresh task files'
   assert_grep '--path input' "$brief" 'input destination was not queried'
   assert_grep '--path report' "$brief" 'report destination was not queried'

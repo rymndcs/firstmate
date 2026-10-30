@@ -229,6 +229,26 @@ test_hook_silent_when_no_work_in_flight() {
   pass "fm-turnend-guard: silent no-op with nothing in flight"
 }
 
+test_hook_blocks_selected_away_without_workers() {
+  local selection dir out status
+  for selection in omp desktop; do
+    dir=$(make_primary_dir "$TMP_ROOT/hook-empty-away-$selection")
+    : > "$dir/state/.afk"
+    printf 'none\t-\t%s\n' "$selection" > "$dir/state/.afk-daemon-terminal"
+    out=$(printf '{"stop_hook_active":false}' | OMPCODE=1 FM_HOME="$dir" "$dir/bin/fm-turnend-guard.sh" --omp 2>&1); status=$?
+    expect_code 2 "$status" 'selected away delivery without workers must remain guarded'
+    assert_contains "$out" 'Selected away-mode delivery needs supervision' 'empty away guard must name the selected-away cause'
+    [[ "$out" != *'X-mode relay polling needs supervision'* ]] || fail 'empty away guard falsely names X-mode'
+    if [ "$selection" = omp ]; then
+      assert_contains "$out" 'omp bash call with async: true and timeout: 0' 'omp repair must retain its native async watcher guidance'
+    else
+      assert_contains "$out" 'Desktop away mode uses Stop-owned recovery' 'Desktop repair must retain its Stop recovery guidance'
+    fi
+  done
+  pass 'fm-turnend-guard: empty selected-away homes name their real supervision cause'
+}
+test_hook_blocks_selected_away_without_workers
+
 test_hook_blocks_when_fresh_beacon_has_no_live_lock() {
   local dir out status
   dir=$(make_primary_dir "$TMP_ROOT/hook-fresh-no-lock")
