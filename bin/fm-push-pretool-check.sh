@@ -4,20 +4,26 @@
 # REFUSED on every push, by git invoked as `git` or by any path ending in /git:
 #
 #   - force: -f, --force, --force-with-lease, --force-if-includes, or a +refspec
-#   - ref deletion: -d, --delete, --prune, or a refspec with an empty source
+#   - ref deletion: -d, --delete, --prune, --mirror, or a refspec with an empty source
 #   - any abbreviation of those long options, since git expands an unambiguous prefix
 #   - git configuration overrides before `push` (-c, --config-env, any option but -C and
 #     --no-pager), which can change what the push does after this check has read it
 #
 # A push that may reach `main` or `master` also accepts only the small option allowlist below and
 # no tag refs. It may reach them when it names either one as a destination (bare, heads/ or
-# refs/heads/), names HEAD or @, uses a wildcard, or names no refspec at all (which --mirror, --all
+# refs/heads/), names HEAD (any case) or @, uses a wildcard, or names no refspec at all (which --all
 # and --branches require), because the destination then depends on the checkout or configuration
 # rather than on the command text. The value of -o, --push-option, --repo, --receive-pack, --exec
 # and --recurse-submodules is skipped, so it is never read as the remote or a refspec.
+# The word read as the remote gets the same force, deletion and main checks as a refspec,
+# because an empty quoted value vanishes and shifts the words.
+# A line ending in an odd number of backslashes is joined to the next one, as the shell does,
+# and also left unjoined when a # on it may start a comment.
 #
 # Configuration set outside the push command line (git config in another command, GIT_CONFIG_*
 # environment variables, aliases) is outside this guard's reach.
+# Shell expansions (braces, $'...', variables) can hide an option or refspec from this guard.
+# git send-pack and other lower-level push commands are not checked.
 #
 # Push checks ignore quotes and shell syntax: a commit message or grep pattern that mentions a
 # refused push is refused too. Put such text in a file instead of the command.
@@ -70,7 +76,7 @@ printf '%s\n' "$CMD" | awk '
     return 0
   }
   function rewrites(t,    b) {
-    if (abbrev(t, "force-with-lease force-if-includes delete prune")) return 1
+    if (abbrev(t, "force-with-lease force-if-includes delete prune mirror")) return 1
     b = t; sub(/o.*/, "", b)
     return t ~ /^-[^-]/ && b ~ /[fd]/
   }
@@ -98,12 +104,12 @@ printf '%s\n' "$CMD" | awk '
             if (takes_value(t)) i++
             continue
           }
+          if (t ~ /^\+/ || t ~ /^:/) bad = 1
+          d = t; sub(/^.*:/, "", d); sub(/^(refs\/)?heads\//, "", d)
+          if (d ~ /^(main|master|[Hh][Ee][Aa][Dd]|@)$/ || t ~ /\*/) trunk = 1
           if (!remote) { remote = 1; continue }
           refs++
-          if (t ~ /^\+/ || t ~ /^:/) bad = 1
           if (t ~ /(^|:)refs\/tags\//) unsafe = 1
-          d = t; sub(/^.*:/, "", d); sub(/^(refs\/)?heads\//, "", d)
-          if (d ~ /^(main|master|HEAD|@)$/ || t ~ /\*/) trunk = 1
         }
         if (!refs) trunk = 1
         if (trunk && unsafe) bad = 1
@@ -111,14 +117,14 @@ printf '%s\n' "$CMD" | awk '
     }
     segment = ""; depth = 0
   }
-  {
+  function scan(s,    k, c) {
     # Quotes and backslashes never protect words or separators. Redirections are not refs,
     # and a file descriptor number belongs to a redirection only at the start of a word.
-    gsub(/[\047"`\\]/, "")
-    gsub(/(^|[[:space:]])[0-9]+[<>]/, " >")
-    gsub(/[<>]+&?[[:space:]]*[^[:space:];&|()<>]+/, " ")
-    for (k = 1; k <= length($0); k++) {
-      c = substr($0, k, 1)
+    gsub(/[\047"`\\]/, "", s)
+    gsub(/(^|[[:space:]])[0-9]+[<>]/, " >", s)
+    gsub(/[<>]+&?[[:space:]]*[^[:space:];&|()<>]+/, " ", s)
+    for (k = 1; k <= length(s); k++) {
+      c = substr(s, k, 1)
       if (c ~ /[;&|]/ || (c == ")" && !depth)) check()
       else if (c == "(") { depth++; segment = segment " " }
       else if (c == ")") { depth--; segment = segment " " }
@@ -126,7 +132,22 @@ printf '%s\n' "$CMD" | awk '
     }
     check()
   }
-  END { exit bad ? 1 : 0 }
+  # pre[] holds every reading of the joined lines so far; a possible comment starts a new one.
+  function line(s,    j) {
+    if (match(s, /\\+$/) && RLENGTH % 2) {
+      for (j = 1; j <= m; j++) pre[j] = pre[j] s
+      if (s ~ /(^|[[:space:];&|()])#/) pre[++m] = ""
+      return
+    }
+    for (j = 1; j <= m; j++) scan(pre[j] s)
+    m = 1; pre[1] = ""
+  }
+  BEGIN { m = 1 }
+  { line($0) }
+  END {
+    for (j = 1; j <= m; j++) scan(pre[j])
+    exit bad ? 1 : 0
+  }
 ' && exit 0
 
 REASON="[push-guard] refusing: a git push may not force, delete remote refs or override git \

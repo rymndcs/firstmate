@@ -94,6 +94,11 @@ for test_locale in $test_locales; do
 0|git -c core.x=1 status
 0|git status; echo push
 0|'git' "push" origin feature
+0|git push origin head
+0|git push origin \@NL@  fm/task-branch
+0|git push -o '' origin fm/x fm/y
+0|git push https://github.com/o/r.git fm/task-branch
+0|# c\@NL@git push --no-verify \@NL@origin fm/x@NL@echo done
 2|git push -f origin fm/task-branch
 2|git push --force origin fm/task-branch
 2|git push --force-with-lease origin fm/task-branch
@@ -160,6 +165,23 @@ for test_locale in $test_locales; do
 2|g\it pu\sh -f origin fm/x
 2|git commit -m 'git push --force origin feature'
 2|grep 'git push -f origin feature' file
+2|git push origin fm/x \@NL@  --force
+2|git push \@NL@  --force-with-lease \@NL@  origin fm/x
+2|git push origin \@NL@  :fm/x
+2|git push origin main \@NL@  --no-verify
+2|git pu\@NL@sh -f origin fm/x
+2|git push -o 'a #x' origin fm/x \@NL@  --force
+2|# note\@NL@git push -f origin fm/x
+2|# note\@NL@git pu\@NL@sh -f origin fm/x
+2|echo x # note\@NL@git push -f origin fm/x
+2|echo a\\@NL@git push -f origin fm/x
+2|git push -f origin fm/x \
+2|git push --mirror origin $EMPTY
+2|git push -o '' origin +main fm/y
+2|git push -o '' origin +fm/x fm/y
+2|git push -o '' origin :fm/x fm/y
+2|git push --no-verify -o '' origin main fm/y
+2|git push --no-verify origin head
 CASES
 done
 pass "command verdict table"
