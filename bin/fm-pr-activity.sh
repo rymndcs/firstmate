@@ -40,7 +40,11 @@
 # never learn. Each batch
 # registers one learn-<key>-<batch> process-to-event source before its wake is
 # queued, retired again if queueing fails, so the poll never runs the hook.
-# The source records the task's project= clone as the helper's repository.
+# The source records the task's project= clone as the helper's repository, and
+# as --evidence every review-loop folder named <task-id>.XXXXXX or
+# <branch>.XXXXXX (fm-review-round.sh --init names them) under that clone's Git
+# directories, except those the helper already finds by PR number in the
+# folder name or the first three lines of its report.md.
 # bin/fm-procevent-learn.sh owns the run, its bound and its invocation receipts;
 # FM_PR_LEARN_TIMEOUT (default 120 seconds) is recorded as that bound.
 # sweep removes a URL's receipt, lock and learning logs once no armed poll
@@ -109,9 +113,29 @@ fm_pr_regular_destination_or_absent "$RECEIPT" || exit 1
 WORK=$(mktemp -d "$STATE/.pr-activity.XXXXXX") || exit 1
 chmod 0700 "$WORK" || exit 1
 
+review_evidence() (  # <task-id> <repo>: review-loop folders the helper cannot find by PR number
+  local id=$1 common branch name dir
+  common=$(git -C "$2" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  branch=$(grep '^branch=' "$STATE/$id.meta" | tail -1 | cut -d= -f2-)
+  [ "$branch" != "$id" ] || branch=
+  shopt -s nullglob
+  for name in "$id" ${branch:+"$branch"}; do
+    for dir in "$common/adv-review-loop/$name".??????/ "$common"/worktrees/*/adv-review-loop/"$name".??????/; do
+      dir=${dir%/}
+      perl -e '
+        my ($dir, $pr) = @ARGV;
+        (my $base = $dir) =~ s{.*/}{};
+        my $header = "";
+        if (open my $f, "<", "$dir/report.md") { $header .= <$f> // "" for 1 .. 3 }
+        exit($base =~ /(?:\A|[^a-z0-9])pr-?$pr(?:[^0-9]|\z)/i || $header =~ /\bPR #?$pr\b/i ? 1 : 0);
+      ' "$dir" "$NUMBER" && printf '%s\n' "$dir"
+    done
+  done
+)
+
 publish_one() (
   local id=$1 batch mergeable=$OBSERVED_MERGEABLE message='' snapshot='' key mode link text note
-  local hook source='' learn=()
+  local hook source='' learn=() evidence=() repo dir
   fm_lock_try_acquire "$STATE/$id.pr-registration.lock" || return 1
   trap 'fm_lock_release "$STATE/$id.pr-registration.lock"' EXIT
   fm_pr_metadata_identity_parse "$STATE/$id.meta" && [ "$FM_PR_META_URL" = "$URL" ] || return 1
@@ -219,9 +243,11 @@ publish_one() (
   fi
   if [ "${#learn[@]}" -gt 0 ]; then
     source="learn-${KEY:0:16}-$batch"
+    repo=$(grep '^project=' "$STATE/$id.meta" | tail -1 | cut -d= -f2-)
+    while IFS= read -r dir; do evidence+=(--evidence "$dir"); done < <(review_evidence "$id" "$repo")
     FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-procevent.sh" register learn "$source" -- \
       "$SCRIPT_DIR/fm-procevent-learn.sh" run "${FM_PR_LEARN_TIMEOUT:-120}" "$URL" \
-      "$(grep '^project=' "$STATE/$id.meta" | tail -1 | cut -d= -f2-)" "$RECEIPT" "${learn[@]}" \
+      "$repo" "$RECEIPT" ${evidence[@]+"${evidence[@]}"} "${learn[@]}" \
       > /dev/null 2>&1 || source=
   fi
   while IFS=$'\037' read -r key mode link text; do

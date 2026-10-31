@@ -2,14 +2,16 @@
 # Review-learning adapter for the generic process-to-event runner.
 #
 # Usage:
-#   fm-procevent-learn.sh run <timeout-seconds> <pr-url> <repo> <log-prefix> <kind> <link> [<kind> <link>...]
+#   fm-procevent-learn.sh run <timeout-seconds> <pr-url> <repo> <log-prefix> [--evidence <dir>...] <kind> <link> [<kind> <link>...]
 #   fm-procevent-learn.sh terminal <result-file>
 #
 # bin/fm-pr-activity.sh registers one source per review-activity batch, so the
 # watcher's reconcile runs learning outside the PR poll and its wake.
 # run       Invoke ~/.claude/skills/adv-review/bin/learn-from-review <pr-url>
-#           <link> --repo <repo> at most once per comment, where <repo> is the
-#           PR's project clone and <link> is GitHub's exact comment html_url.
+#           <link> --repo <repo> [--evidence <dir>...] at most once per comment,
+#           where <repo> is the PR's project clone, <link> is GitHub's exact
+#           comment html_url, and each --evidence names a review-loop folder
+#           the helper reads in addition to the ones it finds by PR number.
 #           <log-prefix>.learn-<type>-<id> is created
 #           exclusively before the invocation, receives its stdout and stderr,
 #           then a final learn-from-review-exit=<status> line; a log without
@@ -27,7 +29,7 @@
 # its bound wrapper are killed outright.
 set -u
 
-usage() { sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 
 bounded() {  # <seconds> <argv>...
   # shellcheck disable=SC2016  # single quotes are deliberate: Perl expands its own variables.
@@ -66,8 +68,12 @@ bounded() {  # <seconds> <argv>...
 }
 
 cmd_run() {
-  local timeout=${1-} url=${2-} repo=${3-} prefix=${4-} hook kind link log rc
+  local timeout=${1-} url=${2-} repo=${3-} prefix=${4-} hook kind link log rc evidence=()
   shift 4
+  while [ "${1-}" = --evidence ]; do
+    evidence+=(--evidence "$2")
+    shift 2
+  done
   hook="$HOME/.claude/skills/adv-review/bin/learn-from-review"
   while [ "$#" -ge 2 ]; do
     kind=$1
@@ -81,7 +87,7 @@ cmd_run() {
     log="$prefix.learn-${kind//:/-}"
     if (umask 077; set -o noclobber; : > "$log") 2>/dev/null; then
       rc=0
-      bounded "$timeout" "$hook" "$url" "$link" --repo "$repo" >> "$log" 2>&1 || rc=$?
+      bounded "$timeout" "$hook" "$url" "$link" --repo "$repo" ${evidence[@]+"${evidence[@]}"} >> "$log" 2>&1 || rc=$?
       printf '\nlearn-from-review-exit=%s\n' "$rc" >> "$log"
     fi
     rc=$(sed -n 's/^learn-from-review-exit=//p' "$log" 2>/dev/null | tail -1)
