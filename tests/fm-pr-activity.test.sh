@@ -575,12 +575,16 @@ test_evidence_folders() {
   head=c0ffee1234c0ffee1234c0ffee1234c0ffee1234
   printf '%s\n' "$head" > "$FM_TEST_ACTIVITY/head"
   mkdir -p "$loops/swvl-9-by-task.Ab12Cd" "$loops/swvl-9-by-task.Owned1" "$pool_loops/swvl-9-branch.Ef34Gh" \
-    "$pool_loops/swvl-9-by-task-followup.Ij56Kl" "$loops/swvl-9-by-task.Stale1"
+    "$pool_loops/swvl-9-by-task-followup.Ij56Kl" "$loops/swvl-9-by-task.Stale1" "$loops/swvl-9-by-task-q24.Mn78Op" \
+    "$loops/swvl-9-by-task.Line3x" "$loops/swvl-9-by-task.PR-70x"
   printf 'P1 seen at %s\n' "$head" > "$loops/swvl-9-by-task.Ab12Cd/round-1-reviewer.out"
   printf '# Review of PR #70\nan older head\n' > "$loops/swvl-9-by-task.Owned1/report.md"
   printf 'round 2 at %s\n' "$head" > "$pool_loops/swvl-9-branch.Ef34Gh/round-2-summary.report"
   printf 'another task at %s\n' "$head" > "$pool_loops/swvl-9-by-task-followup.Ij56Kl/report.md"
   printf 'an older head\n' > "$loops/swvl-9-by-task.Stale1/report.md"
+  printf 'another task at %s\n' "$head" > "$loops/swvl-9-by-task-q24.Mn78Op/report.md"
+  printf '# Review\nround 1\nfor pr #70\n' > "$loops/swvl-9-by-task.Line3x/report.md"
+  printf 'an older head\n' > "$loops/swvl-9-by-task.PR-70x/report.md"
   named=$(pr_url 70)
   write_pr_task swvl-9-by-task "project=$evidence_project" 'branch=swvl-9-branch'
   "$PR_CODE/bin/fm-pr-check.sh" swvl-9-by-task "$named" > /dev/null 2>&1 || fail 'registration failed'
