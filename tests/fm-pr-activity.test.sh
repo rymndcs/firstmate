@@ -92,13 +92,19 @@ install_hook() {
 # <pr-url> <comment-url> with --repo anywhere (else FM_REPO, else the working
 # directory), a repository whose remotes name the comment's repository without
 # case, and a comment URL equal to the html_url GitHub returns for that comment.
+# When $FM_TEST_ACTIVITY/head names the comment's head, it also refuses as
+# "unclassified" unless a review-loop folder holds evidence naming that head:
+# the helper finds folders under the repository's Git directories whose name or
+# report.md header names the PR, and adds every --evidence folder.
 printf '%s\n' "$*" >> "$FM_TEST_ACTIVITY/learned"
 refuse() { printf 'learn-from-review: %s\n' "$1" >&2; exit 1; }
 repo=${FM_REPO:-$PWD}
 args=()
+evidence=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --repo) repo=${2-}; shift 2 || refuse 'missing argument: --repo' ;;
+    --evidence) evidence+=("${2-}"); shift 2 || refuse 'missing argument: --evidence' ;;
     *) args+=("$1"); shift ;;
   esac
 done
@@ -125,6 +131,29 @@ perl -MJSON::PP -e '
   exit 1
 ' "$id" "${args[1]}" "$FM_TEST_ACTIVITY"/*.comments "$FM_TEST_ACTIVITY"/*.reviews "$FM_TEST_ACTIVITY"/*.issues \
   || refuse 'fetched review URL does not match input'
+if [ -f "$FM_TEST_ACTIVITY/head" ]; then
+  head=$(cat "$FM_TEST_ACTIVITY/head")
+  common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+  perl -e '
+    my ($common, $pr, $head, @extra) = @ARGV;
+    my @owned = grep {
+      my $dir = $_;
+      (my $base = $dir) =~ s{/\z}{};
+      $base =~ s{.*/}{};
+      my $header = "";
+      if (open my $f, "<", "$dir/report.md") { $header .= <$f> // "" for 1 .. 3 }
+      $base =~ /(?:\A|[^a-z0-9])pr-?$pr(?:[^0-9]|\z)/i || $header =~ /\bPR #?$pr\b/i;
+    } glob("$common/{worktrees/*/,}adv-review-loop/*/");
+    for my $dir (@owned, @extra) {
+      for my $file (glob("$dir/{report.md,round-*-summary.report,round-*-reviewer.out}")) {
+        open my $f, "<", $file or next;
+        exit 0 if index(do { local $/; <$f> }, substr($head, 0, 10)) >= 0;
+      }
+    }
+    exit 1
+  ' "$common" "$pr" "$head" ${evidence[@]+"${evidence[@]}"} \
+    || refuse "unclassified: no review evidence for $head"
+fi
 case "$(cat "$FM_TEST_ACTIVITY/hook-mode" 2>/dev/null)" in
   slow)
     sleep 300 &
@@ -529,6 +558,66 @@ start_learning
 grep -qxF -- "$upper https://github.com/Owner/Repo/pull/54#issuecomment-955 --repo $project" "$FM_TEST_ACTIVITY/learned" \
   || fail 'learning receives the uppercase comment URL GitHub returned'
 pass 'returned links are verified without case in both directions'
+
+test_evidence_folders() {
+  local FM_HOME="$PR_TMP/evidence-home" FM_STATE_OVERRIDE="$PR_TMP/evidence-home/state"
+  local evidence_project="$PR_TMP/evidence-project" loops pool_loops head named before
+  export FM_HOME FM_STATE_OVERRIDE
+  mkdir -p "$FM_STATE_OVERRIDE" "$FM_HOME/config"
+  cp "$PR_TMP/home/config/pr-learning-trust" "$FM_HOME/config/"
+  git init -q "$evidence_project"
+  git -C "$evidence_project" remote add origin https://github.com/owner/repo.git
+  git -C "$evidence_project" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m base
+  git -C "$evidence_project" worktree add -q --detach "$PR_TMP/evidence-worktree"
+  evidence_project=$(cd "$evidence_project" && pwd -P)
+  loops="$evidence_project/.git/adv-review-loop"
+  pool_loops="$evidence_project/.git/worktrees/evidence-worktree/adv-review-loop"
+  head=c0ffee1234c0ffee1234c0ffee1234c0ffee1234
+  printf '%s\n' "$head" > "$FM_TEST_ACTIVITY/head"
+  mkdir -p "$loops/swvl-9-by-task.Ab12Cd" "$loops/swvl-9-by-task.Owned1" "$pool_loops/swvl-9-branch.Ef34Gh" \
+    "$pool_loops/swvl-9-by-task-followup.Ij56Kl" "$loops/swvl-9-by-task.Stale1" "$loops/swvl-9-by-task-q24.Mn78Op" \
+    "$loops/swvl-9-by-task.Line3x" "$loops/swvl-9-by-task.PR-70x"
+  printf 'P1 seen at %s\n' "$head" > "$loops/swvl-9-by-task.Ab12Cd/round-1-reviewer.out"
+  printf '# Review of PR #70\nan older head\n' > "$loops/swvl-9-by-task.Owned1/report.md"
+  printf 'round 2 at %s\n' "$head" > "$pool_loops/swvl-9-branch.Ef34Gh/round-2-summary.report"
+  printf 'another task at %s\n' "$head" > "$pool_loops/swvl-9-by-task-followup.Ij56Kl/report.md"
+  printf 'an older head\n' > "$loops/swvl-9-by-task.Stale1/report.md"
+  printf 'another task at %s\n' "$head" > "$loops/swvl-9-by-task-q24.Mn78Op/report.md"
+  printf '# Review\nround 1\nfor pr #70\n' > "$loops/swvl-9-by-task.Line3x/report.md"
+  printf 'an older head\n' > "$loops/swvl-9-by-task.PR-70x/report.md"
+  named=$(pr_url 70)
+  write_pr_task swvl-9-by-task "project=$evidence_project" 'branch=swvl-9-branch'
+  "$PR_CODE/bin/fm-pr-check.sh" swvl-9-by-task "$named" > /dev/null 2>&1 || fail 'registration failed'
+  set_items 70 issues "$(item 1100 josh 'Missed by our review' "$named#issuecomment-1100")"
+  assert_contains "$(poll_pr 70)" 'comment=1100 author=josh Missed by our review' 'fixture: the comment did not publish'
+  before=$(learned_count)
+  start_learning
+  [ "$(learned_count)" = $((before + 1)) ] || fail 'learning must run once for the comment'
+  assert_contains "$(cat "$FM_STATE_OVERRIDE/procevent-inbox/"learn-*.result)" "$named#issuecomment-1100 exit=7 output=" \
+    'learning must find review evidence in a folder named by task id, not PR number'
+  tail -1 "$FM_TEST_ACTIVITY/learned" | grep -qxF -- "$named $named#issuecomment-1100 --repo $evidence_project --evidence $loops/swvl-9-by-task.Ab12Cd --evidence $loops/swvl-9-by-task.Stale1 --evidence $pool_loops/swvl-9-branch.Ef34Gh" \
+    || fail "learning must name the task's and branch's review folders that the helper cannot find by PR number: $(tail -1 "$FM_TEST_ACTIVITY/learned")"
+  learn_once() {  # <task-id> <branch> <pr-number> <comment-id> <folder> <expected extra args>
+    local pr_link
+    pr_link=$(pr_url "$3")
+    mkdir -p "$loops/$5"
+    printf 'seen at %s\n' "$head" > "$loops/$5/round-1-reviewer.out"
+    write_pr_task "$1" "project=$evidence_project" ${2:+"branch=$2"}
+    "$PR_CODE/bin/fm-pr-check.sh" "$1" "$pr_link" > /dev/null 2>&1 || fail 'registration failed'
+    set_items "$3" issues "$(item "$4" josh 'Missed by our review' "$pr_link#issuecomment-$4")"
+    poll_pr "$3" > /dev/null
+    start_learning
+    assert_contains "$(cat "$FM_STATE_OVERRIDE/procevent-inbox/"learn-*.result)" "$pr_link#issuecomment-$4 exit=7 output=" \
+      "learning for $1 must find its review evidence"
+    tail -1 "$FM_TEST_ACTIVITY/learned" | grep -qxF -- "$pr_link $pr_link#issuecomment-$4 --repo $evidence_project$6" \
+      || fail "learning for $1 must pass each folder once and only folders the helper misses: $(tail -1 "$FM_TEST_ACTIVITY/learned")"
+  }
+  learn_once swvl-10-same swvl-10-same 71 1101 swvl-10-same.Ab12Cd " --evidence $loops/swvl-10-same.Ab12Cd"
+  learn_once thanos-pr-72-comments '' 72 1102 thanos-pr-72-comments.Cd34Ef ''
+}
+test_evidence_folders
+rm -f "${FM_TEST_ACTIVITY:?}/head"
+pass 'learning finds review evidence in folders named after the task or its branch'
 
 shared_low=$(pr_url 55)
 shared_up=$(pr_url 55 Owner/Repo)
