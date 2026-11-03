@@ -13,6 +13,9 @@
 #   fm-test-run.sh --proven-isolated
 #   fm-test-run.sh tests/<name>.test.sh [more scripts...]
 #
+# Each test executes in its own temporary FM_HOME with inherited operational
+# paths cleared by tests/environment-helpers.sh, for serial and parallel runs alike.
+#
 # Temporary directories:
 #   Test execution refuses TMPDIR (default /tmp) or a runner-created temp root
 #   at or inside the physical repository, resolving directory symlinks first.
@@ -1601,6 +1604,15 @@ record_script_result() {
   TOTAL=$((TOTAL + 1))
 }
 
+run_isolated_script() {  # <home> <script>
+  (
+    # shellcheck source=tests/environment-helpers.sh
+    . "$ROOT/tests/environment-helpers.sh"
+    fm_test_environment "$1" || exit 1
+    exec bash "$2"
+  )
+}
+
 run_one_serial() {
   local script=$1
   local base family expected out begin_iso begin_ms end_ms end_iso duration rc
@@ -1617,7 +1629,7 @@ run_one_serial() {
   set +e
   # Stream live output while retaining a copy for gate-skip detection.
   # PIPESTATUS[0] is the test script; tee's exit is ignored for aggregate.
-  bash "$script" 2>&1 | tee "$out"
+  run_isolated_script "$RUN_TMP/home.$TOTAL" "$script" 2>&1 | tee "$out"
   rc=${PIPESTATUS[0]}
   set -e
   : "${rc:=1}"
@@ -1720,11 +1732,9 @@ else
       set +e
       export TMPDIR="$work/tmp"
       export TMP="$work/tmp"
-      unset FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_ROOT_OVERRIDE \
-        FM_PROJECTS_OVERRIDE FM_CONFIG_OVERRIDE FM_BACKEND 2>/dev/null || true
       cd "$ROOT" || exit 1
       begin_ms=$(now_ms)
-      bash "$script" >"$work/output" 2>&1
+      run_isolated_script "$work/home" "$script" >"$work/output" 2>&1
       rc=$?
       end_ms=$(now_ms)
       duration=$((end_ms - begin_ms))

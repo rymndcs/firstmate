@@ -124,6 +124,13 @@ fm_test_tmproot() {
   printf '%s\n' "$root"
 }
 
+# shellcheck source=tests/environment-helpers.sh
+. "$ROOT/tests/environment-helpers.sh"
+FM_TEST_PRIVATE_HOME=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-home.XXXXXX") || exit 1
+if [ "${#FM_TEST_CLEANUP_DIRS[@]}" -eq 0 ]; then trap fm_test_cleanup EXIT; fi
+FM_TEST_CLEANUP_DIRS+=("$FM_TEST_PRIVATE_HOME")
+fm_test_environment "$FM_TEST_PRIVATE_HOME" || exit 1
+
 # --- fakebin / PATH shims ---------------------------------------------------
 #
 # fm_fakebin <dir> creates <dir>/fakebin and echoes it; prepend it to PATH to

@@ -15,6 +15,65 @@ RUNNER="$ROOT/bin/fm-test-run.sh"
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
 
+test_live_environment_isolation() {
+  local tmp repo script mode out
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-env.XXXXXX")
+  repo="$tmp/repo"
+  mkdir -p "$repo/bin" "$repo/tests" "$tmp/live/state" "$tmp/evidence"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/environment-helpers.sh" "$repo/tests/environment-helpers.sh"
+  printf 'live sentinel\n' > "$tmp/live/state/sentinel"
+  for script in fm-brief fm-composer-lib; do
+    cat > "$repo/tests/$script.test.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+[ "$FM_HOME" != "$LIVE_HOME" ] || { echo 'not ok - inherited live home'; exit 1; }
+[ -d "$FM_HOME" ] || { echo 'not ok - isolated home absent'; exit 1; }
+for name in FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_PROJECTS_OVERRIDE FM_ROOT_OVERRIDE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK STATE FM_ROOT; do
+  [ -z "${!name:-}" ] || { echo "not ok - inherited $name"; exit 1; }
+done
+case "$FM_PROCEVENT_CLAIM_ROOT" in "$FM_HOME"/*) ;; *) echo 'not ok - foreign claims'; exit 1 ;; esac
+printf '%s\n' "$FM_HOME" > "$EVIDENCE/$(basename "$0").home"
+mkdir -p "$FM_HOME/state"
+printf 'isolated write\n' > "$FM_HOME/state/result"
+echo 'ok - isolated environment'
+SH
+  done
+  for mode in serial parallel; do
+    out="$tmp/$mode.out"
+    if ! env LIVE_HOME="$tmp/live" EVIDENCE="$tmp/evidence" \
+      FM_HOME="$tmp/live" FM_STATE_OVERRIDE="$tmp/live/state" \
+      FM_DATA_OVERRIDE="$tmp/live/data" FM_CONFIG_OVERRIDE="$tmp/live/config" \
+      FM_PROJECTS_OVERRIDE="$tmp/live/projects" FM_ROOT_OVERRIDE="$tmp/live" \
+      STATE="$tmp/live/state" FM_ROOT="$tmp/live" \
+      FM_WAKE_QUEUE="$tmp/live/state/.wake-queue" FM_WAKE_QUEUE_LOCK="$tmp/live/state/.wake-queue.lock" \
+      FM_PROCEVENT_CLAIM_ROOT="$tmp/live/claims" \
+      "$repo/bin/fm-test-run.sh" --jobs "$([ "$mode" = serial ] && echo 1 || echo 2)" \
+      tests/fm-brief.test.sh tests/fm-composer-lib.test.sh > "$out" 2>&1; then
+      fail "$mode runner inherited live paths: $(cat "$out")"
+    fi
+    [ "$(cat "$tmp/evidence/fm-brief.test.sh.home")" != "$(cat "$tmp/evidence/fm-composer-lib.test.sh.home")" ] \
+      || fail "$mode tests shared an operational home"
+  done
+  [ "$(find "$tmp/live" -type f | wc -l | tr -d ' ')" = 1 ] || fail "suite wrote to the live fixture"
+  [ "$(cat "$tmp/live/state/sentinel")" = 'live sentinel' ] || fail "suite changed live sentinel"
+  cat > "$tmp/direct.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+. "$TEST_LIB"
+[ "$FM_HOME" != "$LIVE_HOME" ] || { echo 'not ok - helper inherited live home'; exit 1; }
+[ -z "${FM_STATE_OVERRIDE:-}${FM_WAKE_QUEUE:-}${STATE:-}" ] || { echo 'not ok - helper inherited derived paths'; exit 1; }
+[ -d "$FM_HOME" ] || { echo 'not ok - helper home absent'; exit 1; }
+echo 'ok - direct test isolated'
+SH
+  env LIVE_HOME="$tmp/live" TEST_LIB="$ROOT/tests/lib.sh" FM_HOME="$tmp/live" \
+    FM_STATE_OVERRIDE="$tmp/live/state" FM_WAKE_QUEUE="$tmp/live/state/.wake-queue" STATE="$tmp/live/state" \
+    bash "$tmp/direct.sh" > "$tmp/direct.out" 2>&1 \
+    || fail "standalone test inherited live paths: $(cat "$tmp/direct.out")"
+  rm -rf "${tmp:?}"
+  pass "serial, parallel, and standalone tests isolate operational homes and derived paths"
+}
+
 test_tmpdir_boundary() {
   local tmp repo candidate rc expected
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-tmpdir.XXXXXX")
@@ -22,6 +81,7 @@ test_tmpdir_boundary() {
   repo="$tmp/repo"
   mkdir -p "$repo/bin" "$repo/tests" "$repo/tmp" "$tmp/repo-sibling" "$tmp/fakebin"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/environment-helpers.sh" "$repo/tests/environment-helpers.sh"
   cat >"$repo/tests/probe.test.sh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$TMPDIR" >"$PROBE_OUTPUT"
@@ -144,6 +204,7 @@ init_changed_fixture_repo() {
   local repo=$1 script
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/environment-helpers.sh" "$repo/tests/environment-helpers.sh"
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-brief.test.sh \
@@ -677,6 +738,7 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
   cp "$RUNNER" "$runner"
+  cp "$ROOT/tests/environment-helpers.sh" "$repo/tests/environment-helpers.sh"
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
@@ -839,6 +901,7 @@ assert len(doc["scripts"])==3
   pass "aggregate-json merges lane timing artifacts"
 }
 
+test_live_environment_isolation
 test_tmpdir_boundary
 test_list_all_exact_suite_coverage
 test_family_selection
