@@ -396,10 +396,9 @@ fm_procevent_mark_handled() {
   [ ! -f "$marker" ] || return 1
   counts=$(fm_procevent_result_runs "$result") || return 2
   read -r failed _total <<< "$counts"
-  if [ "$failed" -gt 0 ] && [ -z "${reason//[[:space:]]/}" ]; then
+  if [ "$failed" -gt 0 ] && [ -z "$reason" ]; then
     return 3
   fi
-  case "$reason" in *$'\n'*|*$'\r'*) return 2 ;; esac
   tmp=$(umask 077; mktemp "$inbox/.handled.XXXXXX") || return 2
   if ! chmod 0600 "$tmp"; then
     rm -f -- "$tmp"
