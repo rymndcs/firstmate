@@ -22,6 +22,10 @@
 # guard after any harness upgrade and before trusting refreshed evidence.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 if [ "${FM_HARNESS_LIVENESS_DRIFT:-0}" != 1 ]; then
   echo "skip: set FM_HARNESS_LIVENESS_DRIFT=1 to run the installed-harness liveness drift guard"
   exit 0
@@ -43,7 +47,7 @@ cleanup_all() {
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
   [ -n "${LAB:-}" ] && rm -rf "$LAB"
 }
-trap cleanup_all EXIT
+trap 'cleanup_all; fm_test_environment_cleanup' EXIT
 
 mkdir -p "$LAB/shim" "$LAB/wt"
 cat > "$LAB/shim/tmux" <<SH
@@ -124,4 +128,4 @@ fi
 note "checked $CHECKED installed harness(es)"
 
 cleanup_all
-trap - EXIT
+trap fm_test_environment_cleanup EXIT

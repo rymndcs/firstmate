@@ -19,6 +19,10 @@
 #   only the terminal lifecycle.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAUNCH="$ROOT/bin/fm-afk-launch.sh"
 START="$ROOT/bin/fm-afk-start.sh"
@@ -38,7 +42,7 @@ GLOBAL_CLEANUP() {
     tmux kill-session -t "$s" 2>/dev/null || true
   done
 }
-trap GLOBAL_CLEANUP EXIT
+trap 'GLOBAL_CLEANUP; fm_test_environment_cleanup' EXIT
 
 # ---------------------------------------------------------------------------
 # UNIT 1: fm_afk_clear_stale_artifacts removes exactly the three stale artifacts.

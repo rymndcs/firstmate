@@ -17,7 +17,7 @@ TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
 # shellcheck source=tests/remote-job-helpers.sh
 . "$ROOT/tests/remote-job-helpers.sh"
 fm_test_remote_job_init "$TMP_ROOT" || exit 1
-trap 'fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"' EXIT
+trap 'fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"; fm_test_cleanup' EXIT
 LOCAL_HOME="$TMP_ROOT/local-home"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"

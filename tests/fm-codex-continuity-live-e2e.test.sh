@@ -3,6 +3,10 @@
 # Codex's bounded foreground-checkpoint supervision path.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 if [ "${FM_CODEX_LIVE_E2E:-0}" != 1 ]; then
   echo "skip: set FM_CODEX_LIVE_E2E=1 to run the Codex continuity regression"
   exit 0
@@ -26,7 +30,7 @@ CODEX_VERSION=$(codex --version)
 cleanup() {
   rm -rf "$LAB"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_environment_cleanup' EXIT
 
 mkdir -p "$LAB"
 git clone -q "$ROOT" "$PROJECT"

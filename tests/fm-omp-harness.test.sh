@@ -72,7 +72,7 @@ cleanup_leak_server() {
   [ -n "$REAL_TMUX" ] && "$REAL_TMUX" -L "$LEAK_SOCKET" kill-server >/dev/null 2>&1
   fm_test_cleanup
 }
-trap cleanup_leak_server EXIT
+trap 'cleanup_leak_server; fm_test_cleanup' EXIT
 FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
 
 # A world where every bare `tmux` reaches the dedicated socket, pane shells start

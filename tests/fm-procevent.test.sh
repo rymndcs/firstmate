@@ -157,9 +157,25 @@ test_failed_runs_require_acknowledgement() {
   assert_grep "$reason" "$result.handled" "repeat never replaces the original reason"
 
   pe_register "$home" learn learn-clean -- /usr/bin/printf '%s\n' \
-    'learn-from-review PR https://example.test/pr https://example.test/c1 exit=0 output=/log1' >/dev/null
+    'learn-from-review PR https://example.test/pr https://example.test/c1 exit=00 output=/logs with exit=9 in path' \
+    'not-a-run PR https://example.test/pr https://example.test/c1 exit=1' \
+    'learn-from-review prose https://example.test/pr https://example.test/c1 exit=1' \
+    'learn-from-review PR https://example.test/pr https://example.test/c1 status=1' \
+    'reply prose exit=1' >/dev/null
   pe "$home" start learn-clean >/dev/null
   pe "$home" handled learn-clean 1 >/dev/null || fail "clean learning result now needs acknowledgement"
+  pe_register "$home" learn learn-invalid -- "$ROOT/bin/fm-procevent-learn.sh" run \
+    0 https://example.test/pr "$home" "$home/invalid" issue:1 https://example.test/comment >/dev/null
+  pe "$home" start learn-invalid >/dev/null
+  if pe "$home" handled learn-invalid 1 >/dev/null 2>&1; then
+    fail "invalid-timeout learning result silently acknowledged"
+  fi
+  pe "$home" handled learn-invalid 1 --ack-failures 'Read the invalid bound result.' >/dev/null
+
+  pe_register "$home" lavish opaque-reply -- /usr/bin/printf '%s\n' \
+    'learn-from-review PR https://example.test/pr https://example.test/c1 exit=1 output=/opaque' >/dev/null
+  pe "$home" start opaque-reply >/dev/null
+  pe "$home" handled opaque-reply 1 >/dev/null || fail "another adapter payload was parsed as learning metadata"
   pass "failed runs need explicit durable acknowledgement while clean results and retries remain compatible"
 }
 test_failed_runs_require_acknowledgement

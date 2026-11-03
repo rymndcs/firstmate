@@ -12,6 +12,10 @@
 # lab teardown verifies that the default fleet session is byte-identical.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HERDR_LAB_HELPER=${HERDR_LAB_HELPER:-$ROOT/bin/fm-herdr-lab.sh}
 
@@ -42,9 +46,10 @@ cleanup() {
   fi
   env PATH="$HERDR_ORIGINAL_PATH" "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION" || status=1
   rm -rf "$TMP_ROOT"
+  fm_test_environment_cleanup
   exit "$status"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_environment_cleanup' EXIT
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"
 
 # Keep the lab helper as the only CLI transport. Production adapter calls have

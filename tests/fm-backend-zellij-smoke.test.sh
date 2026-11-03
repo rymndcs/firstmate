@@ -15,6 +15,10 @@
 # for herdr.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -28,7 +32,7 @@ command -v jq >/dev/null 2>&1 || { echo "skip: jq not found (required by the zel
 
 SESSION="fm-backend-smoke-$$"
 export FM_ZELLIJ_SESSION="$SESSION"
-trap cleanup_all EXIT
+trap 'cleanup_all; fm_test_environment_cleanup' EXIT
 
 cleanup_all() {
   zellij_safe_delete "$SESSION"
@@ -202,4 +206,4 @@ pass "real zellij: list_live discovers a live task tab by fm-<id> name"
 fm_backend_zellij_kill "$SESSION:$PANE_ID2"
 
 cleanup_all
-trap - EXIT
+trap fm_test_environment_cleanup EXIT

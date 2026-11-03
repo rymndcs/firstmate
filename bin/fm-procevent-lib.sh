@@ -327,17 +327,23 @@ fm_procevent_pending() {
   done | sort -n -k1,1 -k2,2 | cut -f2-
 }
 
-# fm_procevent_result_runs <result-file>: print failed and total exit= fields.
-# Only whitespace-delimited exit=<status> fields are runs; all-zero numeric
-# statuses succeed, while nonzero and textual statuses count as failures.
+# fm_procevent_result_runs <result-file>: print failed and total learning runs.
+# The learn adapter owns result lines (fm-procevent-learn.sh header); all other
+# adapter payloads are opaque. Only the producer's status field is counted.
+# All-zero numeric statuses succeed; nonzero and textual statuses fail.
 fm_procevent_result_runs() {
-  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  local adapter
+  adapter=$(fm_procevent_result_adapter "$1") || return 1
+  if [ "$adapter" != learn ]; then
+    printf '0 0\n'
+    return 0
+  fi
   LC_ALL=C awk '
-    { for (i = 1; i <= NF; i++) if ($i ~ /^exit=/) {
+    $1 == "learn-from-review" && $2 == "PR" && $5 ~ /^exit=/ {
         total++
-        status = substr($i, 6)
+        status = substr($5, 6)
         if (status !~ /^0+$/) failed++
-    } }
+    }
     END { printf "%d %d\n", failed, total }
   ' "$1"
 }

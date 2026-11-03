@@ -17,6 +17,10 @@
 # property that the verdict itself is correct.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -33,7 +37,7 @@ cleanup_all() {
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
   [ -n "${LAB:-}" ] && rm -rf "$LAB"
 }
-trap cleanup_all EXIT
+trap 'cleanup_all; fm_test_environment_cleanup' EXIT
 
 # A `tmux` shim on PATH so bin/backends/tmux.sh's bare `tmux` calls reach the
 # private socket and never touch the host's real sessions.
@@ -231,4 +235,4 @@ fm_backend_tmux_foreground_comms "$SESSION:no-such-window" >/dev/null \
 pass "tmux liveness: an absent window classifies missing rather than inheriting tmux's active-window fallback"
 
 cleanup_all
-trap - EXIT
+trap fm_test_environment_cleanup EXIT

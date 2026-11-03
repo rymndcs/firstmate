@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Opt-in real omp primary: retained busy row, two away completions, and return.
 set -euo pipefail
+
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
 if [ "${FM_AFK_OMP_HERDR_LIVE_E2E:-0}" != 1 ]; then
   echo 'skip: set FM_AFK_OMP_HERDR_LIVE_E2E=1 for the real omp away-owner regression'
   exit 0
@@ -21,7 +25,7 @@ cleanup() {
   "$HERDR_LAB_HELPER" teardown "$HERDR_LAB_SESSION"
   rm -rf "${LAB:?}"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_environment_cleanup' EXIT
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION"
 export HERDR_LAB_REAL_PATH=$PATH
 mkdir -p "$LAB/shim" "$FM_HOME/state" "$FM_HOME/config" "$LAB/sessions"

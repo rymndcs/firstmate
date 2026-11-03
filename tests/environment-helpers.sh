@@ -13,3 +13,15 @@ fm_test_environment() {
   mkdir -p "$FM_HOME/state" "$FM_PROCEVENT_CLAIM_ROOT" || return 1
   chmod 0700 "$FM_HOME"
 }
+
+fm_test_environment_cleanup() {
+  [ -z "${FM_TEST_PRIVATE_HOME:-}" ] || rm -rf "${FM_TEST_PRIVATE_HOME:?}"
+}
+
+# Standalone entry points call this before behavior and compose their teardown
+# with fm_test_environment_cleanup when replacing or disabling the EXIT trap.
+fm_test_standalone_environment() {
+  FM_TEST_PRIVATE_HOME=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-home.XXXXXX") || return 1
+  trap fm_test_environment_cleanup EXIT
+  fm_test_environment "$FM_TEST_PRIVATE_HOME"
+}

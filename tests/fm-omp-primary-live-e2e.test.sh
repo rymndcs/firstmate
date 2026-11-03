@@ -5,6 +5,10 @@
 # all driven through a real interactive omp session.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 if [ "${FM_OMP_LIVE_E2E:-0}" != 1 ]; then
   echo "skip: set FM_OMP_LIVE_E2E=1 to run the interactive omp primary regression"
   exit 0
@@ -122,7 +126,7 @@ cleanup() {
   fi
   rm -rf "$LAB"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_environment_cleanup' EXIT
 
 mkdir -p "$LAB"
 git clone -q "$ROOT" "$PROJECT"

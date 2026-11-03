@@ -57,9 +57,10 @@ cleanup() {
     rc=1
   fi
   rm -rf "$TMP_ROOT"
+  fm_test_cleanup
   exit "$rc"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_cleanup' EXIT
 "$LAB_HELPER" provision "$SESSION"
 
 mkdir -p "$HOME_DIR"/{state,data,config,projects} "$PROJECT" "$PI_DIR" "$FAKEBIN"

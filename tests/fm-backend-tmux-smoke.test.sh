@@ -8,6 +8,10 @@
 # actual sessions.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -30,7 +34,7 @@ command -v tmux >/dev/null 2>&1 || { echo "skip: tmux not found"; exit 0; }
 REAL_TMUX=$(command -v tmux)
 SOCKET="fm-backend-smoke-$$"
 SHIM_DIR=
-trap cleanup_all EXIT
+trap 'cleanup_all; fm_test_environment_cleanup' EXIT
 
 cleanup_all() {
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
@@ -170,4 +174,4 @@ fm_backend_tmux_kill "$TARGET" || fail "fm_backend_tmux_kill on an already-dead 
 pass "real tmux: kill removes the window and the readable session inventory authoritatively classifies it missing"
 
 cleanup_all
-trap - EXIT
+trap fm_test_environment_cleanup EXIT

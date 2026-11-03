@@ -37,7 +37,7 @@
 #            twice. Until this is called, the result stays eligible for
 #            bounded re-announcement on every reconcile. Marking a result
 #            handled does not retire its source registration or claim.
-#            Results with failed exit= fields require --ack-failures with a
+#            Results with failed learning runs require --ack-failures with a
 #            nonblank one-line reason, recorded in the private handled marker.
 #            See fm-procevent-lib.sh for run-status classification.
 # retire     Drop a registration, stop a runner this home owns, release the claim.

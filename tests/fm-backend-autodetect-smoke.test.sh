@@ -26,6 +26,10 @@
 # with an ambient HERDR_SESSION-only command.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
@@ -78,9 +82,10 @@ on_exit() {
   local status=$?
   cleanup_all || status=$?
   trap - EXIT
+  fm_test_environment_cleanup
   exit "$status"
 }
-trap on_exit EXIT
+trap 'on_exit; fm_test_environment_cleanup' EXIT
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" || fail "could not provision isolated Herdr lab session"
 
 # --- scratch world: FM_HOME with NO backend config, one throwaway project ---
@@ -169,5 +174,5 @@ if ! cleanup_all; then
   trap - EXIT
   fail "isolated Herdr lab teardown failed or the default fleet session changed"
 fi
-trap - EXIT
+trap fm_test_environment_cleanup EXIT
 pass "real herdr: isolated lab session removed and default fleet session unchanged"

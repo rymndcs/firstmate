@@ -30,6 +30,10 @@
 #   - list-live recovery seeing only its own home's tabs, for both homes
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -75,7 +79,7 @@ cleanup_all() {
   herdr_safe_stop_and_delete "$SESSION"
   rm -rf "$TMP_ROOT"
 }
-trap cleanup_all EXIT
+trap 'cleanup_all; fm_test_environment_cleanup' EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
 
 # shellcheck source=/dev/null
@@ -244,4 +248,4 @@ pass "real herdr E2E: tearing down cm2 closes only its own tab - the secondmate'
 fm_backend_herdr_kill "$SESSION:$SM_PANE"
 
 cleanup_all
-trap - EXIT
+trap fm_test_environment_cleanup EXIT

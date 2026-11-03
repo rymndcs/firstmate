@@ -4,6 +4,10 @@
 # copying credentials and pins the captain-approved openai-codex model.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 if [ "${FM_PI_LIVE_E2E:-0}" != 1 ]; then
   echo "skip: set FM_PI_LIVE_E2E=1 to run the isolated interactive Pi regression"
   exit 0
@@ -99,7 +103,7 @@ cleanup() {
   fi
   rm -rf "$LAB"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_environment_cleanup' EXIT
 
 send_prompt() {
   local prompt=$1

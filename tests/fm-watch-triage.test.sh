@@ -1495,7 +1495,7 @@ test_procevent_wake_counts_failed_runs() {
   local dir out pid
   dir=$(make_case procevent-failures); out="$dir/watch.out"
   pe_case "$dir" register learn learn-counts -- /usr/bin/printf '%s\n' \
-    'learn-from-review PR https://example.test/pr https://example.test/c1 exit=0 output=/log1' \
+    'learn-from-review PR https://example.test/pr https://example.test/c1 exit=00 output=/logs with exit=99 in path' \
     'learn-from-review PR https://example.test/pr https://example.test/c2 exit=7 output=/log2' \
     'learn-from-review PR https://example.test/pr https://example.test/c3 exit=invalid-timeout' >/dev/null
   pe_case "$dir" start learn-counts >/dev/null || fail "learning fixture did not capture"

@@ -51,9 +51,10 @@ cleanup() {
     rc=1
   fi
   rm -rf "$TMP_ROOT"
+  fm_test_cleanup
   exit "$rc"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_cleanup' EXIT
 
 mkdir -p "$SENDER_HOME/state" "$SENDER_HOME/data" "$SENDER_HOME/config" "$SENDER_HOME/projects" "$FAKEBIN"
 

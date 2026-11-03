@@ -3,6 +3,10 @@
 # FM_HOME. Existing OpenCode credentials stay in their managed store.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 if [ "${FM_OPENCODE_LIVE_E2E:-0}" != 1 ]; then
   echo "skip: set FM_OPENCODE_LIVE_E2E=1 to run the interactive OpenCode continuity regression"
   exit 0
@@ -111,7 +115,7 @@ cleanup() {
   fi
   rm -rf "$LAB"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_environment_cleanup' EXIT
 
 run_ahoy_case() {
   local label=$1 preceding=$2 expected=$3 db="$LAB/opencode-$1.db"

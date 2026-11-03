@@ -31,7 +31,7 @@ cleanup() {
   fm_test_remote_job_cleanup || exit 1
   rm -rf -- "$TMP_ROOT"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_cleanup' EXIT
 printf 'fixture\n' > "$REMOTE_ROOT/CLAUDE.md"
 ln -s CLAUDE.md "$REMOTE_ROOT/AGENTS.md"
 cp "$ROOT/bin/fm-remote-entrypoint.sh" "$ROOT/bin/fm-remote-job-lib.sh" \

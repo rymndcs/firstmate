@@ -18,8 +18,10 @@
 #           that line belongs to an interrupted invocation and is reported as
 #           exit=interrupted, never rerun. Prints one
 #           `learn-from-review PR <pr-url> <link> exit=<status> output=<log>`
-#           line per comment and exits 0. A bound that is not a positive whole
-#           number refuses with exit=invalid-timeout.
+#           line per comment and exits 0. The exit= field follows the two URL
+#           fields; the output= remainder is a log path and may contain spaces.
+#           A bound that is not a positive whole number prints the same result
+#           without output= and with exit=invalid-timeout.
 # terminal  Exit 0 for every result: a learning source runs once.
 #
 # The hook runs in its own process group with stdin from /dev/null, and the
@@ -29,7 +31,7 @@
 # its bound wrapper are killed outright.
 set -u
 
-usage() { sed -n '2,29p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"; exit 2; }
 
 bounded() {  # <seconds> <argv>...
   # shellcheck disable=SC2016  # single quotes are deliberate: Perl expands its own variables.

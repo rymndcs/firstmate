@@ -20,7 +20,7 @@ REMOTE="$TMP_ROOT/remote"
 FAKEBIN=$(fm_fakebin "$TMP_ROOT/fake")
 CLAIMS="$TMP_ROOT/claims"
 mkdir -p "$PARENT/data" "$PARENT/state" "$REMOTE/state" "$REMOTE/data/reply" "$CLAIMS"
-trap 'FM_HOME="$PARENT" FM_PROCEVENT_CLAIM_ROOT="$CLAIMS" "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true; fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"' EXIT
+trap 'FM_HOME="$PARENT" FM_PROCEVENT_CLAIM_ROOT="$CLAIMS" "$ROOT/bin/fm-procevent.sh" sweep-home >/dev/null 2>&1 || true; fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"; fm_test_cleanup' EXIT
 
 cat > "$PARENT/data/secondmates.md" <<EOF
 - ios - iOS delivery (host: remote-mac; root: $ROOT; home: $REMOTE; scope: iOS work; projects: alpha; added 2026-08-02)
@@ -147,13 +147,13 @@ handle_two_rc=$?
 set -e
 [ "$handle_two_rc" -ne 0 ] || fail "second generation acknowledged through an unsafe handled marker"
 assert_grep 'working [corr=1111111111111111]' "$PARENT/state/ios.status" "unacknowledged generation was not ingested"
-printf 'done [corr=2222222222222222]: third generation\n' \
+printf 'done [corr=2222222222222222]: the previous command returned exit=1 and exit=interrupted\n' \
   >> "$REMOTE/state/parent-replies.status"
 remote_env "$ROOT/bin/fm-procevent.sh" start "$SID" >/dev/null \
   || fail "third reply generation was not captured"
 RESULT_THREE="$PARENT/state/procevent-inbox/$SID.3.result"
 remote_env "$ADAPTER" handle ios 3 "$RESULT_THREE" >/dev/null \
-  || fail "third reply generation was not handled"
+  || fail "successful remote reply prose containing exit=1 blocked public handling"
 rm -f "$PARENT/state/procevent-inbox/$SID.2.handled"
 out=$(remote_env "$ADAPTER" handle ios 2 "$RESULT_TWO")
 assert_contains "$out" 'ingested: ios appended=0' "earlier generation did not replay from its durable ingestion receipt"

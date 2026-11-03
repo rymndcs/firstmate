@@ -12,6 +12,10 @@
 # shellcheck disable=SC2016 # the model, not this test shell, reads the prompt text
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 if [ "${FM_CLAUDE_LIVE_E2E:-0}" != 1 ]; then
   echo "skip: set FM_CLAUDE_LIVE_E2E=1 to run the Claude Stop auto-arm regression"
   exit 0
@@ -36,7 +40,7 @@ CLAUDE_VERSION=$(claude --version)
 cleanup() {
   rm -rf "$LAB"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_environment_cleanup' EXIT
 
 mkdir -p "$LAB"
 # git clone of this worktree carries only committed state, so copy the
