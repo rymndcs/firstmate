@@ -1491,6 +1491,21 @@ test_procevent_captured_result_surfaces_proactively() {
   pass "a captured process-event result wakes a healthy watcher proactively, with no manual drain"
 }
 
+test_procevent_wake_counts_failed_runs() {
+  local dir out pid
+  dir=$(make_case procevent-failures); out="$dir/watch.out"
+  pe_case "$dir" register learn learn-counts -- /usr/bin/printf '%s\n' \
+    'learn-from-review PR https://example.test/pr https://example.test/c1 exit=0 output=/log1' \
+    'learn-from-review PR https://example.test/pr https://example.test/c2 exit=7 output=/log2' \
+    'learn-from-review PR https://example.test/pr https://example.test/c3 exit=invalid-timeout' >/dev/null
+  pe_case "$dir" start learn-counts >/dev/null || fail "learning fixture did not capture"
+  procevent_watch_bg "$dir" "$out"; pid=$!
+  wait_for_exit "$pid" 100 || fail "failed learning result never woke the watcher"
+  assert_grep 'procevent:learn-counts:1 (2 of 3 failed)' "$out" "wake must count failed runs"
+  assert_no_grep 'example.test' "$out" "wake summary must not expose source output"
+  pass "process-event wake reports failed runs without copying source output"
+}
+
 test_procevent_surfaced_result_does_not_rewake() {
   local dir state out pid before after
   dir=$(make_case procevent-no-rewake); state="$dir/state"
@@ -1799,6 +1814,7 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
   pass "AFK changed paused panes hand off plain stale identities for daemon-owned pause triage"
 }
 
+test_procevent_wake_counts_failed_runs
 test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier

@@ -327,6 +327,21 @@ fm_procevent_pending() {
   done | sort -n -k1,1 -k2,2 | cut -f2-
 }
 
+# fm_procevent_result_runs <result-file>: print failed and total exit= fields.
+# Only whitespace-delimited exit=<status> fields are runs; all-zero numeric
+# statuses succeed, while nonzero and textual statuses count as failures.
+fm_procevent_result_runs() {
+  [ -f "$1" ] && [ ! -L "$1" ] || return 1
+  LC_ALL=C awk '
+    { for (i = 1; i <= NF; i++) if ($i ~ /^exit=/) {
+        total++
+        status = substr($i, 6)
+        if (status !~ /^0+$/) failed++
+    } }
+    END { printf "%d %d\n", failed, total }
+  ' "$1"
+}
+
 # fm_procevent_event_line <adapter> <source-id> <sequence>
 # The complete normalized event. Bounded by construction: a fixed verb, a
 # validated adapter name, and a validated id. No source output, path, or
@@ -350,7 +365,7 @@ fm_procevent_is_handled() {
   [ -f "$marker" ] && [ ! -L "$marker" ]
 }
 
-# fm_procevent_mark_handled <state> <source-id> <sequence>
+# fm_procevent_mark_handled <state> <source-id> <sequence> [failure-reason]
 # The one durable handled acknowledgement per captured generation: keyed by the
 # exact source id and sequence, private at mode 0600, and path-safe through the
 # same validation as every other source-id use. Atomically check-and-set - the
@@ -360,9 +375,9 @@ fm_procevent_is_handled() {
 # announcing a result never blocks it from being re-announced, only this does.
 # 0 = newly recorded (first-ever handling for this generation, safe to perform
 # a paired effect that has not yet run), 1 = already recorded (repeat call; do
-# not repeat a paired effect), 2 = error.
+# not repeat a paired effect), 2 = error, 3 = failed runs need acknowledgement.
 fm_procevent_mark_handled() {
-  local state=$1 id=$2 seq=$3 inbox result adapter_file marker tmp
+  local state=$1 id=$2 seq=$3 reason=${4-} inbox result adapter_file marker tmp counts failed _total
   fm_procevent_source_id_valid "$id" || return 2
   case "$seq" in ''|*[!0-9]*) return 2 ;; esac
   inbox=$(fm_procevent_inbox_dir "$state")
@@ -372,8 +387,19 @@ fm_procevent_mark_handled() {
   [ -f "$adapter_file" ] && [ ! -L "$adapter_file" ] || return 2
   marker=$(fm_procevent_handled_marker "$state" "$id" "$seq")
   [ ! -L "$marker" ] || return 2
+  [ ! -f "$marker" ] || return 1
+  counts=$(fm_procevent_result_runs "$result") || return 2
+  read -r failed _total <<< "$counts"
+  if [ "$failed" -gt 0 ] && [ -z "${reason//[[:space:]]/}" ]; then
+    return 3
+  fi
+  case "$reason" in *$'\n'*|*$'\r'*) return 2 ;; esac
   tmp=$(umask 077; mktemp "$inbox/.handled.XXXXXX") || return 2
   if ! chmod 0600 "$tmp"; then
+    rm -f -- "$tmp"
+    return 2
+  fi
+  if [ -n "$reason" ] && ! printf 'ack_failures_reason=%s\n' "$reason" > "$tmp"; then
     rm -f -- "$tmp"
     return 2
   fi

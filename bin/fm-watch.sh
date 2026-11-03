@@ -49,7 +49,7 @@
 #                          queued by their CI/activity publishers; an
 #                          untrusted-data= PR comment excerpt is third-party
 #                          input, never instruction (bin/fm-pr-activity.sh)
-#   check: process-event result captured: <keys>
+#   check: process-event result captured: <keys> [(failed of total failed)]
 #                          a durably captured process-to-event result is queued
 #                          and has not been surfaced yet; reported once per
 #                          captured generation, never again while that record
@@ -79,6 +79,8 @@ mkdir -p "$STATE"
 . "$SCRIPT_DIR/fm-push-transition-lib.sh"
 # shellcheck source=bin/fm-pr-lib.sh
 . "$SCRIPT_DIR/fm-pr-lib.sh"
+# shellcheck source=bin/fm-procevent-lib.sh
+. "$SCRIPT_DIR/fm-procevent-lib.sh"
 # shellcheck source=bin/fm-x-lib.sh
 . "$SCRIPT_DIR/fm-x-lib.sh"
 # shellcheck source=bin/fm-check-lib.sh
@@ -544,7 +546,7 @@ procevent_surface_after_output() {
 }
 
 procevent_surface_queued() {
-  local key reason
+  local key reason summary='' id seq counts failed total
   PROCEVENT_SURFACED=
   [ -s "$FM_WAKE_QUEUE" ] || return 0
   fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
@@ -552,12 +554,19 @@ procevent_surface_queued() {
     case "$key" in procevent:*) ;; *) continue ;; esac
     [ -e "$(procevent_surfaced_marker "$key")" ] && continue
     PROCEVENT_SURFACED="$PROCEVENT_SURFACED $key"
+    summary="$summary $key"
+    id=${key#procevent:}; seq=${id##*:}; id=${id%:*}
+    if fm_procevent_source_id_valid "$id" && [[ "$seq" =~ ^[0-9]+$ ]] \
+      && counts=$(fm_procevent_result_runs "$(fm_procevent_inbox_dir "$STATE")/$id.$seq.result"); then
+      read -r failed total <<< "$counts"
+      summary="$summary ($failed of $total failed)"
+    fi
   done < <(fm_wake_queued_keys_locked check)
   if [ -z "$PROCEVENT_SURFACED" ]; then
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     return 0
   fi
-  reason="check: process-event result captured:$PROCEVENT_SURFACED"
+  reason="check: process-event result captured:$summary"
   FM_WAKE_POST_OUTPUT_ACTION=procevent_surface_after_output
   wake "$reason"
 }

@@ -125,6 +125,45 @@ hold_source_lock_then_handle() {  # <home> <source-id> <sequence> <ready-file> <
   HOLDER_PID=$!
 }
 
+test_failed_runs_require_acknowledgement() {
+  local home out result reason invalid
+  home="$TMP_ROOT/failed-runs"; new_home "$home"
+  out=$(pe "$home" --help 2>&1 || true)
+  assert_contains "$out" '--ack-failures <reason>' "help exposes failure acknowledgement"
+  pe_register "$home" learn learn-failed -- /usr/bin/printf '%s\n' \
+    'learn-from-review PR https://example.test/pr https://example.test/c1 exit=0 output=/log1' \
+    'learn-from-review PR https://example.test/pr https://example.test/c2 exit=1 output=/log2' \
+    'learn-from-review PR https://example.test/pr https://example.test/c3 exit=interrupted output=/log3' >/dev/null
+  pe "$home" start learn-failed >/dev/null || fail "failed-run fixture did not capture"
+  result="$home/state/procevent-inbox/learn-failed.1"
+  if out=$(pe "$home" handled learn-failed 1 2>&1); then
+    fail "handling silently acknowledged failed runs"
+  fi
+  assert_contains "$out" '--ack-failures' "refusal explains explicit failure acknowledgement"
+  assert_absent "$result.handled" "refusal keeps failed result pending"
+  for invalid in '' '   ' $'first\nsecond'; do
+    if pe "$home" handled learn-failed 1 --ack-failures "$invalid" >/dev/null 2>&1; then
+      fail "failure acknowledgement accepted an empty or multiline reason"
+    fi
+    assert_absent "$result.handled" "invalid reason keeps failed result pending"
+  done
+  reason='Read both logs; recorded the tool failure for follow-up.'
+  out=$(pe "$home" handled learn-failed 1 --ack-failures "$reason") || fail "explicit acknowledgement refused"
+  assert_contains "$out" 'handled: learn-failed 1' "failure acknowledgement succeeds"
+  assert_grep "$reason" "$result.handled" "failure reason is durably recorded"
+  out=$(pe "$home" handled learn-failed 1) || fail "acknowledged failure retry refused"
+  assert_contains "$out" 'already-handled:' "acknowledged failure retries remain idempotent"
+  pe "$home" handled learn-failed 1 --ack-failures 'replacement reason' >/dev/null
+  assert_grep "$reason" "$result.handled" "repeat never replaces the original reason"
+
+  pe_register "$home" learn learn-clean -- /usr/bin/printf '%s\n' \
+    'learn-from-review PR https://example.test/pr https://example.test/c1 exit=0 output=/log1' >/dev/null
+  pe "$home" start learn-clean >/dev/null
+  pe "$home" handled learn-clean 1 >/dev/null || fail "clean learning result now needs acknowledgement"
+  pass "failed runs need explicit durable acknowledgement while clean results and retries remain compatible"
+}
+test_failed_runs_require_acknowledgement
+
 # --- inert with nothing configured ------------------------------------------
 IDLE="$TMP_ROOT/idle"; new_home "$IDLE"
 out=$(pe "$IDLE" list)

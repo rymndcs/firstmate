@@ -70,7 +70,8 @@ handle_learning() {
     [ -e "$result" ] || continue
     r=${result##*/}
     r=${r%.result}
-    "$PR_CODE/bin/fm-procevent.sh" handled "${r%.*}" "${r##*.}" > /dev/null
+    "$PR_CODE/bin/fm-procevent.sh" handled "${r%.*}" "${r##*.}" \
+      --ack-failures "Expected fixture failures inspected by this test." > /dev/null
   done
 }
 learned_count() {
