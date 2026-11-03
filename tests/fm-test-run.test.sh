@@ -81,10 +81,10 @@ test_standalone_environment_setup() {
   cat > "$tmp/probe.bash" <<'SH'
 probe_entry_environment() {
   [ "${BASH_SOURCE[1]:-}" = "$ENTRY_SCRIPT" ] || return 0
-  case "$BASH_COMMAND" in ROOT=*) ;; *) return 0 ;; esac
+  [ -n "${FM_HOME:-}" ] && [ "$FM_HOME" != "$LIVE_HOME" ] || return 0
   trap - DEBUG
-  [ "${FM_HOME:-}" != "$LIVE_HOME" ] && [ -d "${FM_HOME:-}/state" ] || {
-    echo 'not ok - standalone entry inherited or lacks operational home'; exit 1;
+  [ -d "$FM_HOME/state" ] || {
+    echo 'not ok - standalone entry lacks operational home'; exit 1;
   }
   local name
   for name in FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_PROJECTS_OVERRIDE FM_ROOT_OVERRIDE STATE FM_ROOT FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK FM_LOCK_OWNER_DIR FM_LOCK_HELD_PID FM_BACKEND FM_PROC_ROOT_OVERRIDE; do
@@ -132,17 +132,19 @@ SH
     tests/fm-pi-primary-types.test.sh \
     tests/fm-quota-array-dispatch-live-e2e.test.sh \
     tests/fm-tmux-agent-liveness.test.sh; do
-    out=$(env BASH_ENV="$tmp/probe.bash" ENTRY_SCRIPT="$ROOT/$script" LIVE_HOME="$tmp/live" \
+    out=$(env \
+      -u FM_AFK_DESKTOP_LIVE -u FM_AFK_OMP_HERDR_LIVE_E2E -u FM_AFK_PI_HERDR_E2E \
+      -u FM_CLAUDE_LIVE_E2E -u FM_CODEX_LIVE_E2E -u FM_GROK_LIVE_E2E -u FM_GROK_STOP_LIVE_E2E \
+      -u FM_HARNESS_LIVENESS_DRIFT -u FM_HERDR_SMOKE_REAL_CLAUDE -u FM_OMP_HERDR_LIVE_E2E \
+      -u FM_OMP_LIVE_E2E -u FM_OPENCODE_LIVE_E2E -u FM_PI_LIVE_E2E \
+      -u FM_QUOTA_ARRAY_DISPATCH_LIVE_E2E -u FM_REVIEW_ROUND_LIVE -u FM_SEND_MARKER_HERDR_E2E \
+      BASH_ENV="$tmp/probe.bash" ENTRY_SCRIPT="$ROOT/$script" LIVE_HOME="$tmp/live" \
       FM_HOME="$tmp/live" FM_STATE_OVERRIDE="$tmp/live/state" FM_DATA_OVERRIDE="$tmp/live/data" \
       FM_CONFIG_OVERRIDE="$tmp/live/config" FM_PROJECTS_OVERRIDE="$tmp/live/projects" \
       FM_ROOT_OVERRIDE="$tmp/live" STATE="$tmp/live/state" FM_ROOT="$tmp/live" \
       FM_WAKE_QUEUE="$tmp/live/state/.wake-queue" FM_WAKE_QUEUE_LOCK="$tmp/live/state/.wake-queue.lock" \
       FM_PROCEVENT_CLAIM_ROOT="$tmp/live/claims" FM_LOCK_OWNER_DIR="$tmp/live/owner" \
       FM_LOCK_HELD_PID=123 FM_BACKEND=herdr FM_PROC_ROOT_OVERRIDE="$tmp/live/proc" \
-      FM_AFK_DESKTOP_LIVE=1 FM_AFK_OMP_HERDR_LIVE_E2E=1 FM_CLAUDE_LIVE_E2E=1 \
-      FM_CODEX_LIVE_E2E=1 FM_GROK_LIVE_E2E=1 FM_HARNESS_LIVENESS_DRIFT=1 \
-      FM_OMP_HERDR_LIVE_E2E=1 FM_OMP_LIVE_E2E=1 FM_OPENCODE_LIVE_E2E=1 \
-      FM_PI_LIVE_E2E=1 FM_QUOTA_ARRAY_DISPATCH_LIVE_E2E=1 \
       bash "$ROOT/$script" 2>&1) || fail "$script setup: $out"
     assert_contains "$out" 'entry-environment-isolated' "$script setup probe did not reach its boundary"
     home=$(printf '%s\n' "$out" | sed -n 's/^entry-home=//p')

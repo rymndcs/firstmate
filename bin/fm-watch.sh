@@ -53,7 +53,9 @@
 #                          a durably captured process-to-event result is queued
 #                          and has not been surfaced yet; reported once per
 #                          captured generation, never again while that record
-#                          stays queued and never once it is acknowledged
+#                          stays queued and never once it is acknowledged; the
+#                          failed-run count follows a key only when its result
+#                          records learning runs
 #   check: rejected unauthenticated state checks: <paths>
 #                          unsafe state checks were refused without execution
 #   check: rejected unauthenticated PR poll retirement receipts: <paths>
@@ -559,7 +561,7 @@ procevent_surface_queued() {
     if fm_procevent_source_id_valid "$id" && [[ "$seq" =~ ^[0-9]+$ ]] \
       && counts=$(fm_procevent_result_runs "$(fm_procevent_inbox_dir "$STATE")/$id.$seq.result"); then
       read -r failed total <<< "$counts"
-      summary="$summary ($failed of $total failed)"
+      [ "$total" -gt 0 ] && summary="$summary ($failed of $total failed)"
     fi
   done < <(fm_wake_queued_keys_locked check)
   if [ -z "$PROCEVENT_SURFACED" ]; then

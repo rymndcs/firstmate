@@ -1479,8 +1479,8 @@ test_procevent_captured_result_surfaces_proactively() {
     || fail "a healthy watcher never surfaced a durably captured process-event result: $(cat "$out")"
   grep -F "check:" "$out" >/dev/null \
     || fail "the process-event wake was not reported as an actionable check: $(cat "$out")"
-  grep -F "procevent:delivery-src:1" "$out" >/dev/null \
-    || fail "the actionable reason did not name the queued result: $(cat "$out")"
+  grep -Fx "check: process-event result captured: procevent:delivery-src:1" "$out" >/dev/null \
+    || fail "the actionable reason was not exactly the queued result without a run count: $(cat "$out")"
   beacon_age=$(FM_STATE_OVERRIDE="$state" bash -c \
     '. "$1/bin/fm-wake-lib.sh"; fm_path_age "$2"' _ "$ROOT" "$state/.last-watcher-beat")
   [ "$beacon_age" -lt 60 ] || fail "the surfacing watcher was not a healthy one (beacon age ${beacon_age}s)"
@@ -1501,7 +1501,8 @@ test_procevent_wake_counts_failed_runs() {
   pe_case "$dir" start learn-counts >/dev/null || fail "learning fixture did not capture"
   procevent_watch_bg "$dir" "$out"; pid=$!
   wait_for_exit "$pid" 100 || fail "failed learning result never woke the watcher"
-  assert_grep 'procevent:learn-counts:1 (2 of 3 failed)' "$out" "wake must count failed runs"
+  grep -Fx 'check: process-event result captured: procevent:learn-counts:1 (2 of 3 failed)' "$out" >/dev/null \
+    || fail "wake must count failed runs exactly: $(cat "$out")"
   assert_no_grep 'example.test' "$out" "wake summary must not expose source output"
   pass "process-event wake reports failed runs without copying source output"
 }
