@@ -16,6 +16,10 @@
 # is not reliably honored once another herdr server is already running.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -39,7 +43,7 @@ cleanup_all() {
   [ -n "$SM_SCRATCH" ] && rm -rf "$SM_SCRATCH"
   herdr_safe_stop_and_delete "$SESSION"
 }
-trap cleanup_all EXIT
+trap 'cleanup_all; fm_test_environment_cleanup' EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare isolated Herdr lab session"
 
 # shellcheck source=/dev/null
@@ -352,4 +356,4 @@ pass "real herdr: list_live discovers a live task tab by fm-<id> label"
 fm_backend_herdr_kill "$SESSION:$PANE_ID2"
 
 cleanup_all
-trap - EXIT
+trap fm_test_environment_cleanup EXIT

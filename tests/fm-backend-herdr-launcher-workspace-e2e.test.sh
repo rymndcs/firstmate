@@ -24,6 +24,10 @@
 # flag and verifies the default fleet session is unchanged after teardown.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -72,7 +76,7 @@ cleanup_all() {
   rm -rf "$TMP_ROOT"
   return "$status"
 }
-trap cleanup_all EXIT
+trap 'cleanup_all; fm_test_environment_cleanup' EXIT
 "$HERDR_LAB_HELPER" provision "$HERDR_LAB_SESSION" || fail "could not provision isolated Herdr lab session"
 
 lab() { "$HERDR_LAB_HELPER" run "$HERDR_LAB_SESSION" "$@"; }
@@ -427,5 +431,5 @@ if ! cleanup_all; then
   printf 'not ok - isolated Herdr lab teardown failed or the default fleet session changed\n' >&2
   exit 1
 fi
-trap - EXIT
+trap fm_test_environment_cleanup EXIT
 pass "real herdr E2E: isolated lab session removed and default fleet session unchanged"

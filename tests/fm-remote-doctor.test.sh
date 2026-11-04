@@ -26,7 +26,7 @@ fm_test_remote_job_init "$TMP_ROOT" || exit 1
 JOB_LABEL=dev.firstmate.remote-job
 CASE_N=0
 DOCTOR_WORKER_PID=
-trap 'fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"' EXIT
+trap 'fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"; fm_test_cleanup' EXIT
 
 # A fixture must be able to present a host with NO herdr, so the doctor never
 # sees the runner's own PATH. Only the two required tools are re-exposed, by

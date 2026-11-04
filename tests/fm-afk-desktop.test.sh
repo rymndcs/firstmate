@@ -9,7 +9,7 @@ if [ "${FM_AFK_FIXTURE_PROBE:-0}" = 1 ]; then fm_afk_fixture_probe; exit 0; fi
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 LAB=$(fm_test_tmproot fm-afk-desktop)
-trap 'rm -rf "${LAB:?}"/homes "${LAB:?}"/fakebin; rmdir "$LAB"' EXIT
+trap 'rm -rf "${LAB:?}"/homes "${LAB:?}"/fakebin; rmdir "$LAB"; fm_test_cleanup' EXIT
 mkdir -p "$LAB/homes" "$LAB/fakebin"
 ln -s /bin/bash "$LAB/fakebin/claude"
 export PATH="$LAB/fakebin:$PATH"

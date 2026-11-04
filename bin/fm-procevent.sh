@@ -7,7 +7,7 @@
 #   fm-procevent.sh register <adapter> <source-id> -- <argv>...
 #   fm-procevent.sh start <source-id>
 #   fm-procevent.sh reconcile
-#   fm-procevent.sh handled <source-id> <sequence>
+#   fm-procevent.sh handled <source-id> <sequence> [--ack-failures <reason>]
 #   fm-procevent.sh retire <source-id>
 #   fm-procevent.sh sweep-home [--preflight]
 #   fm-procevent.sh list
@@ -37,6 +37,9 @@
 #            twice. Until this is called, the result stays eligible for
 #            bounded re-announcement on every reconcile. Marking a result
 #            handled does not retire its source registration or claim.
+#            Results with failed learning runs require --ack-failures with a
+#            nonblank one-line reason, recorded in the private handled marker.
+#            See fm-procevent-lib.sh for run-status classification.
 # retire     Drop a registration, stop a runner this home owns, release the claim.
 #            Idempotent, and still the supported explicit path after a source has
 #            already retired itself on its adapter's terminal verdict.
@@ -45,8 +48,8 @@
 #            claim remains. Used by supported Firstmate home retirement.
 # list       Show registered sources, owners, and pending captured results.
 #
-# Terminal knowledge is adapter-owned. This runner never inspects a result and
-# never names an adapter-specific status: it calls
+# Terminal knowledge is adapter-owned. For terminal classification this runner
+# never names an adapter-specific status or inspects a result: it calls
 # `bin/fm-procevent-<adapter>.sh terminal <result-file>` and treats exit 0 as the
 # only terminal verdict. A missing command, an error, or any other exit keeps the
 # registration armed, so an adapter that has no notion of ending needs no change.
@@ -79,7 +82,7 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,63p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "${BASH_SOURCE[0]}"; exit 2; }
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
@@ -535,16 +538,25 @@ stop_runner_pid() {  # <pid> <identity>
 # caller can trust the reported first-time/repeat distinction to authorize a
 # paired external effect at most once.
 cmd_handled() {
-  local id=${1-} seq=${2-} status
+  local id=${1-} seq=${2-} status reason=
+  [ "$#" -ge 2 ] || usage
+  shift 2
+  if [ "$#" -gt 0 ]; then
+    [ "$#" -eq 2 ] && [ "$1" = --ack-failures ] || usage
+    reason=$2
+    [ -n "${reason//[[:space:]]/}" ] || die "--ack-failures needs a nonblank reason"
+    case "$reason" in *$'\n'*|*$'\r'*) die "--ack-failures reason must be one line" ;; esac
+  fi
   fm_procevent_source_id_valid "$id" || die "source id must be path-safe: $id"
   case "$seq" in ''|*[!0-9]*) die "sequence must be a nonnegative integer: $seq" ;; esac
   fm_procevent_source_lock_acquire "$id" || die "cannot lock source: $id"
-  fm_procevent_mark_handled "$STATE" "$id" "$seq"
+  fm_procevent_mark_handled "$STATE" "$id" "$seq" "$reason"
   status=$?
   fm_procevent_source_lock_release "$id"
   case "$status" in
     0) printf 'handled: %s %s\n' "$id" "$seq" ;;
     1) printf 'already-handled: %s %s\n' "$id" "$seq" ;;
+    3) die "failed runs in $id $seq; read the result and logs, then pass --ack-failures <reason>" ;;
     *) die "cannot durably record handling: $id $seq" ;;
   esac
 }

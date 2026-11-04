@@ -8,13 +8,17 @@ set -eu
 . "$(dirname "${BASH_SOURCE[0]}")/afk-fixture-helpers.sh"
 fm_afk_fixture_prepare
 if [ "${FM_AFK_FIXTURE_PROBE:-0}" = 1 ]; then fm_afk_fixture_probe; exit 0; fi
+
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
 if [ "${FM_AFK_DESKTOP_LIVE:-0}" != 1 ]; then
   echo 'skip: set FM_AFK_DESKTOP_LIVE=1 for isolated Claude away hook chains'
   exit 0
 fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAB=$(mktemp -d "$ROOT/.afk-desktop-live.XXXXXX")
-trap 'rm -rf "${LAB:?}"/project "${LAB:?}"/home; rmdir "$LAB"' EXIT
+trap 'rm -rf "${LAB:?}"/project "${LAB:?}"/home; rmdir "$LAB"; fm_test_environment_cleanup' EXIT
 PROJECT="$LAB/project"
 mkdir -p "$PROJECT/bin" "$PROJECT/.claude" "$LAB/home"
 cp -R "$ROOT/bin/." "$PROJECT/bin/"

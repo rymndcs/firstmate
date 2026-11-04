@@ -199,7 +199,7 @@ EOF
   tasks_in "$home" add sample-route-implementation "Apply the selected sample route" \
     --kind ship --repo sample >/dev/null \
     || fail "could not create dependent work fixture"
-  printf 'Use route north for the sample system.\n' > "$home/route-decision.txt"
+  printf '> Raymond 2026-11-04: "Use route north for the sample system."\n' > "$home/route-decision.txt"
   if run_decisions "$home" resolve "$id" route --decision-file "$home/route-decision.txt" \
     --routed-to sample-route-implementation > "$home/early-resolve.out" 2> "$home/early-resolve.err"; then
     fail "captain hold closed before dependent work had a durable routing edge"
@@ -237,7 +237,7 @@ EOF
     --routed-to sample-route-followup > "$home/reduced-retry.out" 2> "$home/reduced-retry.err"; then
     fail "partial resolution retry accepted a reduced routed task set"
   fi
-  printf 'Use route south for the sample system.\n' > "$home/changed-route-decision.txt"
+  printf '> Raymond 2026-11-04: "Use route south for the sample system."\n' > "$home/changed-route-decision.txt"
   if run_decisions "$home" resolve "$id" route --decision-file "$home/changed-route-decision.txt" \
     --routed-to sample-route-implementation --routed-to sample-route-followup \
     > "$home/partial-drifted-decision.out" 2> "$home/partial-drifted-decision.err"; then
@@ -530,7 +530,7 @@ test_resolve_matches_quoted_blocked_by_edges() {
   show=$(tasks_in "$home" show dep-first --full)
   assert_contains "$show" "blocked_by: \"$hold_first,pad-a,pad-b\"" \
     "first-position fixture must quote multi-entry blocked_by"
-  printf 'Decide first edge.\n' > "$home/d-first.txt"
+  printf '> Raymond 2026-11-04: "Decide first edge."\n' > "$home/d-first.txt"
   if ! run_decisions "$home" resolve "$origin" edge-first --decision-file "$home/d-first.txt" \
     --routed-to dep-first > "$home/first.out" 2> "$home/first.err"; then
     fail "resolve failed when hold id is FIRST in quoted blocked_by: $(cat "$home/first.err")"
@@ -544,7 +544,7 @@ test_resolve_matches_quoted_blocked_by_edges() {
   show=$(tasks_in "$home" show dep-mid --full)
   assert_contains "$show" "blocked_by: \"pad-a,$hold_mid,pad-b\"" \
     "middle-position fixture must quote multi-entry blocked_by"
-  printf 'Decide mid edge.\n' > "$home/d-mid.txt"
+  printf '> Raymond 2026-11-04: "Decide mid edge."\n' > "$home/d-mid.txt"
   if ! run_decisions "$home" resolve "$origin" edge-mid --decision-file "$home/d-mid.txt" \
     --routed-to dep-mid > "$home/mid.out" 2> "$home/mid.err"; then
     fail "resolve failed when hold id is MIDDLE in quoted blocked_by: $(cat "$home/mid.err")"
@@ -558,7 +558,7 @@ test_resolve_matches_quoted_blocked_by_edges() {
   show=$(tasks_in "$home" show dep-last --full)
   assert_contains "$show" "blocked_by: \"pad-a,pad-b,$hold_last\"" \
     "last-position fixture must quote multi-entry blocked_by"
-  printf 'Decide last edge.\n' > "$home/d-last.txt"
+  printf '> Raymond 2026-11-04: "Decide last edge."\n' > "$home/d-last.txt"
   if ! run_decisions "$home" resolve "$origin" edge-last --decision-file "$home/d-last.txt" \
     --routed-to dep-last > "$home/last.out" 2> "$home/last.err"; then
     fail "resolve failed when hold id is LAST in quoted blocked_by: $(cat "$home/last.err")"
@@ -571,7 +571,7 @@ test_resolve_matches_quoted_blocked_by_edges() {
   show=$(tasks_in "$home" show dep-absent --full)
   assert_contains "$show" "blocked_by: \"pad-a,pad-b\"" \
     "absent-control fixture must quote multi-entry blocked_by without the hold id"
-  printf 'Decide absent edge.\n' > "$home/d-absent.txt"
+  printf '> Raymond 2026-11-04: "Decide absent edge."\n' > "$home/d-absent.txt"
   if run_decisions "$home" resolve "$origin" edge-absent --decision-file "$home/d-absent.txt" \
     --routed-to dep-absent > "$home/absent.out" 2> "$home/absent.err"; then
     fail "resolve succeeded when hold id is genuinely absent from blocked_by"
@@ -584,6 +584,38 @@ test_resolve_matches_quoted_blocked_by_edges() {
 
   pass "resolve matches first/middle/last in quoted blocked_by and rejects a genuinely absent id"
 }
+
+test_resolution_requires_attributed_quote() {
+  local home hold before invalid
+  home=$(make_home attributed-quote)
+  assert_contains "$(run_decisions "$home" --help)" '> Raymond YYYY-MM-DD: "exact words"' "help explains attributed quote format"
+  write_origin_meta "$home" quote-origin
+  hold=$(run_decisions "$home" hold quote-origin route --title "Choose route" --reason "route pending")
+  tasks_in "$home" add quote-dependent "Apply route" --kind ship --repo sample --blocked-by "$hold" >/dev/null
+  before=$(cat "$home/data/backlog.md")
+  for invalid in \
+    'Use route north.' \
+    '> Someone 2026-11-04: "Use route north."' \
+    '> Raymond: "Use route north."' \
+    '> Raymond 2026-11-04: Use route north.' \
+    '> Raymond 2026-11-04: ""' \
+    '> Raymond 2026-11-04: "   "' \
+    'Raymond 2026-11-04: "Use route north."'; do
+    printf '%s\n' "$invalid" > "$home/decision.md"
+    if run_decisions "$home" resolve quote-origin route --decision-file "$home/decision.md" \
+      --routed-to quote-dependent > "$home/refused.out" 2>&1; then
+      fail "resolution accepted a decision without an attributed quote: $invalid"
+    fi
+    assert_grep 'quoted line attributed to Raymond' "$home/refused.out" "refusal must explain the quote format"
+    [ "$(cat "$home/data/backlog.md")" = "$before" ] || fail "quote refusal changed the backlog"
+  done
+  printf '# Decision\n\n> Raymond 2026-11-04: "Use route north."\n' > "$home/decision.md"
+  run_decisions "$home" resolve quote-origin route --decision-file "$home/decision.md" \
+    --routed-to quote-dependent >/dev/null || fail "valid attributed decision was refused"
+  pass "resolution requires attributed quoted words before any backlog mutation"
+}
+
+test_resolution_requires_attributed_quote
 
 test_uninventoried_report_decision_refuses_completion
 

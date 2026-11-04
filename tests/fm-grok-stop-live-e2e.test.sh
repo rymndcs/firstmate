@@ -75,9 +75,10 @@ preserve_on_failure() {
   if [ "$rc" -ne 0 ] && [ -n "$ACTIVE_LAB" ]; then
     echo "blocked: preserving failed isolated Grok cell at $ACTIVE_LAB" >&2
   fi
+  fm_test_cleanup
   exit "$rc"
 }
-trap preserve_on_failure EXIT
+trap 'preserve_on_failure; fm_test_cleanup' EXIT
 
 run_cell() {  # <native|legacy> <exact-binary>
   local kind=$1 binary=$2 lab tmp_base session target prompt i child_count payload_count unique_sessions
@@ -217,5 +218,5 @@ EOF
 
 run_cell native "$NATIVE_BIN"
 run_cell legacy "$LEGACY_BIN"
-trap - EXIT
+trap fm_test_cleanup EXIT
 echo "ok - Grok adaptive Stop real-process matrix passed with exact target cleanup and control-window survival"

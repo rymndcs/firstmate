@@ -3,7 +3,7 @@ set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 TMP=$(fm_test_tmproot fm-protected-paths)
-trap 'stop_held_install; rm -rf "${TMP:?}"' EXIT
+trap 'stop_held_install; rm -rf "${TMP:?}"; fm_test_cleanup' EXIT
 fm_git_identity
 GATE="$ROOT/bin/fm-protected-paths.sh"
 

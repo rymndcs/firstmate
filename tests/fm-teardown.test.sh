@@ -94,7 +94,7 @@ remove_test_roots() {
   rm -rf "${EXTERNAL_PARENT:?}"/symlinks "${EXTERNAL_PARENT:?}"/external-links
   rmdir "${EXTERNAL_PARENT:?}"
 }
-trap remove_test_roots EXIT
+trap 'remove_test_roots; fm_test_cleanup' EXIT
 REAL_GIT_FOR_TEST=$(command -v git)
 export REAL_GIT_FOR_TEST
 

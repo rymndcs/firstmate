@@ -1479,8 +1479,8 @@ test_procevent_captured_result_surfaces_proactively() {
     || fail "a healthy watcher never surfaced a durably captured process-event result: $(cat "$out")"
   grep -F "check:" "$out" >/dev/null \
     || fail "the process-event wake was not reported as an actionable check: $(cat "$out")"
-  grep -F "procevent:delivery-src:1" "$out" >/dev/null \
-    || fail "the actionable reason did not name the queued result: $(cat "$out")"
+  grep -Fx "check: process-event result captured: procevent:delivery-src:1" "$out" >/dev/null \
+    || fail "the actionable reason was not exactly the queued result without a run count: $(cat "$out")"
   beacon_age=$(FM_STATE_OVERRIDE="$state" bash -c \
     '. "$1/bin/fm-wake-lib.sh"; fm_path_age "$2"' _ "$ROOT" "$state/.last-watcher-beat")
   [ "$beacon_age" -lt 60 ] || fail "the surfacing watcher was not a healthy one (beacon age ${beacon_age}s)"
@@ -1489,6 +1489,22 @@ test_procevent_captured_result_surfaces_proactively() {
   grep "$(printf '\tcheck\t')" "$drain_out" | grep -F "procevent lavish delivery-src 1" >/dev/null \
     || fail "the process-event result was not queued for the drain that follows the wake"
   pass "a captured process-event result wakes a healthy watcher proactively, with no manual drain"
+}
+
+test_procevent_wake_counts_failed_runs() {
+  local dir out pid
+  dir=$(make_case procevent-failures); out="$dir/watch.out"
+  pe_case "$dir" register learn learn-counts -- /usr/bin/printf '%s\n' \
+    'learn-from-review PR https://example.test/pr https://example.test/c1 exit=00 output=/logs with exit=99 in path' \
+    'learn-from-review PR https://example.test/pr https://example.test/c2 exit=7 output=/log2' \
+    'learn-from-review PR https://example.test/pr https://example.test/c3 exit=invalid-timeout' >/dev/null
+  pe_case "$dir" start learn-counts >/dev/null || fail "learning fixture did not capture"
+  procevent_watch_bg "$dir" "$out"; pid=$!
+  wait_for_exit "$pid" 100 || fail "failed learning result never woke the watcher"
+  grep -Fx 'check: process-event result captured: procevent:learn-counts:1 (2 of 3 failed)' "$out" >/dev/null \
+    || fail "wake must count failed runs exactly: $(cat "$out")"
+  assert_no_grep 'example.test' "$out" "wake summary must not expose source output"
+  pass "process-event wake reports failed runs without copying source output"
 }
 
 test_procevent_surfaced_result_does_not_rewake() {
@@ -1799,6 +1815,7 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
   pass "AFK changed paused panes hand off plain stale identities for daemon-owned pause triage"
 }
 
+test_procevent_wake_counts_failed_runs
 test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
 test_scan_captain_relevant_statuses_classifier

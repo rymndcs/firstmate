@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Probe entry points without invoking any backend, even in the red run.
 set -eu
+
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python3 - "$ROOT" <<'PY'
 import os, shutil, subprocess, sys, tempfile

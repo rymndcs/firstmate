@@ -34,7 +34,7 @@ cleanup() {
   fi
   fm_test_cleanup
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_cleanup' EXIT
 
 wait_for_text() {
   local file=$1 text=$2 i=0

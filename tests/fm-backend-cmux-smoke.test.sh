@@ -17,6 +17,10 @@
 # (docs/cmux-backend.md "Setup"), are unaffected.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -42,7 +46,7 @@ cleanup_all() {
   [ -z "$WS1" ] || cmux_safe_close_workspace "$WS1" "fm-test-smoke1"
   [ -z "$WS2" ] || cmux_safe_close_workspace "$WS2" "fm-test-smoke2"
 }
-trap cleanup_all EXIT
+trap 'cleanup_all; fm_test_environment_cleanup' EXIT
 
 # --- create_task + duplicate refusal -----------------------------------------
 
@@ -185,4 +189,4 @@ esac
 pass "real cmux: list_live discovers a live task workspace by fm-<id> title"
 
 cleanup_all
-trap - EXIT
+trap fm_test_environment_cleanup EXIT

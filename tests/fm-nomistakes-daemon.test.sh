@@ -58,7 +58,7 @@ cleanup_live_pids() {
   rm -rf "$TMP_ROOT"
   return 0
 }
-trap cleanup_live_pids EXIT
+trap 'cleanup_live_pids; fm_test_cleanup' EXIT
 
 # A real, live process whose pid the stubs can advertise. The daemon verdict's
 # strongest signal is `kill -0`, so it must be exercised against an actual

@@ -7,7 +7,7 @@ fm_afk_fixture_prepare
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 LAB=$(fm_test_tmproot fm-afk-omp)
-trap 'rm -rf "${LAB:?}"' EXIT
+trap 'rm -rf "${LAB:?}"; fm_test_cleanup' EXIT
 export FM_HOME="$LAB" FM_STATE_OVERRIDE="$LAB/state" FM_ROOT_OVERRIDE="$ROOT"
 export FM_SUPERVISOR_BACKEND=unsupported FM_SUPERVISOR_TARGET=fixture:never
 mkdir -p "$LAB/state"

@@ -2,6 +2,10 @@
 # Credentialed opt-in: real omp on an isolated Herdr server, including safe
 # away-message delivery and preservation of the captain's unsent draft.
 set -euo pipefail
+
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
 if [ "${FM_OMP_HERDR_LIVE_E2E:-0}" != 1 ]; then
   echo 'skip: set FM_OMP_HERDR_LIVE_E2E=1 for the real omp/Herdr away-mode regression'
   exit 0
@@ -18,7 +22,7 @@ cleanup() {
   fm_herdr_lab_teardown "$SESSION" || true
   rm -rf "$LAB"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_environment_cleanup' EXIT
 fail() { echo "not ok - $*" >&2; exit 1; }
 run() { fm_herdr_lab_cli "$SESSION" "$@"; }
 fm_herdr_lab_provision "$SESSION"

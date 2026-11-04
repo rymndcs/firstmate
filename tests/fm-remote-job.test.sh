@@ -25,7 +25,7 @@ REAL_GIT=$(command -v git)
 OTHER_PID=
 RECOVERY_WORKER_PID=
 mkdir -p "$REMOTE_ROOT/bin" "$REMOTE_HOME" "$ACCOUNT_HOME" "$RUNTIME_BIN"
-trap 'if [ -n "$OTHER_PID" ]; then kill "$OTHER_PID" 2>/dev/null || true; fi; fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"' EXIT
+trap 'if [ -n "$OTHER_PID" ]; then kill "$OTHER_PID" 2>/dev/null || true; fi; fm_test_remote_job_cleanup || exit 1; rm -rf -- "$TMP_ROOT"; fm_test_cleanup' EXIT
 
 worker_fixture() {
   local dir=$1

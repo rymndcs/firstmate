@@ -3,7 +3,7 @@
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 PR_TMP=$(mktemp -d "${TMPDIR:-/tmp}/fm-pr-behavior.XXXXXX")
-trap 'rm -rf "${PR_TMP:?}"' EXIT
+trap 'rm -rf "${PR_TMP:?}"; fm_test_cleanup' EXIT
 PR_CODE="$PR_TMP/code"
 mkdir -p "$PR_CODE"
 cp -R "$ROOT/bin" "$PR_CODE/bin"

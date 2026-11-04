@@ -12,7 +12,7 @@ fi
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 LAB=$(fm_test_tmproot fm-review-round-live)
-trap 'rm -rf "${LAB:?}"' EXIT
+trap 'rm -rf "${LAB:?}"; fm_test_cleanup' EXIT
 mkdir -p "$LAB/home/state" "$LAB/repo"
 git -C "$LAB/repo" init -q
 printf 'Tiny launcher smoke fixture.\n' > "$LAB/repo/README.md"

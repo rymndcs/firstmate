@@ -19,7 +19,7 @@ cleanup_kimi_harness() {
   [ -z "$KIMI_RUNTIME_TASK_TMP" ] || rm -rf "$KIMI_RUNTIME_TASK_TMP"
   rm -rf "$TMP_ROOT"
 }
-trap cleanup_kimi_harness EXIT
+trap 'cleanup_kimi_harness; fm_test_cleanup' EXIT
 
 make_spawn_fakebin() {
   local dir=$1 fakebin

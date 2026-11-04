@@ -39,7 +39,7 @@ cleanup() {
   fm_test_remote_job_cleanup || exit 1
   rm -rf -- "$TMP_ROOT"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_cleanup' EXIT
 
 # Materialize the current branch as the remote host's tracked code root. The
 # fixture is a real git repository because provisioning and guarded sync exercise

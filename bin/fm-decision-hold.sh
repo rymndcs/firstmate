@@ -35,7 +35,10 @@
 # `verify` is read-only and is called by scout teardown so teardown cannot erase a
 # source before this gate has succeeded.
 #
-# `resolve` requires every --routed-to task to exist and to be blocked by the hold.
+# `resolve` requires at least one nonblank quoted line in the decision file:
+#   > Raymond YYYY-MM-DD: "exact words"
+# This verifies attribution format, not the authenticity or meaning of the quote.
+# Every --routed-to task must exist and be blocked by the hold.
 # It writes the captain decision and routed identities into the hold body, clears
 # those dependency edges, and only then marks the hold Done. A failure before the
 # final step leaves the captain hold open.
@@ -389,6 +392,8 @@ command_resolve() {
   [ -n "$decision" ] || fail "decision file must not be empty"
   [ "$(printf '%s' "$decision" | LC_ALL=C wc -c | tr -d ' ')" -le 8192 ] \
     || fail "decision file exceeds 8192 bytes"
+  printf '%s\n' "$decision" | LC_ALL=C grep -Eq '^> Raymond [0-9]{4}-[0-9]{2}-[0-9]{2}: "[^[:cntrl:]]*[^[:space:]"][^[:cntrl:]]*"[[:space:]]*$' \
+    || fail 'decision file needs a quoted line attributed to Raymond: > Raymond YYYY-MM-DD: "exact words"'
   [ -n "$routed" ] || fail "at least one --routed-to task is required"
   routed=$(printf '%s\n' "$routed" | tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort -u | paste -sd' ' -)
   routed_csv=$(printf '%s\n' "$routed" | tr ' ' ',')

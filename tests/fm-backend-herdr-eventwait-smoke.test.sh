@@ -13,6 +13,10 @@
 # refuses the default session and verifies the fleet-state tripwire.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() { printf 'not ok - %s\n' "$1" >&2; cleanup_all; exit 1; }
@@ -37,7 +41,7 @@ cleanup_all() {
   [ -n "$SCRATCH" ] && rm -rf "$SCRATCH"
   herdr_safe_stop_and_delete "$SESSION"
 }
-trap cleanup_all EXIT
+trap 'cleanup_all; fm_test_environment_cleanup' EXIT
 fm_herdr_lab_prepare "$SESSION" || fail "could not prepare the isolated Herdr lab session"
 
 # The dispatcher is a separately linted production boundary. Its dynamic
@@ -133,4 +137,4 @@ grep -q 'herdr: agent blocked' "$STATE/.wake-queue" || fail "the stale payload m
 pass "real herdr: the watcher fast-path enqueues a stale wake naming the task window from the live blocked transition"
 
 cleanup_all
-trap - EXIT
+trap fm_test_environment_cleanup EXIT

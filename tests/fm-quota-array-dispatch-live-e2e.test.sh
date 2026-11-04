@@ -11,6 +11,10 @@
 # reading capacity directly instead of through dispatch-axi.
 set -u
 
+# shellcheck source=tests/environment-helpers.sh
+. "$(dirname "${BASH_SOURCE[0]}")/environment-helpers.sh"
+fm_test_standalone_environment || exit 1
+
 if [ "${FM_QUOTA_ARRAY_DISPATCH_LIVE_E2E:-0}" != 1 ]; then
   echo "skip: set FM_QUOTA_ARRAY_DISPATCH_LIVE_E2E=1 to run the credentialed Pi dispatch-selection regression"
   exit 0
@@ -37,7 +41,7 @@ QUOTA_CALLS="$LAB/quota-axi.calls"
 cleanup() {
   rm -rf "$LAB"
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_environment_cleanup' EXIT
 
 mkdir -p "$PROJECT/.agents/skills/quota-array-dispatch" "$FAKEBIN"
 cp "$OWNER" "$PROJECT/.agents/skills/quota-array-dispatch/SKILL.md"

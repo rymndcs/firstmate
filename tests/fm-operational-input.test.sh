@@ -12,7 +12,7 @@ OWNER="$ROOT/bin/fm-operational-input.sh"
 cleanup() {
   fm_test_cleanup
 }
-trap cleanup EXIT
+trap 'cleanup; fm_test_cleanup' EXIT
 
 classify_cli() {
   printf '%s' "$1" | "$OWNER" classify 2>/dev/null

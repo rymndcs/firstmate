@@ -15,6 +15,166 @@ RUNNER="$ROOT/bin/fm-test-run.sh"
 assert_present "$RUNNER" "bin/fm-test-run.sh is missing"
 [ -x "$RUNNER" ] || fail "bin/fm-test-run.sh must be executable"
 
+test_live_environment_isolation() {
+  local tmp repo script mode out
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-env.XXXXXX")
+  repo="$tmp/repo"
+  mkdir -p "$repo/bin" "$repo/tests" "$tmp/live/state" "$tmp/evidence"
+  cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/environment-helpers.sh" "$repo/tests/environment-helpers.sh"
+  printf 'live sentinel\n' > "$tmp/live/state/sentinel"
+  for script in fm-brief fm-composer-lib; do
+    cat > "$repo/tests/$script.test.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+[ "$FM_HOME" != "$LIVE_HOME" ] || { echo 'not ok - inherited live home'; exit 1; }
+[ -d "$FM_HOME" ] || { echo 'not ok - isolated home absent'; exit 1; }
+for name in FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_PROJECTS_OVERRIDE FM_ROOT_OVERRIDE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK STATE FM_ROOT; do
+  [ -z "${!name:-}" ] || { echo "not ok - inherited $name"; exit 1; }
+done
+case "$FM_PROCEVENT_CLAIM_ROOT" in "$FM_HOME"/*) ;; *) echo 'not ok - foreign claims'; exit 1 ;; esac
+printf '%s\n' "$FM_HOME" > "$EVIDENCE/$(basename "$0").home"
+mkdir -p "$FM_HOME/state"
+printf 'isolated write\n' > "$FM_HOME/state/result"
+echo 'ok - isolated environment'
+SH
+  done
+  for mode in serial parallel; do
+    out="$tmp/$mode.out"
+    if ! env LIVE_HOME="$tmp/live" EVIDENCE="$tmp/evidence" \
+      FM_HOME="$tmp/live" FM_STATE_OVERRIDE="$tmp/live/state" \
+      FM_DATA_OVERRIDE="$tmp/live/data" FM_CONFIG_OVERRIDE="$tmp/live/config" \
+      FM_PROJECTS_OVERRIDE="$tmp/live/projects" FM_ROOT_OVERRIDE="$tmp/live" \
+      STATE="$tmp/live/state" FM_ROOT="$tmp/live" \
+      FM_WAKE_QUEUE="$tmp/live/state/.wake-queue" FM_WAKE_QUEUE_LOCK="$tmp/live/state/.wake-queue.lock" \
+      FM_PROCEVENT_CLAIM_ROOT="$tmp/live/claims" \
+      "$repo/bin/fm-test-run.sh" --jobs "$([ "$mode" = serial ] && echo 1 || echo 2)" \
+      tests/fm-brief.test.sh tests/fm-composer-lib.test.sh > "$out" 2>&1; then
+      fail "$mode runner inherited live paths: $(cat "$out")"
+    fi
+    [ "$(cat "$tmp/evidence/fm-brief.test.sh.home")" != "$(cat "$tmp/evidence/fm-composer-lib.test.sh.home")" ] \
+      || fail "$mode tests shared an operational home"
+  done
+  [ "$(find "$tmp/live" -type f | wc -l | tr -d ' ')" = 1 ] || fail "suite wrote to the live fixture"
+  [ "$(cat "$tmp/live/state/sentinel")" = 'live sentinel' ] || fail "suite changed live sentinel"
+  cat > "$tmp/direct.sh" <<'SH'
+#!/usr/bin/env bash
+set -eu
+. "$TEST_LIB"
+[ "$FM_HOME" != "$LIVE_HOME" ] || { echo 'not ok - helper inherited live home'; exit 1; }
+[ -z "${FM_STATE_OVERRIDE:-}${FM_WAKE_QUEUE:-}${STATE:-}" ] || { echo 'not ok - helper inherited derived paths'; exit 1; }
+[ -d "$FM_HOME" ] || { echo 'not ok - helper home absent'; exit 1; }
+echo 'ok - direct test isolated'
+SH
+  env LIVE_HOME="$tmp/live" TEST_LIB="$ROOT/tests/lib.sh" FM_HOME="$tmp/live" \
+    FM_STATE_OVERRIDE="$tmp/live/state" FM_WAKE_QUEUE="$tmp/live/state/.wake-queue" STATE="$tmp/live/state" \
+    bash "$tmp/direct.sh" > "$tmp/direct.out" 2>&1 \
+    || fail "standalone test inherited live paths: $(cat "$tmp/direct.out")"
+  rm -rf "${tmp:?}"
+  pass "serial, parallel, and standalone tests isolate operational homes and derived paths"
+}
+
+test_standalone_environment_setup() {
+  local tmp script out home
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-entry-environment.XXXXXX")
+  mkdir -p "$tmp/live/state"
+  cat > "$tmp/probe.bash" <<'SH'
+probe_entry_environment() {
+  [ "${BASH_SOURCE[1]:-}" = "$ENTRY_SCRIPT" ] || return 0
+  [ -n "${FM_HOME:-}" ] && [ "$FM_HOME" != "$LIVE_HOME" ] || return 0
+  trap - DEBUG
+  [ -d "$FM_HOME/state" ] || {
+    echo 'not ok - standalone entry lacks operational home'; exit 1;
+  }
+  local name
+  for name in FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_PROJECTS_OVERRIDE FM_ROOT_OVERRIDE STATE FM_ROOT FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK FM_LOCK_OWNER_DIR FM_LOCK_HELD_PID FM_BACKEND FM_PROC_ROOT_OVERRIDE; do
+    [ -z "${!name:-}" ] || { echo "not ok - standalone entry inherited $name"; exit 1; }
+  done
+  case "$FM_PROCEVENT_CLAIM_ROOT" in "$FM_HOME"/*) ;; *) echo 'not ok - standalone entry inherited claims'; exit 1 ;; esac
+  printf 'entry-environment-isolated\nentry-home=%s\n' "$FM_HOME"
+  exit 0
+}
+set -T
+trap probe_entry_environment DEBUG
+SH
+  for script in \
+    tests/fm-afk-desktop-live-e2e.test.sh \
+    tests/fm-afk-desktop-policy-live-e2e.test.sh \
+    tests/fm-afk-fixture-isolation.test.sh \
+    tests/fm-afk-inject-e2e.test.sh \
+    tests/fm-afk-inject-herdr-e2e.test.sh \
+    tests/fm-afk-launch.test.sh \
+    tests/fm-afk-omp-herdr-live-e2e.test.sh \
+    tests/fm-ask-user-gate-live-e2e.test.sh \
+    tests/fm-backend-autodetect-smoke.test.sh \
+    tests/fm-backend-cmux-smoke.test.sh \
+    tests/fm-backend-herdr-eventwait-smoke.test.sh \
+    tests/fm-backend-herdr-focus-flash-e2e.test.sh \
+    tests/fm-backend-herdr-launcher-workspace-e2e.test.sh \
+    tests/fm-backend-herdr-presentation-e2e.test.sh \
+    tests/fm-backend-herdr-prune-safety-e2e.test.sh \
+    tests/fm-backend-herdr-respawn-idem-e2e.test.sh \
+    tests/fm-backend-herdr-smoke.test.sh \
+    tests/fm-backend-herdr-workspace-per-home-e2e.test.sh \
+    tests/fm-backend-tmux-smoke.test.sh \
+    tests/fm-backend-zellij-smoke.test.sh \
+    tests/fm-claude-stop-autoarm-live-e2e.test.sh \
+    tests/fm-codex-continuity-live-e2e.test.sh \
+    tests/fm-gitignore-config.test.sh \
+    tests/fm-gotmp.test.sh \
+    tests/fm-grok-continuity-live-e2e.test.sh \
+    tests/fm-harness-liveness-drift-live-e2e.test.sh \
+    tests/fm-herdr-session-cleanup-e2e.test.sh \
+    tests/fm-omp-herdr-live-e2e.test.sh \
+    tests/fm-omp-primary-live-e2e.test.sh \
+    tests/fm-opencode-primary-live-e2e.test.sh \
+    tests/fm-pi-primary-live-e2e.test.sh \
+    tests/fm-pi-primary-types.test.sh \
+    tests/fm-quota-array-dispatch-live-e2e.test.sh \
+    tests/fm-tmux-agent-liveness.test.sh; do
+    out=$(env \
+      -u FM_AFK_DESKTOP_LIVE -u FM_AFK_OMP_HERDR_LIVE_E2E -u FM_AFK_PI_HERDR_E2E \
+      -u FM_CLAUDE_LIVE_E2E -u FM_CODEX_LIVE_E2E -u FM_GROK_LIVE_E2E -u FM_GROK_STOP_LIVE_E2E \
+      -u FM_HARNESS_LIVENESS_DRIFT -u FM_HERDR_SMOKE_REAL_CLAUDE -u FM_OMP_HERDR_LIVE_E2E \
+      -u FM_OMP_LIVE_E2E -u FM_OPENCODE_LIVE_E2E -u FM_PI_LIVE_E2E \
+      -u FM_QUOTA_ARRAY_DISPATCH_LIVE_E2E -u FM_REVIEW_ROUND_LIVE -u FM_SEND_MARKER_HERDR_E2E \
+      BASH_ENV="$tmp/probe.bash" ENTRY_SCRIPT="$ROOT/$script" LIVE_HOME="$tmp/live" \
+      FM_HOME="$tmp/live" FM_STATE_OVERRIDE="$tmp/live/state" FM_DATA_OVERRIDE="$tmp/live/data" \
+      FM_CONFIG_OVERRIDE="$tmp/live/config" FM_PROJECTS_OVERRIDE="$tmp/live/projects" \
+      FM_ROOT_OVERRIDE="$tmp/live" STATE="$tmp/live/state" FM_ROOT="$tmp/live" \
+      FM_WAKE_QUEUE="$tmp/live/state/.wake-queue" FM_WAKE_QUEUE_LOCK="$tmp/live/state/.wake-queue.lock" \
+      FM_PROCEVENT_CLAIM_ROOT="$tmp/live/claims" FM_LOCK_OWNER_DIR="$tmp/live/owner" \
+      FM_LOCK_HELD_PID=123 FM_BACKEND=herdr FM_PROC_ROOT_OVERRIDE="$tmp/live/proc" \
+      bash "$ROOT/$script" 2>&1) || fail "$script setup: $out"
+    assert_contains "$out" 'entry-environment-isolated' "$script setup probe did not reach its boundary"
+    home=$(printf '%s\n' "$out" | sed -n 's/^entry-home=//p')
+    [ -n "$home" ] || fail "$script setup probe omitted its home"
+    assert_absent "$home" "$script standalone temporary home leaked"
+  done
+  rm -rf "${tmp:?}"
+  pass "standalone entry points reset inherited operational paths before behavior (no live agents)"
+}
+
+test_standalone_pr_cleanup() {
+  local out path expected rc
+  for expected in 0 17; do
+    rc=0
+    out=$(TEST_LIB="$ROOT/tests/lib.sh" PR_HELPERS="$ROOT/tests/pr-helpers.sh" EXPECTED="$expected" bash -eu -c '
+      . "$TEST_LIB"
+      extra=$(mktemp -d "${TMPDIR:-/tmp}/fm-existing-cleanup.XXXXXX")
+      FM_TEST_CLEANUP_DIRS+=("$extra")
+      . "$PR_HELPERS"
+      printf "%s\n%s\n%s\n" "$FM_TEST_PRIVATE_HOME" "$PR_TMP" "$extra"
+      exit "$EXPECTED"
+    ') || rc=$?
+    expect_code "$expected" "$rc" "standalone cleanup preserves exit status"
+    while IFS= read -r path; do
+      [ ! -d "$path" ] || fail "standalone PR helper leaked temporary directory: $path"
+    done <<< "$out"
+  done
+  pass "standalone PR cleanup preserves both private-home and PR-fixture cleanup on success and failure"
+}
+
 test_tmpdir_boundary() {
   local tmp repo candidate rc expected
   tmp=$(mktemp -d "${TMPDIR:-/tmp}/fm-test-run-tmpdir.XXXXXX")
@@ -22,6 +182,7 @@ test_tmpdir_boundary() {
   repo="$tmp/repo"
   mkdir -p "$repo/bin" "$repo/tests" "$repo/tmp" "$tmp/repo-sibling" "$tmp/fakebin"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/environment-helpers.sh" "$repo/tests/environment-helpers.sh"
   cat >"$repo/tests/probe.test.sh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$TMPDIR" >"$PROBE_OUTPUT"
@@ -144,6 +305,7 @@ init_changed_fixture_repo() {
   local repo=$1 script
   mkdir -p "$repo/bin" "$repo/tests"
   cp "$RUNNER" "$repo/bin/fm-test-run.sh"
+  cp "$ROOT/tests/environment-helpers.sh" "$repo/tests/environment-helpers.sh"
   chmod +x "$repo/bin/fm-test-run.sh"
   for script in \
     fm-brief.test.sh \
@@ -677,6 +839,7 @@ test_jobs_parallel_scheduler_and_failure_propagation() {
   d=tests/fm-supervision-instructions.test.sh
   mkdir -p "$repo/bin" "$repo/tests" "$evidence" "$fake_bin"
   cp "$RUNNER" "$runner"
+  cp "$ROOT/tests/environment-helpers.sh" "$repo/tests/environment-helpers.sh"
   cat >"$fake_bin/stat" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = "-c" ] && [ "$2" = "%a" ]; then
@@ -839,6 +1002,9 @@ assert len(doc["scripts"])==3
   pass "aggregate-json merges lane timing artifacts"
 }
 
+test_live_environment_isolation
+test_standalone_environment_setup
+test_standalone_pr_cleanup
 test_tmpdir_boundary
 test_list_all_exact_suite_coverage
 test_family_selection
