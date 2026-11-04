@@ -162,6 +162,47 @@ EOF
 
 test_spawn_requires_requirement_sources
 
+test_spawn_requirement_heading_boundaries() {
+  local rec home proj wt fakebin indent hashes separator heading out rc id n=0 failures=0
+  rec=$(make_completing_home requirement-headings)
+  IFS='|' read -r home proj wt fakebin <<EOF
+$rec
+EOF
+  for indent in '' ' ' '  ' '   '; do
+    for hashes in '#' '##'; do
+      for separator in ' Context' $'\tContext' ''; do
+        heading="$indent$hashes$separator"
+        n=$((n + 1)); id="heading-accepted-$n"
+        write_brief "$home" "$id" no-mistakes
+        printf '\n# Task\n## Requirements\n- Keep route north. [ticket: Keep route north.]\n%s\nContext needs no source tag.\n' "$heading" >> "$home/data/$id/brief.md"
+        rc=0
+        out=$(run_completing_spawn "$home" "$wt" "$fakebin" "$id" "$proj" claude --captain-pick claude --mode no-mistakes --yolo off) || rc=$?
+        if [ "$rc" -ne 0 ]; then
+          printf 'not ok - spawn refused ATX boundary %q: %s\n' "$heading" "$out" >&2
+          failures=$((failures + 1))
+          continue
+        fi
+        assert_contains "$out" "spawned $id" 'ATX boundary did not complete spawn'
+        assert_present "$home/state/$id.meta" 'ATX boundary did not record task'
+      done
+    done
+  done
+  for heading in '    ## Context' $'\t## Context' '### Context' '##Context' '\## Context' $'##\vContext' $'##\fContext'; do
+    n=$((n + 1)); id="heading-refused-$n"
+    write_brief "$home" "$id" no-mistakes
+    printf '\n# Task\n## Requirements\n- Keep route north. [ticket: Keep route north.]\n%s\nContext needs a source tag here.\n' "$heading" >> "$home/data/$id/brief.md"
+    rc=0
+    out=$(run_completing_spawn "$home" "$wt" "$fakebin" "$id" "$proj" claude --captain-pick claude --mode no-mistakes --yolo off) || rc=$?
+    [ "$rc" -ne 0 ] || fail "spawn accepted a non-boundary: $heading"
+    assert_contains "$out" 'Context needs a source tag here.' 'non-boundary ended requirement checking'
+    assert_absent "$home/state/$id.meta" 'non-boundary refusal created metadata'
+  done
+  [ "$failures" -eq 0 ] || fail "spawn refused $failures valid ATX boundaries"
+  pass 'fm-spawn: ATX boundaries end Requirements, while non-boundaries retain source checks'
+}
+
+test_spawn_requirement_heading_boundaries
+
 # A ship spawn must stop when its delivery contract was never decided or cannot be
 # a task mode, and must leave no task metadata behind when it does.
 test_ship_spawn_requires_a_valid_delivery_contract() {

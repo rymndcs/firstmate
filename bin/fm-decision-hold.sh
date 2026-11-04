@@ -397,7 +397,7 @@ command_resolve() {
     || fail "decision file exceeds 8192 bytes"
   printf '%s\n' "$decision" | LC_ALL=C awk '
     /^## Firstmate inference \(not approved\)$/ { inference = 1; next }
-    /^#( |# )/ { inference = 0 }
+    /^ {0,3}#{1,2}([ \t]|$)/ { inference = 0 }
     /^[[:space:]]*$/ { next }
     /^> Raymond [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]: "[^[:cntrl:]]*[^[:space:]"][^[:cntrl:]]*"[[:space:]]*$/ { quoted = 1; next }
     !inference {

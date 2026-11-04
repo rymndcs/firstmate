@@ -657,6 +657,52 @@ EOF
 
 test_resolution_separates_inference
 
+test_resolution_inference_heading_boundaries() {
+  local home hold before indent hashes separator heading show n=0 failures=0
+  for indent in '' ' ' '  ' '   '; do
+    for hashes in '#' '##'; do
+      for separator in ' Approved scope' $'\tApproved scope' ''; do
+        heading="$indent$hashes$separator"
+        n=$((n + 1)); home=$(make_home "inference-heading-$n")
+        write_origin_meta "$home" heading-origin
+        hold=$(run_decisions "$home" hold heading-origin route --title 'Choose route' --reason 'route pending')
+        tasks_in "$home" add heading-dependent 'Apply route' --kind ship --repo sample --blocked-by "$hold" >/dev/null
+        before=$(cat "$home/data/backlog.md")
+        printf '> Raymond 2026-11-04: "Use route north."\n\n## Firstmate inference (not approved)\nMaybe route south.\n\n%s\nAlso build route south.\n' "$heading" > "$home/decision.md"
+        if run_decisions "$home" resolve heading-origin route --decision-file "$home/decision.md" \
+          --routed-to heading-dependent > "$home/refused.out" 2>&1; then
+          printf 'not ok - resolution accepted work after ATX boundary %q\n' "$heading" >&2
+          failures=$((failures + 1))
+          continue
+        fi
+        assert_grep 'Also build route south.' "$home/refused.out" 'ATX refusal omitted the outside prose'
+        [ "$(cat "$home/data/backlog.md")" = "$before" ] || fail 'ATX refusal changed the backlog'
+        show=$(tasks_in "$home" show heading-dependent --full)
+        assert_contains "$show" 'blocked: yes' 'ATX refusal released the dependency'
+        show=$(tasks_in "$home" show "$hold" --full)
+        assert_contains "$show" 'state: queued' 'ATX refusal closed the decision'
+      done
+    done
+  done
+  for heading in '    ## Context' $'\t## Context' '### Context' '##Context' '\## Context' $'##\vContext' $'##\fContext'; do
+    n=$((n + 1)); home=$(make_home "inference-heading-$n")
+    write_origin_meta "$home" heading-origin
+    hold=$(run_decisions "$home" hold heading-origin route --title 'Choose route' --reason 'route pending')
+    tasks_in "$home" add heading-dependent 'Apply route' --kind ship --repo sample --blocked-by "$hold" >/dev/null
+    printf '> Raymond 2026-11-04: "Use route north."\n\n## Firstmate inference (not approved)\nMaybe route south.\n\n%s\nUnapproved context stays here.\n' "$heading" > "$home/decision.md"
+    run_decisions "$home" resolve heading-origin route --decision-file "$home/decision.md" \
+      --routed-to heading-dependent > "$home/accepted.out" 2>&1 || fail "resolution refused a non-boundary inside inference: $heading"
+    show=$(tasks_in "$home" show heading-dependent --full)
+    assert_contains "$show" 'blocked: no' 'valid inference did not release the dependency'
+    show=$(tasks_in "$home" show "$hold" --full)
+    assert_contains "$show" 'state: done' 'valid inference did not close the decision'
+  done
+  [ "$failures" -eq 0 ] || fail "resolution accepted work after $failures valid ATX boundaries"
+  pass 'resolution: ATX boundaries end inference, while non-boundaries retain it'
+}
+
+test_resolution_inference_heading_boundaries
+
 test_resolution_requires_attributed_quote
 
 test_uninventoried_report_decision_refuses_completion
