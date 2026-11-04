@@ -10,6 +10,9 @@ set -u
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 BEARINGS="$ROOT/bin/fm-bearings-snapshot.sh"
 TMP_ROOT=$(fm_test_tmproot fm-decision-hold)
+FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
+export HOME="$TMP_ROOT/os-home"
+mkdir -p "$HOME"
 TASKS_AXI_BIN=$(command -v tasks-axi || true)
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
@@ -594,6 +597,7 @@ test_resolution_requires_attributed_quote() {
   tasks_in "$home" add quote-dependent "Apply route" --kind ship --repo sample --blocked-by "$hold" >/dev/null
   before=$(cat "$home/data/backlog.md")
   for invalid in \
+    $'## Firstmate inference (not approved)\nUse route north.' \
     'Use route north.' \
     '> Someone 2026-11-04: "Use route north."' \
     '> Raymond: "Use route north."' \
@@ -609,11 +613,49 @@ test_resolution_requires_attributed_quote() {
     assert_grep 'quoted line attributed to Raymond' "$home/refused.out" "refusal must explain the quote format"
     [ "$(cat "$home/data/backlog.md")" = "$before" ] || fail "quote refusal changed the backlog"
   done
-  printf '# Decision\n\n> Raymond 2026-11-04: "Use route north."\n' > "$home/decision.md"
+  printf '> Raymond 2026-11-04: "Use route north."\n' > "$home/decision.md"
   run_decisions "$home" resolve quote-origin route --decision-file "$home/decision.md" \
     --routed-to quote-dependent >/dev/null || fail "valid attributed decision was refused"
   pass "resolution requires attributed quoted words before any backlog mutation"
 }
+
+test_resolution_separates_inference() {
+  local home hold before invalid
+  home=$(make_home inference)
+  write_origin_meta "$home" inference-origin
+  hold=$(run_decisions "$home" hold inference-origin route --title "Choose route" --reason "route pending")
+  tasks_in "$home" add inference-dependent "Apply route" --kind ship --repo sample --blocked-by "$hold" >/dev/null
+  before=$(cat "$home/data/backlog.md")
+  for invalid in \
+    'Also build route south.' \
+    '> Also build route south.' \
+    '# Decision' \
+    '## Firstmate inference' \
+    $'## Firstmate inference (not approved)\nMaybe route south.\n## Approved scope\nBuild route south.'; do
+    printf '> Raymond 2026-11-04: "Use route north."\n%s\n' "$invalid" > "$home/decision.md"
+    if run_decisions "$home" resolve inference-origin route --decision-file "$home/decision.md" \
+      --routed-to inference-dependent > "$home/refused.out" 2>&1; then
+      fail "resolution accepted unlabelled inference: $invalid"
+    fi
+    assert_grep 'line' "$home/refused.out" 'inference refusal must name the offending line'
+    assert_grep 'Firstmate inference (not approved)' "$home/refused.out" 'refusal must explain inference placement'
+    [ "$(cat "$home/data/backlog.md")" = "$before" ] || fail 'inference refusal changed the backlog'
+  done
+  cat > "$home/decision.md" <<'EOF'
+> Raymond 2026-11-04: "Use route north."
+> Raymond 2026-11-04: "Keep the scope here."
+
+## Firstmate inference (not approved)
+Route south might be useful later.
+### Context
+This is not approved work.
+EOF
+  run_decisions "$home" resolve inference-origin route --decision-file "$home/decision.md" \
+    --routed-to inference-dependent >/dev/null || fail 'labelled inference was refused'
+  pass 'resolution refuses inference outside its fixed unapproved section'
+}
+
+test_resolution_separates_inference
 
 test_resolution_requires_attributed_quote
 

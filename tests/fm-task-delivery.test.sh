@@ -23,6 +23,9 @@ SPAWN="$ROOT/bin/fm-spawn.sh"
 PROMOTE="$ROOT/bin/fm-promote.sh"
 PROJECT_MODE="$ROOT/bin/fm-project-mode.sh"
 TMP_ROOT=$(fm_test_tmproot fm-task-delivery)
+FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
+export HOME="$TMP_ROOT/os-home"
+mkdir -p "$HOME"
 
 # A home with one registered project, one project directory, and a fake tmux that
 # refuses, so a spawn that clears the delivery checks still creates nothing.
@@ -108,6 +111,56 @@ run_spawn() {  # <home> <fakebin> <spawn-args...>
     FM_SPAWN_NO_GUARD=1 FM_BACKEND=tmux PATH="$fakebin:$PATH" \
     "$SPAWN" "$@" 2>&1
 }
+
+test_spawn_requires_requirement_sources() {
+  local rec home proj wt fakebin line bad line_number out rc n=0 id
+  rec=$(make_completing_home requirement-sources)
+  IFS='|' read -r home proj wt fakebin <<EOF
+$rec
+EOF
+  for line in \
+    $'- Keep route north. [ticket: Keep route north.]\n- Add route south.' \
+    '- Add route south.' \
+    '- Add route south. [ticket: ]' \
+    '- Add route south. [Raymond 2026-11-04: ""]' \
+    '- Add route south. [Raymond yesterday: "Add route south."]' \
+    '- Add route south. [PR request: https://example.invalid/1]' \
+    '- Add route south. [ticket: Add route south.] extra'; do
+    n=$((n + 1)); id="requirements-refused-$n"
+    write_brief "$home" "$id" no-mistakes
+    printf '\n# Task\n## Requirements\n%s\n' "$line" >> "$home/data/$id/brief.md"
+    rc=0
+    out=$(run_completing_spawn "$home" "$wt" "$fakebin" "$id" "$proj" claude --captain-pick claude --mode no-mistakes --yolo off) || rc=$?
+    [ "$rc" -ne 0 ] || fail "spawn accepted unsourced requirement: $line"
+    bad=${line##*$'\n'}
+    line_number=8
+    case "$line" in *$'\n'*) line_number=9 ;; esac
+    assert_contains "$out" "$bad" 'refusal must name the offending requirement'
+    assert_contains "$out" "line $line_number" 'refusal must give the brief line number'
+    assert_absent "$home/state/$id.meta" 'refused requirement created task metadata'
+  done
+  for line in \
+    '- Add route north. [ticket: Add route north.]' \
+    '- Add route north. [Raymond 2026-11-04: "Add route north."]' \
+    '- Add route north. [PR request: https://example.invalid/1, approved by Raymond 2026-11-04]'; do
+    n=$((n + 1)); id="requirements-accepted-$n"
+    write_brief "$home" "$id" no-mistakes
+    printf '\n# Task\n## Requirements\n\n%s\n\n## Context\nContext needs no tag.\n# Setup\n## Requirements\nOutside the task section.\n' "$line" >> "$home/data/$id/brief.md"
+    out=$(run_completing_spawn "$home" "$wt" "$fakebin" "$id" "$proj" claude --captain-pick claude --mode no-mistakes --yolo off) \
+      || fail "spawn refused sourced requirement: $out"
+    assert_contains "$out" "spawned $id" 'sourced requirement did not complete spawn'
+    assert_present "$home/state/$id.meta" 'accepted requirement did not record task'
+  done
+  id=requirements-legacy
+  write_brief "$home" "$id" no-mistakes
+  printf '\n# Task\nBuild route north without a requirements heading.\n' >> "$home/data/$id/brief.md"
+  out=$(run_completing_spawn "$home" "$wt" "$fakebin" "$id" "$proj" claude --captain-pick claude --mode no-mistakes --yolo off) \
+    || fail "legacy brief changed behavior: $out"
+  assert_contains "$out" "spawned $id" 'legacy brief did not complete spawn'
+  pass 'fm-spawn: task requirements need source tags, while legacy briefs still launch'
+}
+
+test_spawn_requires_requirement_sources
 
 # A ship spawn must stop when its delivery contract was never decided or cannot be
 # a task mode, and must leave no task metadata behind when it does.

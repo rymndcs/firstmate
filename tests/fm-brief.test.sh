@@ -21,8 +21,37 @@ set -u
 . "$(dirname "${BASH_SOURCE[0]}")/review-policy-helpers.sh"
 
 TMP_ROOT=$(fm_test_tmproot fm-brief)
+FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
+export HOME="$TMP_ROOT/os-home"
+mkdir -p "$HOME"
 BRIEF_HOME="$TMP_ROOT/home"
 mkdir -p "$BRIEF_HOME/data"
+
+test_requirement_scaffold() {
+  local home kind id help task
+  home="$TMP_ROOT/requirements-home"
+  help=$("$ROOT/bin/fm-brief.sh" --help)
+  assert_contains "$help" '[ticket: <quote>]' 'help omitted ticket source tag'
+  assert_contains "$help" '[Raymond YYYY-MM-DD: "<quote>"]' 'help omitted dated quotation tag'
+  assert_contains "$help" '[PR request: <url>, approved by Raymond YYYY-MM-DD]' 'help omitted PR approval tag'
+  for kind in ship scout; do
+    id="requirements-$kind"
+    if [ "$kind" = ship ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" sample --mode local-only --checks targeted >/dev/null 2>&1 || fail 'ship scaffold failed'
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" sample --scout >/dev/null 2>&1 || fail 'scout scaffold failed'
+    fi
+    task=$(awk '
+      /^# Task$/ { inside = 1; next }
+      /^# / { inside = 0 }
+      inside { print }
+    ' "$home/data/$id/brief.md")
+    assert_contains "$task" $'## Requirements\n{TASK}' 'scaffold omitted task requirements heading'
+  done
+  pass 'fm-brief: ship and scout scaffold sourced task requirements'
+}
+
+test_requirement_scaffold
 
 # The script itself must always parse under the ambient bash. That is Bash 5 in
 # CI and locally, where the issue #958/#1069 parser bug does not fire, so this

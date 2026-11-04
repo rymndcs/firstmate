@@ -53,7 +53,7 @@ For worker model selection, recommend a model and wait for the captain's selecti
 ## Briefs
 
 `bin/fm-brief.sh` and its help own scaffold syntax, generated variants, status protocol, delivery-mode definitions of done, and exact safety mechanics.
-Use its scaffold as the contract, then replace every `{TASK}` placeholder with a clear task description, acceptance criteria, constraints, and necessary context before dispatch or seeding.
+Use its scaffold as the contract, then replace every `{TASK}` placeholder before dispatch or seeding; task requirements go under `## Requirements` with the ticket, dated quotation, or approved PR request source tags defined by `bin/fm-brief.sh --help`, and description and context go in a separate task subsection.
 Keep additions task-specific rather than repeating lifecycle instructions, and alter generated sections only when the task genuinely differs from the standard shape.
 
 If a ship task touches firstmate's shared tracked material, explicitly require `firstmate-coding-guidelines` before editing.
