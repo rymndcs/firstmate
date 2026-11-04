@@ -1167,6 +1167,10 @@ resolve_project_dir_arg() {
 resolve_project_pin() {
   local file="$CONFIG/project-harness-pins.json" common name candidate candidate_common pins project_abs
   [ -e "$file" ] || [ -L "$file" ] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "error: jq is required to read project harness/model pins in $file; install jq and retry" >&2
+    return 1
+  fi
   if ! pins=$(jq -cse 'select(length == 1) | .[0] | select(type == "object" and all(to_entries[];
       (.key | length > 0) and (.value | type == "string" and
         test("^(claude|codex|opencode|pi|pi-signed|grok|kimi)/[^[:space:]]+$") and
