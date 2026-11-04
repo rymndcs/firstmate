@@ -710,6 +710,10 @@ if ! BACKEND_TOOLS=$(fm_backend_required_tools "$BACKEND"); then
   BACKEND_VALID=0
   BACKEND_TOOLS=""
 fi
+if { [ -e "$CONFIG/project-harness-pins.json" ] || [ -L "$CONFIG/project-harness-pins.json" ]; } \
+  && ! fm_backend_list_contains "$BACKEND_TOOLS" jq; then
+  COMMON_TOOLS="$COMMON_TOOLS jq"
+fi
 TOOLS="$BACKEND_TOOLS $COMMON_TOOLS"
 NO_MISTAKES_MIN=1.31.2
 

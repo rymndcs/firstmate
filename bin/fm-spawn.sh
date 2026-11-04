@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> --captain-pick <harness>[/<model>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
-#        fm-spawn.sh <task-id> <project-dir> --scout --captain-pick <harness>[/<model>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> --captain-pick <harness>[/<model>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--project-pin-override <reason>]
+#        fm-spawn.sh <task-id> <project-dir> --scout --captain-pick <harness>[/<model>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] [--project-pin-override <reason>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --captain-pick is the captain's own runtime choice for THIS task and is
 #   REQUIRED on every ship and scout spawn; it is refused on --secondmate, whose
@@ -34,6 +34,18 @@
 #   note above: not being ambiently inheritable is the whole property. A caller
 #   that deliberately constructs the argument per invocation still matches, and
 #   that is out of scope for the same reason --captain-pick is self-attested.
+#   Optional project harness/model pins are configured in
+#   config/project-harness-pins.json (docs/configuration.md owns its schema).
+#   Ship/scout spawns check both --captain-pick and the resolved harness/model
+#   against the registered project's pin before any endpoint or worktree launch.
+#   --project-pin-override <reason> permits a different per-task choice only when
+#   explicitly requested, with a nonblank single-line reason. It does not bypass
+#   the agreement between --captain-pick and the actual launch. Raw launch commands
+#   require this override when a pin applies because their model is unverifiable.
+#   Metadata records project_pin_project= and project_pin= when a pin applies,
+#   and project_pin_override_reason= whenever the override is supplied. Re-spawns
+#   must supply the override again; it is never inherited from task metadata.
+#   A batch forwards the override and its reason to every pair.
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
 #   spawn and refused on --scout and --secondmate spawns. Firstmate resolves both
 #   per task at intake (AGENTS.md section 7); data/projects.md holds the captain's
@@ -282,6 +294,10 @@ fm_refuse_if_gate_agent
 KIND=ship
 HARNESS_ARG=
 CAPTAIN_PICK=
+PROJECT_PIN_OVERRIDE=
+PROJECT_PIN_OVERRIDE_SET=0
+PROJECT_PIN=
+PROJECT_PIN_PROJECT=
 MODEL=
 EFFORT=
 BACKEND_ARG=
@@ -309,6 +325,7 @@ for a in "$@"; do
     case "$want_value" in
       harness) HARNESS_ARG=$a; HARNESS_SET=1 ;;
       captain-pick) CAPTAIN_PICK=$a; CAPTAIN_PICK_SET=1 ;;
+      project-pin-override) PROJECT_PIN_OVERRIDE=$a; PROJECT_PIN_OVERRIDE_SET=1 ;;
       model) MODEL=$a; MODEL_SET=1 ;;
       effort) EFFORT=$a; EFFORT_SET=1 ;;
       backend) BACKEND_ARG=$a; BACKEND_SET=1 ;;
@@ -327,6 +344,8 @@ for a in "$@"; do
     --harness=*) HARNESS_ARG=${a#--harness=}; HARNESS_SET=1 ;;
     --captain-pick) want_value=captain-pick ;;
     --captain-pick=*) CAPTAIN_PICK=${a#--captain-pick=}; CAPTAIN_PICK_SET=1 ;;
+    --project-pin-override) want_value='project-pin-override' ;;
+    --project-pin-override=*) PROJECT_PIN_OVERRIDE=${a#--project-pin-override=}; PROJECT_PIN_OVERRIDE_SET=1 ;;
     --model) want_value=model ;;
     --model=*) MODEL=${a#--model=}; MODEL_SET=1 ;;
     --effort) want_value=effort ;;
@@ -356,6 +375,13 @@ done
 [ "$MODE_SET" -eq 0 ] || [ -n "$MODE" ] || { echo "error: --mode requires a non-empty value" >&2; exit 1; }
 [ "$YOLO_SET" -eq 0 ] || [ -n "$YOLO" ] || { echo "error: --yolo requires a non-empty value" >&2; exit 1; }
 [ "$TRACEPARENT_SET" -eq 0 ] || [ -n "$TRACEPARENT_ARG" ] || { echo "error: --traceparent requires a non-empty value" >&2; exit 1; }
+if [ "$PROJECT_PIN_OVERRIDE_SET" -eq 1 ]; then
+  if [ "$KIND" = secondmate ] || [ -z "${PROJECT_PIN_OVERRIDE//[[:space:]]/}" ] \
+    || [[ "$PROJECT_PIN_OVERRIDE" == *$'\n'* || "$PROJECT_PIN_OVERRIDE" == *$'\r'* ]]; then
+    echo "error: --project-pin-override requires a nonblank single-line reason and applies only to ship and scout spawns" >&2
+    exit 1
+  fi
+fi
 # A parent-delivered carrier replaces this home's own resolution, so it is
 # refused unless it is a secondmate spawn carrying a strictly valid W3C value.
 # Nothing else may reach the pane's TRACEPARENT export.
@@ -874,6 +900,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   # match. Each pair re-execs through the same refusal, so a batch can never
   # launch a pair the captain was not presented a runtime choice for.
   [ "$CAPTAIN_PICK_SET" -eq 0 ] || shared_args+=(--captain-pick "$CAPTAIN_PICK")
+  [ "$PROJECT_PIN_OVERRIDE_SET" -eq 0 ] || shared_args+=(--project-pin-override "$PROJECT_PIN_OVERRIDE")
   [ -z "$MODEL" ] || shared_args+=(--model "$MODEL")
   [ -z "$EFFORT" ] || shared_args+=(--effort "$EFFORT")
   [ -z "$BACKEND_ARG" ] || shared_args+=(--backend "$BACKEND_ARG")
@@ -1129,6 +1156,64 @@ if [ "$HARNESS" = pi-signed ] && ! command -v pi-signed >/dev/null 2>&1; then
   exit 1
 fi
 
+resolve_project_dir_arg() {
+  local path=$1
+  case "$path" in
+    projects/*) printf '%s/%s\n' "$PROJECTS" "${path#projects/}" ;;
+    *) printf '%s\n' "$path" ;;
+  esac
+}
+
+resolve_project_pin() {
+  local file="$CONFIG/project-harness-pins.json" common name candidate candidate_common pins project_abs
+  [ -e "$file" ] || [ -L "$file" ] || return 0
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "error: jq is required to read project harness/model pins in $file; install jq and retry" >&2
+    return 1
+  fi
+  if ! pins=$(jq -cse 'select(length == 1) | .[0] | select(type == "object" and all(to_entries[];
+      (.key | length > 0) and (.value | type == "string" and
+        test("^(claude|codex|opencode|pi|pi-signed|grok|kimi)/[^[:space:]]+$") and
+        (split("/")[1] != "default"))))' "$file" 2>/dev/null); then
+    echo "error: invalid project harness/model pins in $file; expected a JSON object mapping project names to harness/model values" >&2
+    return 1
+  fi
+  project_abs="$(cd "$(resolve_project_dir_arg "$PROJ")" && pwd)" || return 1
+  common=$(git -C "$project_abs" rev-parse --path-format=absolute --git-common-dir) || return 1
+  common=$(cd "$common" && pwd -P) || return 1
+  if [ -f "$DATA/projects.md" ]; then
+    while IFS= read -r name; do
+      candidate="$PROJECTS/$name"
+      if [ "$name" = ai-workspace ] && [ ! -d "$candidate" ]; then
+        candidate=$FM_HOME
+      fi
+      candidate_common=$(git -C "$candidate" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || continue
+      candidate_common=$(cd "$candidate_common" && pwd -P) || continue
+      if [ "$common" = "$candidate_common" ]; then
+        PROJECT_PIN_PROJECT=$name
+        break
+      fi
+    done < <(awk '$1 == "-" { print $2 }' "$DATA/projects.md")
+  fi
+  if [ -z "$PROJECT_PIN_PROJECT" ]; then
+    echo "error: cannot resolve registered project for $project_abs with $file active; check data/projects.md and projects/" >&2
+    return 1
+  fi
+  PROJECT_PIN=$(printf '%s\n' "$pins" | jq -r --arg project "$PROJECT_PIN_PROJECT" '.[$project] // .["*"] // empty')
+  [ -n "$PROJECT_PIN" ] || return 0
+  if [ "$PROJECT_PIN_OVERRIDE_SET" -eq 0 ]; then
+    if [ "$CAPTAIN_PICK" != "$PROJECT_PIN" ] || [ "$HARNESS/$MODEL" != "$PROJECT_PIN" ] \
+      || [[ "$ARG3" == *' '* ]]; then
+      echo "error: project '$PROJECT_PIN_PROJECT' is pinned to '$PROJECT_PIN' in $file; --captain-pick and the launch harness/model must match it using a built-in adapter, or pass --project-pin-override with the explicit per-task reason" >&2
+      return 1
+    fi
+  fi
+}
+
+if [ "$KIND" != secondmate ]; then
+  resolve_project_pin || exit 1
+fi
+
 # The captain's pick, checked against the runtime this spawn will actually
 # launch. Presence alone would only prove the flag was typed; matching is what
 # closes "presented DeepSeek, spawned Claude". Same shape as the brief's
@@ -1287,14 +1372,6 @@ resolved_existing_dir() {
   local path=$1
   [ -d "$path" ] || { echo "error: firstmate home does not exist or is not a directory: $path" >&2; return 1; }
   cd "$path" && pwd -P
-}
-
-resolve_project_dir_arg() {
-  local path=$1
-  case "$path" in
-    projects/*) printf '%s/%s\n' "$PROJECTS" "${path#projects/}" ;;
-    *) printf '%s\n' "$path" ;;
-  esac
 }
 
 path_is_ancestor_of() {
@@ -2437,6 +2514,10 @@ esac
   echo "tasktmp=$TASK_TMP"
   echo "model=${MODEL:-default}"
   echo "effort=${EFFORT:-default}"
+  if [ -n "$PROJECT_PIN" ]; then
+    printf 'project_pin_project=%s\nproject_pin=%s\n' "$PROJECT_PIN_PROJECT" "$PROJECT_PIN"
+  fi
+  [ "$PROJECT_PIN_OVERRIDE_SET" -eq 0 ] || printf 'project_pin_override_reason=%s\n' "$PROJECT_PIN_OVERRIDE"
   [ -z "$DISPATCH_READING" ] || echo "dispatch_reading=$DISPATCH_READING"
   [ -z "${BUSY_GEN:-}" ] || echo "busy_gen=$BUSY_GEN"
   # Default-off writes no traceparent= line (meta stays byte-identical).

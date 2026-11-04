@@ -566,6 +566,37 @@ test_unknown_backend_reports_invalid_configuration() {
   pass "bootstrap: unknown resolved backends fail closed with an actionable diagnostic"
 }
 
+test_project_pins_require_jq() {
+  local configured case_dir fakebin bash_env out
+  for configured in absent present dangling; do
+    case_dir="$TMP_ROOT/project-pins-jq-$configured"
+    mkdir -p "$case_dir/home/config"
+    printf '%s\n' tmux > "$case_dir/home/config/backend"
+    if [ "$configured" = present ]; then
+      printf '%s\n' '{"*":"claude/opus"}' > "$case_dir/home/config/project-harness-pins.json"
+    elif [ "$configured" = dangling ]; then
+      ln -s missing-pins.json "$case_dir/home/config/project-harness-pins.json"
+    fi
+    fakebin=$(make_fake_toolchain "$case_dir")
+    bash_env="$case_dir/no-jq.bash"
+    cat > "$bash_env" <<'SH'
+command() {
+  if [ "${1:-}" = -v ] && [ "${2:-}" = jq ]; then return 1; fi
+  builtin command "$@"
+}
+jq() { return 127; }
+SH
+    out=$(PATH="$fakebin:$BASE_PATH" BASH_ENV="$bash_env" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
+      FM_BOOTSTRAP_DETECT_ONLY=1 FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
+    if [ "$configured" != absent ]; then
+      assert_contains "$out" 'MISSING: jq (install:' 'pin-only tmux home must report missing jq'
+    else
+      [ -z "$out" ] || fail "absent pins must preserve bootstrap silence: $out"
+    fi
+  done
+  pass 'bootstrap requires jq for project pins and preserves no-pin tmux homes'
+}
+
 test_json_backends_require_jq_not_tmux() {
   local backend case_dir fakebin bash_env out
   # herdr/zellij/cmux parse their backend's JSON output, so jq is a genuine dep.
@@ -578,6 +609,7 @@ test_json_backends_require_jq_not_tmux() {
     mkdir -p "$case_dir/home/config"
     printf '%s\n' manual > "$case_dir/home/config/backlog-backend"
     printf '%s\n' "$backend" > "$case_dir/home/config/backend"
+    printf '%s\n' '{"*":"claude/opus"}' > "$case_dir/home/config/project-harness-pins.json"
     # Session CLI present, tmux absent, jq deliberately NOT stubbed and masked below.
     fakebin=$(make_fake_toolchain "$case_dir")
     rm -f "$fakebin/tmux"
@@ -597,6 +629,7 @@ SH
     out=$(PATH="$fakebin:$BASE_PATH" BASH_ENV="$bash_env" FM_HOME="$case_dir/home" FM_ROOT_OVERRIDE="$case_dir/home" \
       FM_FAKE_TREEHOUSE_LEASE_HELP=1 "$ROOT/bin/fm-bootstrap.sh")
     assert_contains "$out" "MISSING: jq" "backend=$backend must fail closed on missing jq"
+    [ "$(printf '%s\n' "$out" | grep -c 'MISSING: jq')" = 1 ] || fail 'active pins duplicated backend jq diagnostics'
     assert_not_contains "$out" "MISSING: tmux" "backend=$backend must not demand tmux when jq is missing"
   done <<'ROWS'
 herdr
@@ -889,6 +922,7 @@ test_session_provider_backends_gate_own_cli_not_tmux
 test_herdr_install_requires_manual_action
 test_cmux_bundled_cli_satisfies_dependency
 test_unknown_backend_reports_invalid_configuration
+test_project_pins_require_jq
 test_json_backends_require_jq_not_tmux
 test_treehouse_lease_check_follows_resolved_backend
 test_fleet_sync_timeout_scales_with_origin_backed_project_count
