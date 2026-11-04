@@ -255,7 +255,7 @@ An explicit `--model` or `--effort` overrides the matching token from `config/se
 Remote secondmate routes accept verified harness adapters only and reject raw launch commands.
 When `config/crew-dispatch.json` exists, crewmate and scout spawns require an explicit resolved harness instead of automatically falling back to `config/crew-harness`.
 The inherited-local-material contract is owned by [`secondmate-provisioning`](../.agents/skills/secondmate-provisioning/SKILL.md); its harness-relevant consequence is that a secondmate's own crewmates use the primary's dispatch profiles and static harness value.
-Those inherited values are defaults and rules only; `fm-spawn` still permits a consciously chosen explicit runtime outside the config.
+Those inherited values remain defaults and rules; the optional project pin below governs explicit runtime choices when configured.
 `config/secondmate-harness` is not inherited because secondmates do not launch secondmates.
 For grok, `fm-spawn.sh` installs one firstmate-owned global turn-end hook under `$GROK_HOME/hooks/`, or `~/.grok/hooks/` when `GROK_HOME` is unset, and drops a per-task `.fm-grok-turnend` pointer in the worktree, with teardown removing the task token and pointer.
 For Kimi crews, `fm-spawn.sh` runs `fm-kimi-turnend-hook.sh install`, drops a per-task `.fm-kimi-turnend` pointer in the worktree, and records the matching private registry token for teardown.
@@ -263,6 +263,19 @@ Kimi continues to use the captain's normal Kimi home, including the existing con
 The Kimi installer requires an existing regular non-symlink `~/.kimi-code/config.toml`, `python3` with `tomllib`, and `jq`; it validates but never serializes the captain's TOML and refuses before writing when the config is missing, malformed, or surprising or when either tool requirement is unavailable.
 Its `remove` action excises only the marker-delimited Firstmate region and removes Firstmate's hook files.
 For Pi and pi-signed secondmate launches, `fm-spawn.sh` starts the selected executable with `-e` pointed at the secondmate home's own tracked `.pi/extensions/fm-primary-pi-watch.ts` and `.pi/extensions/fm-primary-turnend-guard.ts`, both already present from the secondmate home's git worktree.
+
+## Project harness/model pins (config/project-harness-pins.json)
+
+`config/project-harness-pins.json` is an optional private, gitignored JSON object under the effective `FM_HOME`, or `FM_CONFIG_OVERRIDE` when supplied.
+Each key is a project name registered in `data/projects.md`, and each value is one allowed `<harness>/<model>` string using a verified crew adapter and a concrete model rather than `default`.
+The optional `*` key applies to every project without an explicit entry.
+For example, `{"web":"claude/sonnet","*":"codex/gpt-6.1-sol"}` pins `web` separately and supplies a default for other registered projects.
+A project's identity comes from the registered clone under `projects/<name>` and its shared Git directory, so source aliases and task worktrees retain the registered name; the registered `ai-workspace` project also resolves through the operational home when its clone is absent.
+With this file present, an invalid mapping or a source that cannot be identified in the registry refuses ship and scout spawns.
+An absent file preserves existing behavior, and a registered project with neither an explicit entry nor `*` has no pin.
+Persistent secondmate launches are exempt, and this file is local to each home rather than automatically inherited.
+[`bin/fm-spawn.sh --help`](../bin/fm-spawn.sh) owns launch agreement, the explicit per-task override and required reason, batch forwarding, and the metadata audit fields.
+Verification: `bin/fm-test-run.sh tests/fm-spawn-project-pin.test.sh`.
 
 ## Crew dispatch profiles (config/crew-dispatch.json)
 
