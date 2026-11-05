@@ -703,6 +703,35 @@ test_resolution_inference_heading_boundaries() {
 
 test_resolution_inference_heading_boundaries
 
+test_resolution_inference_without_awk_intervals() {
+  local home hold before show mawk_bin
+  mawk_bin=$(command -v mawk || true)
+  [ -n "$mawk_bin" ] || { echo "skip: mawk not found for the interval-free awk case"; return 0; }
+  home=$(make_home inference-no-intervals)
+  printf '#!/bin/sh\nexec "%s" -W traditional "$@"\n' "$mawk_bin" > "$home/fakebin/awk"
+  chmod +x "$home/fakebin/awk"
+  write_origin_meta "$home" no-intervals-origin
+  hold=$(run_decisions "$home" hold no-intervals-origin route --title 'Choose route' --reason 'route pending')
+  tasks_in "$home" add no-intervals-dependent 'Apply route' --kind ship --repo sample --blocked-by "$hold" >/dev/null
+  before=$(cat "$home/data/backlog.md")
+  printf '> Raymond 2026-11-04: "Use route north."\n\n## Firstmate inference (not approved)\nMaybe route south.\n\n   ## Approved scope\nAlso build route south.\n' > "$home/decision.md"
+  if run_decisions "$home" resolve no-intervals-origin route --decision-file "$home/decision.md" \
+    --routed-to no-intervals-dependent > "$home/refused.out" 2>&1; then
+    fail 'resolution under interval-free awk accepted work after an ATX boundary'
+  fi
+  assert_grep 'Also build route south.' "$home/refused.out" 'interval-free awk refusal omitted the outside prose'
+  [ "$(cat "$home/data/backlog.md")" = "$before" ] || fail 'interval-free awk refusal changed the backlog'
+  printf '> Raymond 2026-11-04: "Use route north."\n\n## Firstmate inference (not approved)\nMaybe route south.\n### Context\nUnapproved context stays here.\n' > "$home/decision.md"
+  run_decisions "$home" resolve no-intervals-origin route --decision-file "$home/decision.md" \
+    --routed-to no-intervals-dependent > "$home/accepted.out" 2>&1 \
+    || fail "resolution under interval-free awk refused a valid inference section: $(cat "$home/accepted.out")"
+  show=$(tasks_in "$home" show no-intervals-dependent --full)
+  assert_contains "$show" 'blocked: no' 'interval-free awk resolution did not release the dependency'
+  pass 'resolution: inference boundaries hold under an awk without interval expressions'
+}
+
+test_resolution_inference_without_awk_intervals
+
 test_resolution_requires_attributed_quote
 
 test_uninventoried_report_decision_refuses_completion

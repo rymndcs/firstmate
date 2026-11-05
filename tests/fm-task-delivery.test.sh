@@ -203,6 +203,35 @@ EOF
 
 test_spawn_requirement_heading_boundaries
 
+test_spawn_requirement_sources_without_awk_intervals() {
+  local rec home proj wt fakebin mawk_bin out rc id
+  mawk_bin=$(command -v mawk || true)
+  [ -n "$mawk_bin" ] || { echo "skip: mawk not found for the interval-free awk case"; return 0; }
+  rec=$(make_completing_home requirement-no-intervals)
+  IFS='|' read -r home proj wt fakebin <<EOF
+$rec
+EOF
+  printf '#!/bin/sh\nexec "%s" -W traditional "$@"\n' "$mawk_bin" > "$fakebin/awk"
+  chmod +x "$fakebin/awk"
+  id=no-intervals-refused
+  write_brief "$home" "$id" no-mistakes
+  printf '\n# Task\n## Requirements\n- Add route south.\n' >> "$home/data/$id/brief.md"
+  rc=0
+  out=$(run_completing_spawn "$home" "$wt" "$fakebin" "$id" "$proj" claude --captain-pick claude --mode no-mistakes --yolo off) || rc=$?
+  [ "$rc" -ne 0 ] || fail 'spawn under interval-free awk accepted an unsourced requirement'
+  assert_contains "$out" '- Add route south.' 'interval-free awk refusal must name the requirement'
+  assert_absent "$home/state/$id.meta" 'interval-free awk refusal created task metadata'
+  id=no-intervals-accepted
+  write_brief "$home" "$id" no-mistakes
+  printf '\n# Task\n## Requirements\n- Keep route north. [ticket: Keep route north.]\n   ## Context\nContext needs no source tag.\n' >> "$home/data/$id/brief.md"
+  out=$(run_completing_spawn "$home" "$wt" "$fakebin" "$id" "$proj" claude --captain-pick claude --mode no-mistakes --yolo off) \
+    || fail "spawn under interval-free awk refused a valid boundary: $out"
+  assert_contains "$out" "spawned $id" 'interval-free awk boundary did not complete spawn'
+  pass 'fm-spawn: requirement source checks hold under an awk without interval expressions'
+}
+
+test_spawn_requirement_sources_without_awk_intervals
+
 # A ship spawn must stop when its delivery contract was never decided or cannot be
 # a task mode, and must leave no task metadata behind when it does.
 test_ship_spawn_requires_a_valid_delivery_contract() {

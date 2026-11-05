@@ -1552,8 +1552,8 @@ LC_ALL=C awk '
     pr = "\\[PR request: [^,[:space:]]+, approved by Raymond " date "\\]"
     tag = "(" ticket "|" quote "|" pr ")[[:space:]]*$"
   }
-  /^ {0,3}#([ \t]|$)/ { task = ($0 == "# Task"); requirements = 0; next }
-  task && /^ {0,3}##([ \t]|$)/ { requirements = ($0 == "## Requirements"); next }
+  /^ ? ? ?#([ \t]|$)/ { task = ($0 == "# Task"); requirements = 0; next }
+  task && /^ ? ? ?##([ \t]|$)/ { requirements = ($0 == "## Requirements"); next }
   task && requirements && /[^[:space:]]/ && $0 !~ tag {
     printf "error: brief %s line %d: requirement needs a source tag: %s\n", FILENAME, FNR, $0
     failed = 1
