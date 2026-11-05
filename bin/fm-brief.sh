@@ -2,10 +2,17 @@
 # Scaffold a crewmate brief or persistent secondmate charter at
 # data/<task-id>/brief.md under the active firstmate home.
 # For ordinary tasks, the standard Setup/Rules/Definition-of-done contract is
-# filled in. Firstmate then replaces the {TASK} placeholder with the task
-# description, acceptance criteria, and context, and may adjust other sections
-# when the task genuinely deviates (e.g. working an existing external PR instead
-# of shipping a new one).
+# filled in. Replace {TASK} under # Task / ## Requirements with requirement
+# lines; put description and context in a separate task subsection. Every nonblank
+# requirement line must end with one source tag:
+#   [ticket: <quote>]
+#   [Raymond YYYY-MM-DD: "<quote>"]
+#   [PR request: <url>, approved by Raymond YYYY-MM-DD]
+# Quotes must be nonblank, dates use YYYY-MM-DD, and a PR request needs approval.
+# bin/fm-spawn.sh refuses an unsourced line, naming its line number and text,
+# until the next level-1 or level-2 heading. Briefs without ## Requirements in
+# # Task keep their existing behavior. Adjust other scaffold sections only when
+# the task genuinely deviates (e.g. working an existing external PR).
 # Usage: fm-brief.sh <task-id> <repo-name> --mode <no-mistakes|direct-PR|local-only> --checks <full|targeted> [--branch <name>] [--herdr-lab]
 #        fm-brief.sh <task-id> <repo-name> --scout [--herdr-lab]
 #        fm-brief.sh <task-id> --secondmate {<project>...|--no-projects}
@@ -492,6 +499,7 @@ cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task
+## Requirements
 {TASK}
 
 $LOCAL_RULES_SECTION
@@ -662,6 +670,7 @@ cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
 
 # Task
+## Requirements
 {TASK}
 
 $LOCAL_RULES_SECTION

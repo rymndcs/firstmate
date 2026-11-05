@@ -69,6 +69,8 @@
 #   fm-brief.sh embeds, while recording no branch is an intake gap, since
 #   bin/fm-linear.sh resolves the issue from the recorded branch alone: the
 #   spawn proceeds untouched and says so loudly on stderr.
+#   Requirement source tags follow bin/fm-brief.sh --help and are checked in the
+#   task section before any endpoint is created, for ship and scout briefs alike.
 #   --harness <name> is the explicit per-spawn harness/profile adapter. The old
 #   positional harness arg still works for back-compat.
 #   --model <name> and --effort <low|medium|high|xhigh|max> are concrete profile
@@ -1541,6 +1543,23 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
+
+LC_ALL=C awk '
+  BEGIN {
+    date = "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]"
+    ticket = "\\[ticket: [^[:cntrl:]]*[^[:space:]]\\]"
+    quote = "\\[Raymond " date ": \"[^[:cntrl:]]*[^[:space:]\"][^[:cntrl:]]*\"\\]"
+    pr = "\\[PR request: [^,[:space:]]+, approved by Raymond " date "\\]"
+    tag = "(" ticket "|" quote "|" pr ")[[:space:]]*$"
+  }
+  /^ ? ? ?#([ \t]|$)/ { task = ($0 == "# Task"); requirements = 0; next }
+  task && /^ ? ? ?##([ \t]|$)/ { requirements = ($0 == "## Requirements"); next }
+  task && requirements && /[^[:space:]]/ && $0 !~ tag {
+    printf "error: brief %s line %d: requirement needs a source tag: %s\n", FILENAME, FNR, $0
+    failed = 1
+  }
+  END { exit failed }
+' "$BRIEF" >&2 || exit 1
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in

@@ -33,6 +33,9 @@ MERGE_LOCAL="$ROOT/bin/fm-merge-local.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
 LINEAR_BRANCH=rcs/rac-125-select2-font-size
 TMP_ROOT=$(fm_test_tmproot fm-linear-tests)
+FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
+export HOME="$TMP_ROOT/os-home"
+mkdir -p "$HOME"
 
 # A key shaped like a real one, so the "never printed" assertions are meaningful.
 API_KEY=lin_api_TESTKEY0000000000000000
@@ -873,7 +876,7 @@ make_rules_spawn_home() {  # <name> <task-id> <task> [<note>]
   FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "$id" "$fixture_home/project" \
     --mode no-mistakes --checks targeted > /dev/null 2>&1
   brief="$fixture_home/data/$id/brief.md"
-  awk -v task="$task" '$0 == "{TASK}" { print task; next } { print }' "$brief" > "$brief.tmp"
+  awk -v task="$task [ticket: $task]" '$0 == "{TASK}" { print task; next } { print }' "$brief" > "$brief.tmp"
   [ -z "$note" ] || printf '%s\n' "$note" >> "$brief.tmp"
   mv "$brief.tmp" "$brief"
   assert_grep 'SWVL-7005' "$brief" "$name: the generated brief did not embed the personal rules"

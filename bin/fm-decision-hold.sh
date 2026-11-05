@@ -37,6 +37,9 @@
 #
 # `resolve` requires at least one nonblank quoted line in the decision file:
 #   > Raymond YYYY-MM-DD: "exact words"
+# Outside the exact heading `## Firstmate inference (not approved)`, every
+# nonblank line must use that dated quotation format; titles and other prose
+# belong inside the inference section. A new level-1 or level-2 heading ends it.
 # This verifies attribution format, not the authenticity or meaning of the quote.
 # Every --routed-to task must exist and be blocked by the hold.
 # It writes the captain decision and routed identities into the hold body, clears
@@ -392,8 +395,20 @@ command_resolve() {
   [ -n "$decision" ] || fail "decision file must not be empty"
   [ "$(printf '%s' "$decision" | LC_ALL=C wc -c | tr -d ' ')" -le 8192 ] \
     || fail "decision file exceeds 8192 bytes"
-  printf '%s\n' "$decision" | LC_ALL=C grep -Eq '^> Raymond [0-9]{4}-[0-9]{2}-[0-9]{2}: "[^[:cntrl:]]*[^[:space:]"][^[:cntrl:]]*"[[:space:]]*$' \
-    || fail 'decision file needs a quoted line attributed to Raymond: > Raymond YYYY-MM-DD: "exact words"'
+  printf '%s\n' "$decision" | LC_ALL=C awk '
+    /^## Firstmate inference \(not approved\)$/ { inference = 1; next }
+    /^ ? ? ?##?([ \t]|$)/ { inference = 0 }
+    /^[[:space:]]*$/ { next }
+    /^> Raymond [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]: "[^[:cntrl:]]*[^[:space:]"][^[:cntrl:]]*"[[:space:]]*$/ { quoted = 1; next }
+    !inference {
+      printf "decision file line %d has non-quote content outside ## Firstmate inference (not approved): %s\n", NR, $0
+      failed = 1
+    }
+    END {
+      if (!quoted) print "decision file needs a quoted line attributed to Raymond: > Raymond YYYY-MM-DD: \"exact words\""
+      exit (failed || !quoted)
+    }
+  ' >&2 || fail 'decision file must follow the quotation and inference-section format'
   [ -n "$routed" ] || fail "at least one --routed-to task is required"
   routed=$(printf '%s\n' "$routed" | tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort -u | paste -sd' ' -)
   routed_csv=$(printf '%s\n' "$routed" | tr ' ' ',')

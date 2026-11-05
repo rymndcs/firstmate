@@ -10,6 +10,9 @@ set -u
 TEARDOWN="$ROOT/bin/fm-teardown.sh"
 BEARINGS="$ROOT/bin/fm-bearings-snapshot.sh"
 TMP_ROOT=$(fm_test_tmproot fm-decision-hold)
+FM_TEST_CLEANUP_DIRS+=("$TMP_ROOT")
+export HOME="$TMP_ROOT/os-home"
+mkdir -p "$HOME"
 TASKS_AXI_BIN=$(command -v tasks-axi || true)
 
 command -v jq >/dev/null 2>&1 || { echo "skip: jq not found"; exit 0; }
@@ -594,6 +597,7 @@ test_resolution_requires_attributed_quote() {
   tasks_in "$home" add quote-dependent "Apply route" --kind ship --repo sample --blocked-by "$hold" >/dev/null
   before=$(cat "$home/data/backlog.md")
   for invalid in \
+    $'## Firstmate inference (not approved)\nUse route north.' \
     'Use route north.' \
     '> Someone 2026-11-04: "Use route north."' \
     '> Raymond: "Use route north."' \
@@ -609,11 +613,124 @@ test_resolution_requires_attributed_quote() {
     assert_grep 'quoted line attributed to Raymond' "$home/refused.out" "refusal must explain the quote format"
     [ "$(cat "$home/data/backlog.md")" = "$before" ] || fail "quote refusal changed the backlog"
   done
-  printf '# Decision\n\n> Raymond 2026-11-04: "Use route north."\n' > "$home/decision.md"
+  printf '> Raymond 2026-11-04: "Use route north."\n' > "$home/decision.md"
   run_decisions "$home" resolve quote-origin route --decision-file "$home/decision.md" \
     --routed-to quote-dependent >/dev/null || fail "valid attributed decision was refused"
   pass "resolution requires attributed quoted words before any backlog mutation"
 }
+
+test_resolution_separates_inference() {
+  local home hold before invalid
+  home=$(make_home inference)
+  write_origin_meta "$home" inference-origin
+  hold=$(run_decisions "$home" hold inference-origin route --title "Choose route" --reason "route pending")
+  tasks_in "$home" add inference-dependent "Apply route" --kind ship --repo sample --blocked-by "$hold" >/dev/null
+  before=$(cat "$home/data/backlog.md")
+  for invalid in \
+    'Also build route south.' \
+    '> Also build route south.' \
+    '# Decision' \
+    '## Firstmate inference' \
+    $'## Firstmate inference (not approved)\nMaybe route south.\n## Approved scope\nBuild route south.'; do
+    printf '> Raymond 2026-11-04: "Use route north."\n%s\n' "$invalid" > "$home/decision.md"
+    if run_decisions "$home" resolve inference-origin route --decision-file "$home/decision.md" \
+      --routed-to inference-dependent > "$home/refused.out" 2>&1; then
+      fail "resolution accepted unlabelled inference: $invalid"
+    fi
+    assert_grep 'line' "$home/refused.out" 'inference refusal must name the offending line'
+    assert_grep 'Firstmate inference (not approved)' "$home/refused.out" 'refusal must explain inference placement'
+    [ "$(cat "$home/data/backlog.md")" = "$before" ] || fail 'inference refusal changed the backlog'
+  done
+  cat > "$home/decision.md" <<'EOF'
+> Raymond 2026-11-04: "Use route north."
+> Raymond 2026-11-04: "Keep the scope here."
+
+## Firstmate inference (not approved)
+Route south might be useful later.
+### Context
+This is not approved work.
+EOF
+  run_decisions "$home" resolve inference-origin route --decision-file "$home/decision.md" \
+    --routed-to inference-dependent >/dev/null || fail 'labelled inference was refused'
+  pass 'resolution refuses inference outside its fixed unapproved section'
+}
+
+test_resolution_separates_inference
+
+test_resolution_inference_heading_boundaries() {
+  local home hold before indent hashes separator heading show n=0 failures=0
+  for indent in '' ' ' '  ' '   '; do
+    for hashes in '#' '##'; do
+      for separator in ' Approved scope' $'\tApproved scope' ''; do
+        heading="$indent$hashes$separator"
+        n=$((n + 1)); home=$(make_home "inference-heading-$n")
+        write_origin_meta "$home" heading-origin
+        hold=$(run_decisions "$home" hold heading-origin route --title 'Choose route' --reason 'route pending')
+        tasks_in "$home" add heading-dependent 'Apply route' --kind ship --repo sample --blocked-by "$hold" >/dev/null
+        before=$(cat "$home/data/backlog.md")
+        printf '> Raymond 2026-11-04: "Use route north."\n\n## Firstmate inference (not approved)\nMaybe route south.\n\n%s\nAlso build route south.\n' "$heading" > "$home/decision.md"
+        if run_decisions "$home" resolve heading-origin route --decision-file "$home/decision.md" \
+          --routed-to heading-dependent > "$home/refused.out" 2>&1; then
+          printf 'not ok - resolution accepted work after ATX boundary %q\n' "$heading" >&2
+          failures=$((failures + 1))
+          continue
+        fi
+        assert_grep 'Also build route south.' "$home/refused.out" 'ATX refusal omitted the outside prose'
+        [ "$(cat "$home/data/backlog.md")" = "$before" ] || fail 'ATX refusal changed the backlog'
+        show=$(tasks_in "$home" show heading-dependent --full)
+        assert_contains "$show" 'blocked: yes' 'ATX refusal released the dependency'
+        show=$(tasks_in "$home" show "$hold" --full)
+        assert_contains "$show" 'state: queued' 'ATX refusal closed the decision'
+      done
+    done
+  done
+  for heading in '    ## Context' $'\t## Context' '### Context' '##Context' '\## Context' $'##\vContext' $'##\fContext'; do
+    n=$((n + 1)); home=$(make_home "inference-heading-$n")
+    write_origin_meta "$home" heading-origin
+    hold=$(run_decisions "$home" hold heading-origin route --title 'Choose route' --reason 'route pending')
+    tasks_in "$home" add heading-dependent 'Apply route' --kind ship --repo sample --blocked-by "$hold" >/dev/null
+    printf '> Raymond 2026-11-04: "Use route north."\n\n## Firstmate inference (not approved)\nMaybe route south.\n\n%s\nUnapproved context stays here.\n' "$heading" > "$home/decision.md"
+    run_decisions "$home" resolve heading-origin route --decision-file "$home/decision.md" \
+      --routed-to heading-dependent > "$home/accepted.out" 2>&1 || fail "resolution refused a non-boundary inside inference: $heading"
+    show=$(tasks_in "$home" show heading-dependent --full)
+    assert_contains "$show" 'blocked: no' 'valid inference did not release the dependency'
+    show=$(tasks_in "$home" show "$hold" --full)
+    assert_contains "$show" 'state: done' 'valid inference did not close the decision'
+  done
+  [ "$failures" -eq 0 ] || fail "resolution accepted work after $failures valid ATX boundaries"
+  pass 'resolution: ATX boundaries end inference, while non-boundaries retain it'
+}
+
+test_resolution_inference_heading_boundaries
+
+test_resolution_inference_without_awk_intervals() {
+  local home hold before show mawk_bin
+  mawk_bin=$(command -v mawk || true)
+  [ -n "$mawk_bin" ] || { echo "skip: mawk not found for the interval-free awk case"; return 0; }
+  home=$(make_home inference-no-intervals)
+  printf '#!/bin/sh\nexec "%s" -W traditional "$@"\n' "$mawk_bin" > "$home/fakebin/awk"
+  chmod +x "$home/fakebin/awk"
+  write_origin_meta "$home" no-intervals-origin
+  hold=$(run_decisions "$home" hold no-intervals-origin route --title 'Choose route' --reason 'route pending')
+  tasks_in "$home" add no-intervals-dependent 'Apply route' --kind ship --repo sample --blocked-by "$hold" >/dev/null
+  before=$(cat "$home/data/backlog.md")
+  printf '> Raymond 2026-11-04: "Use route north."\n\n## Firstmate inference (not approved)\nMaybe route south.\n\n   ## Approved scope\nAlso build route south.\n' > "$home/decision.md"
+  if run_decisions "$home" resolve no-intervals-origin route --decision-file "$home/decision.md" \
+    --routed-to no-intervals-dependent > "$home/refused.out" 2>&1; then
+    fail 'resolution under interval-free awk accepted work after an ATX boundary'
+  fi
+  assert_grep 'Also build route south.' "$home/refused.out" 'interval-free awk refusal omitted the outside prose'
+  [ "$(cat "$home/data/backlog.md")" = "$before" ] || fail 'interval-free awk refusal changed the backlog'
+  printf '> Raymond 2026-11-04: "Use route north."\n\n## Firstmate inference (not approved)\nMaybe route south.\n### Context\nUnapproved context stays here.\n' > "$home/decision.md"
+  run_decisions "$home" resolve no-intervals-origin route --decision-file "$home/decision.md" \
+    --routed-to no-intervals-dependent > "$home/accepted.out" 2>&1 \
+    || fail "resolution under interval-free awk refused a valid inference section: $(cat "$home/accepted.out")"
+  show=$(tasks_in "$home" show no-intervals-dependent --full)
+  assert_contains "$show" 'blocked: no' 'interval-free awk resolution did not release the dependency'
+  pass 'resolution: inference boundaries hold under an awk without interval expressions'
+}
+
+test_resolution_inference_without_awk_intervals
 
 test_resolution_requires_attributed_quote
 
