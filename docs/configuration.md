@@ -27,6 +27,7 @@ Watcher, Claude auto-arm, and sub-supervisor coordination records under `state/`
 The producing PR and X helpers own the fields they append, `bin/fm-classify-lib.sh` owns status-event vocabulary, and `bin/fm-crew-state.sh` owns current-state reconciliation.
 
 `bin/fm-session-start.sh`'s header is the single owner of session-start ordering, composed commands, digest contents, and the digest's startup mechanism.
+Its optional `config/decision-inbox` and `config/decision-inbox-query.jq` settings connect a home-private inbox to a bounded open-question digest without sharing its storage format; see that header for the projection interface and missing-input behavior.
 The optional gitignored home `CLAUDE.local.md` reaches primary sessions through that digest where native loading does not cover it; [`harness-adapters`](../.agents/skills/harness-adapters/SKILL.md#personal-project-rules) records the harness evidence.
 [`bin/fm-brief.sh`](../bin/fm-brief.sh)'s header owns project-local rule delivery to ship and scout briefs and secondmate charters, using the main clone rather than a disposable worktree and keeping those rules private.
 `docs/sessionstart-nudge.md` owns the native session-open adapter mechanics that nudge the digest command.
