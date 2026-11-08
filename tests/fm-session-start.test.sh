@@ -2234,6 +2234,232 @@ EOF
   pass 'absent local rules are silent and unreadable rules diagnose without aborting'
 }
 
+make_decision_inbox_fixture() {
+  local home=$1
+  mkdir -p "$home/data/private decisions"
+  printf 'data/private decisions/inbox.json\n' > "$home/config/decision-inbox"
+  cat > "$home/config/decision-inbox-query.jq" <<'JQ'
+to_entries | [.[] | .key as $project | .value[] | select(.answer == "") | [$project, .id, .key, .title]]
+JQ
+  jq -n '{Demo: ([range(266) | {id: ("Q" + tostring), key: "answered-key", title: "ANSWERED_TITLE", answer: "A", context: ("PRIVATE_BODY" * 500)}] + [range(3) | {id: ("Q" + tostring), key: ("open-" + tostring), title: ("Open question " + tostring), answer: "", context: "PRIVATE_OPEN_BODY"}])}' > "$home/data/private decisions/inbox.json"
+}
+
+test_decision_inbox_compact_home_context() {
+  local rec root home fakebin out harness inbox before bytes
+  rec=$(new_world decision-inbox)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_decision_inbox_fixture "$home"
+  inbox="$home/data/private decisions/inbox.json"
+  before=$(cksum < "$inbox")
+  bytes=$(wc -c < "$inbox" | tr -d ' ')
+  [ "$bytes" -gt 1450000 ] || fail 'large inbox fixture is smaller than the live inbox'
+  for harness in claude codex opencode pi pi-signed grok kimi omp; do
+    make_fake_ps_harness "$fakebin" "$harness"
+    if [ "$harness" = pi ] || [ "$harness" = pi-signed ]; then
+      out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH" "$harness")
+    else
+      out=$(FM_FAKE_HARNESS="$harness" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    fi
+    assert_contains "$out" 'Open questions (3):' "$harness omitted the open count"
+    assert_contains "$out" 'Demo | Q1 | open-1 | Open question 1' "$harness omitted an open question"
+    assert_contains "$out" "Inbox source: $inbox" 'inbox resolved outside active home'
+    assert_not_contains "$out" ANSWERED_TITLE 'answered question leaked'
+    assert_not_contains "$out" PRIVATE_BODY 'answered body leaked'
+    assert_not_contains "$out" PRIVATE_OPEN_BODY 'open body leaked'
+    assert_not_contains "$(printf '%s\n' "$out" | grep '^Printed in full above')" "$inbox" 'summary claimed to print inbox in full'
+  done
+  [ "$(cksum < "$inbox")" = "$before" ] || fail 'session start changed the inbox'
+  printf '%s\n' "$inbox" > "$home/config/decision-inbox"
+  printf '%s\n' "$$" > "$home/state/.lock"
+  make_fake_ps_claude "$fakebin"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" 'READ-ONLY SESSION' 'inbox refusal fixture did not refuse lock'
+  assert_contains "$out" 'Demo | Q1 | open-1 | Open question 1' 'lock refusal lost open questions'
+  [ "$(cksum < "$inbox")" = "$before" ] || fail 'read-only startup changed the inbox'
+  pass 'large private inbox prints only compact open rows for every primary and lock-refused sessions'
+}
+
+test_decision_inbox_input_errors_and_empty() {
+  local rec root home fakebin out shape expected
+  rec=$(new_world decision-inbox-errors)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" 'Decision inbox' 'unconfigured homes gained inbox noise'
+  assert_not_contains "$out" 'DECISION_INBOX:' 'unconfigured home gained an inbox error'
+  make_decision_inbox_fixture "$home"
+  for shape in empty-config multiline-config directory-config dangling-config unreadable-config missing-query unreadable-query invalid-query failing-query missing-inbox directory-inbox unreadable-inbox fifo-inbox empty-inbox malformed-inbox invalid-projection multiple-projections missing-jq; do
+    case "$shape" in
+      empty-config) : > "$home/config/decision-inbox" ;;
+      multiline-config) printf 'one\ntwo\n' > "$home/config/decision-inbox" ;;
+      directory-config) rm -f "${home:?}/config/decision-inbox"; mkdir "$home/config/decision-inbox" ;;
+      dangling-config) rm -f "${home:?}/config/decision-inbox"; ln -s "$home/missing-config" "$home/config/decision-inbox" ;;
+      unreadable-config) chmod 000 "$home/config/decision-inbox" ;;
+      missing-query) rm -f "${home:?}/config/decision-inbox-query.jq" ;;
+      unreadable-query) chmod 000 "$home/config/decision-inbox-query.jq" ;;
+      invalid-query) printf 'invalid jq?\n' > "$home/config/decision-inbox-query.jq" ;;
+      failing-query) printf '[["Demo","Q1","key","PRIVATE_BODY"]], error("PRIVATE_BODY")\n' > "$home/config/decision-inbox-query.jq" ;;
+      missing-inbox) rm -f "${home:?}/data/private decisions/inbox.json" ;;
+      directory-inbox) rm -f "${home:?}/data/private decisions/inbox.json"; mkdir "$home/data/private decisions/inbox.json" ;;
+      unreadable-inbox) chmod 000 "$home/data/private decisions/inbox.json" ;;
+      fifo-inbox) rm -f "${home:?}/data/private decisions/inbox.json"; mkfifo "$home/data/private decisions/inbox.json"; fm_fifo_feed "$home/data/private decisions/inbox.json" PRIVATE_BODY ;;
+      empty-inbox) : > "$home/data/private decisions/inbox.json" ;;
+      malformed-inbox) printf 'PRIVATE_BODY{\n' > "$home/data/private decisions/inbox.json" ;;
+      invalid-projection) printf '[["Private", "Q1", "key", "PRIVATE_BODY", "extra-field"]]\n' > "$home/config/decision-inbox-query.jq" ;;
+      multiple-projections) printf '[], []\n' > "$home/config/decision-inbox-query.jq" ;;
+      missing-jq)
+        cat > "$home/mask-jq.bash" <<'SH'
+command() {
+  if [ "${1:-}" = -v ] && [ "${2:-}" = jq ]; then return 1; fi
+  builtin command "$@"
+}
+SH
+        ;;
+    esac
+    if [ "$shape" = missing-jq ]; then
+      out=$(BASH_ENV="$home/mask-jq.bash" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    else
+      out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    fi
+    [ "$shape" != fifo-inbox ] || fm_fifo_release "$home/data/private decisions/inbox.json"
+    case "$shape" in
+      *-config) expected='invalid or unreadable configuration' ;;
+      missing-query|unreadable-query) expected='absent or unreadable private projection' ;;
+      missing-inbox|directory-inbox|unreadable-inbox|fifo-inbox) expected='absent or unreadable inbox' ;;
+      missing-jq) expected='jq is required' ;;
+      *) expected='could not read JSON or projection' ;;
+    esac
+    assert_contains "$out" "DECISION_INBOX: $expected" "$shape silently ignored or misdiagnosed"
+    assert_not_contains "$out" 'Open questions (0)' "$shape falsely reported no pending questions"
+    assert_not_contains "$out" PRIVATE_BODY "$shape leaked raw inbox or partial projection"
+    assert_contains "$out" 'NEXT STEP' "$shape stopped digest"
+    case "$shape" in
+      directory-config) rmdir "$home/config/decision-inbox" ;;
+      dangling-config) rm -f "${home:?}/config/decision-inbox" ;;
+      unreadable-config) chmod 600 "$home/config/decision-inbox" ;;
+      unreadable-query) chmod 600 "$home/config/decision-inbox-query.jq" ;;
+      directory-inbox) rmdir "$home/data/private decisions/inbox.json" ;;
+      unreadable-inbox) chmod 600 "$home/data/private decisions/inbox.json" ;;
+      fifo-inbox) rm -f "${home:?}/data/private decisions/inbox.json" ;;
+    esac
+    make_decision_inbox_fixture "$home"
+  done
+  printf '{}\n' > "$home/data/private decisions/inbox.json"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" 'Open questions (0):' 'empty collection not distinguished from input errors'
+  printf '{"Demo":[{"answer":"A"}]}\n' > "$home/data/private decisions/inbox.json"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" 'Open questions (0):' 'answered-only inbox not empty'
+  pass 'optional inbox distinguishes unavailable or invalid inputs from zero open questions'
+}
+
+test_decision_inbox_bounds_and_private_projection() {
+  local rec root home fakebin out section lines bytes
+  rec=$(new_world decision-inbox-bounds)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  make_decision_inbox_fixture "$home"
+  jq -n '{Demo: [range(25) | {id: ("Q" + tostring), key: ("key-" + tostring), title: ("é" * 500 + "\nINJECTED_LINE\t"), answer: ""}]}' > "$home/data/private decisions/inbox.json"
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  section=$(printf '%s\n' "$out" | awk '/^Decision inbox$/{on=1;next} on && /^AFK$/{on=0} on')
+  assert_contains "$section" 'Open questions (25; showing 20):' 'row bound or total count wrong'
+  assert_contains "$section" 'Demo | Q19 | key-19 |' 'last bounded row missing'
+  assert_not_contains "$section" 'key-20' 'row limit exceeded'
+  assert_not_contains "$section" INJECTED_LINE 'long or multiline title escaped row bound'
+  assert_not_contains "$out" 'STOP: decision inbox' 'budget demanded a full inbox read'
+  bytes=$(printf '%s' "$section" | LC_ALL=C wc -c | tr -d ' ')
+  [ "$bytes" -lt 20000 ] || fail "compact inbox too large: $bytes"
+  lines=$(printf '%s\n' "$section" | grep -c '^Demo |')
+  [ "$lines" -eq 20 ] || fail "expected 20 short rows, got $lines"
+  out=$(FM_SESSION_START_BUDGET_BYTES=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" 'Decision inbox' 'inbox heading survived without budget space'
+  assert_not_contains "$out" 'Inbox source:' 'inbox source survived without budget space'
+  assert_not_contains "$out" 'Open questions' 'inbox rows survived without budget space'
+  assert_not_contains "$out" 'STOP: decision inbox' 'budget demanded a full inbox read'
+  mkdir "$home/alternate config"
+  printf 'data/private decisions/inbox.json\n' > "$home/alternate config/decision-inbox"
+  printf '[["Other shape", .qid, .binding, .prompt]]\n' > "$home/alternate config/decision-inbox-query.jq"
+  printf '{"qid":"Q-new","binding":"choice","prompt":"Short\\nquestion"}\n' > "$home/data/private decisions/inbox.json"
+  out=$(FM_CONFIG_OVERRIDE="$home/alternate config" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" 'Other shape | Q-new | choice | Short question' 'shared code assumed private schema or ignored config override'
+  pass 'open rows stay bounded under digest pressure and a private query owns the inbox format'
+}
+
+test_decision_inbox_cannot_defer_rules() {
+  local rec root home fakebin baseline out rule other bytes
+  local rules='data/captain.md CLAUDE.local.md data/captain-shared.md data/learnings.md data/projects.md data/secondmates.md'
+  for rule in $rules; do
+    rec=$(new_world "inbox-priority-${rule##*/}")
+    IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+    make_fake_toolchain "$fakebin"
+    make_fake_ps_harness "$fakebin" codex
+    printf '%s\n' manual > "$home/config/backlog-backend"
+    for other in $rules; do
+      write_sized_file "$home/$other" 128 "RULE_${other##*/}"
+    done
+    write_sized_file "$home/$rule" 35023 "RULE_${rule##*/}"
+    baseline=$(FM_FAKE_HARNESS=codex run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    assert_not_contains "$baseline" 'STOP:' "$rule pressure fixture already deferred rules without inbox"
+    bytes=$(printf '%s\n' "$baseline" | LC_ALL=C wc -c | tr -d ' ')
+    [ "$bytes" -le 46080 ] || fail "no-inbox baseline exceeds default budget: $bytes"
+    make_decision_inbox_fixture "$home"
+    jq -n '{("界" * 40): [range(25) | {id: ("界" * 24), key: ("界" * 48), title: ("界" * 120), answer: ""}]}' > "$home/data/private decisions/inbox.json"
+    out=$(FM_FAKE_HARNESS=codex run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    for other in $rules; do
+      assert_contains "$baseline" "$(cat "$home/$other")" "baseline omitted full $other"
+      assert_contains "$out" "$(cat "$home/$other")" "inbox newly deferred $other with $rule under default-budget pressure"
+    done
+    assert_not_contains "$out" 'STOP:' 'inbox introduced a rule STOP pointer'
+    assert_not_contains "$out" 'Decision inbox' 'oversized optional question block was partially retained'
+    bytes=$(printf '%s\n' "$out" | LC_ALL=C wc -c | tr -d ' ')
+    [ "$bytes" -le 46080 ] || fail "inbox priority digest exceeds default budget: $bytes"
+  done
+  pass 'wide inbox rows cannot defer any of the six rule-file priorities under the default budget'
+}
+
+test_decision_inbox_metadata_cannot_defer_rules() {
+  local rec root home fakebin baseline out bytes
+  rec=$(new_world inbox-metadata-priority)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  write_sized_file "$home/data/secondmates.md" 35023 RULE_LAST_PRIORITY
+  baseline=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$baseline" 'STOP:' 'metadata fixture deferred a rule without inbox'
+  bytes=$(printf '%s\n' "$baseline" | LC_ALL=C wc -c | tr -d ' ')
+  baseline=$(FM_SESSION_START_BUDGET_BYTES="$bytes" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$baseline" "$(cat "$home/data/secondmates.md")" 'tight no-inbox baseline lost its rule'
+  make_decision_inbox_fixture "$home"
+  printf '{}\n' > "$home/data/private decisions/inbox.json"
+  out=$(FM_SESSION_START_BUDGET_BYTES="$bytes" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "$(cat "$home/data/secondmates.md")" 'empty inbox metadata newly deferred the last-priority rule'
+  assert_not_contains "$out" 'STOP:' 'empty inbox metadata introduced a STOP pointer'
+  assert_not_contains "$out" 'Decision inbox' 'question heading survived the tight budget'
+  assert_not_contains "$out" 'Inbox source:' 'question source survived the tight budget'
+  assert_not_contains "$out" 'Open questions' 'question count survived the tight budget'
+  [ "$(printf '%s\n' "$out" | LC_ALL=C wc -c | tr -d ' ')" -le "$bytes" ] || fail 'question metadata or omission notice exceeded tight budget'
+  pass 'even empty-inbox metadata cannot displace a rule or exceed a tight no-inbox budget'
+}
+
+test_decision_inbox_cannot_defer_rules
+test_decision_inbox_metadata_cannot_defer_rules
+test_decision_inbox_compact_home_context
+test_decision_inbox_input_errors_and_empty
+test_decision_inbox_bounds_and_private_projection
 test_local_rules_in_detected_primary_digest
 test_local_rules_absent_and_unreadable_digest
 test_context_digest_absent_empty_present

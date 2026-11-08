@@ -89,6 +89,9 @@
 #                       bin/fm-crew-state.sh <id>; this digest deliberately
 #                       skips that deeper, slower read for every task so it
 #                       stays fast and bounded.
+#                       The optional home-private decision inbox contributes
+#                       only bounded open-question rows, never its raw contents
+#                       (see OPTIONAL DECISION INBOX below).
 #   6. closing reminder - prints the context-specific watcher next step, then
 #                       names every rule file printed in full and sends the
 #                       reader to every one that was not; this script points
@@ -110,6 +113,8 @@
 #     data/captain-shared.md, data/learnings.md, data/projects.md,
 #     data/secondmates.md: each printed whole if it fits what remains, never in
 #     part; a file that does not fit is skipped and later files are still tried;
+#   - the optional compact decision inbox, as a whole block only if it fits
+#     after every rule-file decision and the minimum fleet reservation;
 #   - fleet state, shortened only as far as needed, in this order: (a) orphan
 #     status tails dropped, (b) per-task status tails cut to 1 line, (c) each
 #     .meta reduced to its window, kind, harness, model, mode and pr lines,
@@ -198,6 +203,28 @@
 #   reporting command, not a gate. A lock refusal is reported as a loud
 #   banner inline, never a silent failure or a non-zero exit that would make
 #   an agent skip the rest of the digest.
+#
+# OPTIONAL DECISION INBOX: config/decision-inbox under FM_CONFIG_OVERRIDE or
+# FM_HOME/config contains one non-empty path, absolute or relative to FM_HOME.
+# config/decision-inbox-query.jq in the same config directory is a private jq
+# projection: it must return exactly one array of open-question rows, each an
+# array of four strings [project, id, key, title]. The private producer owns the
+# inbox format and the query selects open questions; shared code knows only
+# this projection interface. Neither private file is imported or executed as
+# shell/Python code. jq is required only when an inbox is configured.
+# An absent setting is silent. Invalid/unreadable configuration, query, inbox,
+# JSON or projection prints DECISION_INBOX with source paths, never raw input
+# or parser output. A valid empty projection reports zero open questions;
+# missing or invalid input never claims zero. Reads never change private files.
+# When budget permits, the FLEET STATE subsection prints the total open count
+# and at most 20 rows.
+# Control characters become spaces; fields are shortened to 40/24/48/120
+# characters respectively, with ... on shortened fields. The source pointer
+# stays visible for targeted follow-up, never a request to read the entire
+# inbox. The whole subsection, including headings, count, source and any
+# diagnostic, is omitted if it cannot fit after rule files; no omission notice
+# reserves space ahead of them. It is prepared before the wake drain, like
+# other potentially blocking commands.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -789,6 +816,48 @@ read_task_records() {
   done
 }
 
+# shellcheck disable=SC2329 # Invoked through capture.
+decision_inbox_digest() {
+  local setting="$CONFIG/decision-inbox" query="$CONFIG/decision-inbox-query.jq"
+  local path rows
+  [ -e "$setting" ] || [ -L "$setting" ] || return 0
+  subsection 'Decision inbox'
+  if ! { [ -f "$setting" ] && [ -r "$setting" ] && path=$(cat "$setting" 2>/dev/null) \
+    && [ -n "$path" ] && [[ "$path" != *$'\n'* ]]; }; then
+    printf 'DECISION_INBOX: invalid or unreadable configuration %s; expected one non-empty path\n' "$setting"
+    return 0
+  fi
+  case "$path" in /*) ;; *) path="$FM_HOME/$path" ;; esac
+  abs_path "$path"
+  path=$REPLY
+  printf 'Inbox source: %s\n' "$path"
+  if [ ! -f "$path" ] || [ ! -r "$path" ]; then
+    printf 'DECISION_INBOX: absent or unreadable inbox %s\n' "$path"
+  elif [ ! -f "$query" ] || [ ! -r "$query" ]; then
+    printf 'DECISION_INBOX: absent or unreadable private projection %s\n' "$query"
+  elif ! command -v jq >/dev/null 2>&1; then
+    printf 'DECISION_INBOX: jq is required to read the configured inbox\n'
+  elif rows=$(
+    set -o pipefail
+    jq -c -f "$query" "$path" 2>/dev/null | jq -ers '
+      def short($max):
+        gsub("[[:cntrl:]]"; " ")
+        | if length > $max then .[:($max - 3)] + "..." else . end;
+      if length != 1 then error("expected one projection") else .[0] end
+      | if type == "array" and all(.[]; type == "array" and length == 4 and all(.[]; type == "string"))
+        then . else error("invalid projection rows") end
+      | "Open questions (\(length)\(if length > 20 then "; showing 20" else "" end)):",
+        (.[:20][] | [(.[0] | short(40)), (.[1] | short(24)), (.[2] | short(48)), (.[3] | short(120))] | join(" | "))
+    ' 2>/dev/null
+  ); then
+    printf '%s\n' "$rows"
+  else
+    printf 'DECISION_INBOX: could not read JSON or projection; check %s and %s\n' "$path" "$query"
+  fi
+}
+capture decision_inbox_digest
+DECISION_INBOX_OUT=$CAPTURED
+
 # Public commitments made through the myfirstmate relay. A promise to reply in a
 # public thread must survive compaction and restart, so it is surfaced from disk
 # here rather than from conversation memory. fm-public-followup-lib.sh owns both
@@ -832,7 +901,7 @@ set_fleet_level() {
 
 # shellcheck disable=SC2329 # Invoked through capture.
 render_fleet() {
-  local n
+  local n inbox=${1:-}
   section "FLEET STATE"
   [ "$TRUNC_ORPHANS" -eq 1 ] && printf 'FLEET_TRUNCATED: orphan status tails dropped - see %s/<id>.status for each orphan listed below\n' "$STATE_ABS"
   [ "$TRUNC_TAILS" -eq 1 ] && printf 'FLEET_TRUNCATED: per-task status tails cut to 1 line - see %s/<id>.status\n' "$STATE_ABS"
@@ -874,7 +943,7 @@ render_fleet() {
     n=$((n + 1))
   done
   [ "$ORPHAN_COUNT" -gt 0 ] || printf '(none)\n'
-  printf '%s' "$FLEET_TAIL"
+  printf '%s%s' "$inbox" "$FLEET_TAIL"
 }
 
 # --- 6. closing reminder -----------------------------------------------
@@ -997,7 +1066,7 @@ assemble() {
     fi
     i=$((i + 1))
   done
-  capture render_fleet
+  capture render_fleet "${1:-}"
   fleet=$CAPTURED
   capture render_next
   next=$CAPTURED
@@ -1015,10 +1084,12 @@ for i in $RULE_FILL_ORDER; do
   assemble
   [ "$REPLY" -le "$SESSION_BUDGET_BYTES" ] || RULE_PRINTED[i]=0
 done
+assemble "$DECISION_INBOX_OUT"
+[ "$REPLY" -le "$SESSION_BUDGET_BYTES" ] || DECISION_INBOX_OUT=
 level=0
 while :; do
   set_fleet_level "$level"
-  assemble
+  assemble "$DECISION_INBOX_OUT"
   [ "$REPLY" -le "$SESSION_BUDGET_BYTES" ] && break
   [ "$level" -ge 4 ] && break
   level=$((level + 1))
