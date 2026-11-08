@@ -177,6 +177,28 @@ Observed bounded shapes, in order: an idle composer, a typed draft, a wrapped dr
 Against that TUI, `FM_COMPOSER_HARNESS=omp fm_tmux_composer_state` printed `empty`, `pending`, and `empty` for idle, typed, and cleared, while the generic reader printed `unknown`, and `fm_pane_is_busy <target> omp` read busy mid-tool and idle with the async job outstanding.
 `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` refreshes the delivery evidence, and `tests/fm-omp-harness.test.sh` and `tests/fm-composer-ghost.test.sh` pin the readers portably.
 
+### omp automatic stow and reset
+
+I verified the native reset route on 2026-11-08 with omp 18.18.1 and tmux 3.8 on a dedicated socket and the real `anthropic/claude-sonnet-5-5` provider.
+Refresh it with:
+
+```sh
+FM_OMP_RESET_LIVE=1 bash tests/fm-omp-reset-live-e2e.test.sh
+```
+
+The bounded result was:
+
+```text
+ok - omp/18.18.1 native reset: stow failure, draft and input cancellation; one seeded startup, durable wake, one supervision cycle, no reset loop
+```
+
+The fixture drives the registered tool with isolated empty memory files, then exercises the real command transport, native session switch, model-driven startup, durable wake drain, and async supervision job.
+It proves the reset bridge's response to a failed stow attestation; it does not establish the semantic completeness of an agent's knowledge sweep.
+The triggered turn carries the full seed directly, since setup-only history was not reliably visible to the model in the native probe.
+`tests/fm-omp-reset.test.sh` pins the state transitions with a controlled clock, and `tests/fm-omp-reset-submit.test.sh` pins the last transport boundary.
+No live Herdr reset is claimed by this tmux proof.
+Other primary harnesses keep their existing reset behavior.
+
 ### Cleanup endpoint identity
 
 The cleanup identity boundary was validated on 2026-07-28 with tmux 3.6a and metadata fixtures for every supported backend.

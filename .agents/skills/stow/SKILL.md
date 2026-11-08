@@ -80,6 +80,27 @@ Report the outcome in plain captain-facing language with all of these facts:
 
 Do not hide an over-budget result behind a reset-safe claim.
 
+## omp watching-only reset
+
+Whenever all instructions have reached the workers and nothing waits on firstmate's next step, use `firstmate_watch_reset` instead of re-arming, regardless of context size.
+The last message must be answered, questions must be recorded in the decision inbox and backlog, and no push, merge, cleanup or steer may be half done.
+If not already prepared, call its `prepare` action first.
+Complete this skill and its full receipt, then call `ready` with the returned nonce, both true attestations, and a compact handoff of open-thread pointers, already-reported outcomes, and the immediate supervision action.
+An incomplete stow or unresolved exception means cancel the reset and continue supervision in the current session.
+
+End the turn after readiness; do not arm another job in that turn.
+The extension submits its registered `/fm-reset` command through `bin/fm-omp-reset-submit.sh` only after the primary is idle, with no queued input or draft and a fresh attestation.
+That helper owns exact flags, transport mechanics and supported terminal backends.
+New input, further work, a global hold, or expired readiness cancels the transition.
+A failed submission or cancelled switch requests supervision recovery in the existing session.
+Do not retry a command left in the composer by typing another copy.
+
+The command consumes readiness once, writes a private handoff, and starts a native session seeded with that handoff and the startup instruction.
+Run `bin/fm-session-start.sh` exactly once there; reconcile its durable wakes before arming exactly one cycle.
+The extension does not remove wake records or change away mode.
+Startup must arm before another reset is eligible, so the seed cannot create an immediate reset loop.
+Other primary harnesses keep their existing supervision and manual session-reset procedures.
+
 ## Scope exclusion: no skill storage
 
 `/stow` must never store, create, or edit a skill as a destination for any finding.

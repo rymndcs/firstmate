@@ -3,7 +3,8 @@ Mode: omp async-job supervision.
 When this session owns supervision, including omp away mode selected by `/afk`:
 1. Drain first with `bin/fm-wake-drain.sh`.
 2. Source `__FM_X_MODE_ENV__` first when X mode is active.
-3. First cycle: arm with omp's tracked background job, as its own call:
+3. At a watching-only transition, use `firstmate_watch_reset` prepare instead of arming; it returns the stow procedure.
+   Otherwise, first cycle: arm with omp's tracked background job, as its own call:
 
    `bash` with `async: true` and `timeout: 0` on:
    `[ -f __FM_X_MODE_ENV_SH__ ] && . __FM_X_MODE_ENV_SH__; exec bin/fm-watch-arm.sh`

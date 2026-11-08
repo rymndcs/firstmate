@@ -970,7 +970,9 @@ import { pathToFileURL } from "node:url";
 
 const handlers = new Map();
 const sent = [];
+const schema = new Proxy(() => schema, { get: () => schema });
 const pi = {
+  zod: schema, registerTool() {}, registerCommand() {},
   on(event, handler) {
     handlers.set(event, handler);
   },
