@@ -106,13 +106,15 @@
 # order:
 #   - never cut: everything LOCK, BOOTSTRAP and WAKE QUEUE print (drained wake
 #     records are gone once read), extension diagnostics, the supervision block,
-#     public commitments awaiting delivery, and the compact decision inbox;
+#     and public commitments awaiting delivery;
 #   - reserved: fleet state at its most shortened, so a printed rule file can
 #     never push the digest past the budget;
 #   - rule files, in the order data/captain.md, CLAUDE.local.md,
 #     data/captain-shared.md, data/learnings.md, data/projects.md,
 #     data/secondmates.md: each printed whole if it fits what remains, never in
 #     part; a file that does not fit is skipped and later files are still tried;
+#   - the optional compact decision inbox, as a whole block only if it fits
+#     after every rule-file decision and the minimum fleet reservation;
 #   - fleet state, shortened only as far as needed, in this order: (a) orphan
 #     status tails dropped, (b) per-task status tails cut to 1 line, (c) each
 #     .meta reduced to its window, kind, harness, model, mode and pr lines,
@@ -214,12 +216,15 @@
 # JSON or projection prints DECISION_INBOX with source paths, never raw input
 # or parser output. A valid empty projection reports zero open questions;
 # missing or invalid input never claims zero. Reads never change private files.
-# The FLEET STATE subsection prints the total open count and at most 20 rows.
+# When budget permits, the FLEET STATE subsection prints the total open count
+# and at most 20 rows.
 # Control characters become spaces; fields are shortened to 40/24/48/120
 # characters respectively, with ... on shortened fields. The source pointer
 # stays visible for targeted follow-up, never a request to read the entire
-# inbox. This compact subsection is never cut by the digest budget and is
-# prepared before the wake drain, like other potentially blocking commands.
+# inbox. The whole subsection, including headings, count, source and any
+# diagnostic, is omitted if it cannot fit after rule files; no omission notice
+# reserves space ahead of them. It is prepared before the wake drain, like
+# other potentially blocking commands.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -866,7 +871,6 @@ fi
 
 # shellcheck disable=SC2329 # Invoked through capture.
 render_fleet_tail() {
-  printf '%s' "$DECISION_INBOX_OUT"
   subsection "AFK"
   if [ -e "$STATE/.afk" ]; then
     printf 'present - away-mode supervision is active; follow /afk.\n'
@@ -897,7 +901,7 @@ set_fleet_level() {
 
 # shellcheck disable=SC2329 # Invoked through capture.
 render_fleet() {
-  local n
+  local n inbox=${1:-}
   section "FLEET STATE"
   [ "$TRUNC_ORPHANS" -eq 1 ] && printf 'FLEET_TRUNCATED: orphan status tails dropped - see %s/<id>.status for each orphan listed below\n' "$STATE_ABS"
   [ "$TRUNC_TAILS" -eq 1 ] && printf 'FLEET_TRUNCATED: per-task status tails cut to 1 line - see %s/<id>.status\n' "$STATE_ABS"
@@ -939,7 +943,7 @@ render_fleet() {
     n=$((n + 1))
   done
   [ "$ORPHAN_COUNT" -gt 0 ] || printf '(none)\n'
-  printf '%s' "$FLEET_TAIL"
+  printf '%s%s' "$inbox" "$FLEET_TAIL"
 }
 
 # --- 6. closing reminder -----------------------------------------------
@@ -1062,7 +1066,7 @@ assemble() {
     fi
     i=$((i + 1))
   done
-  capture render_fleet
+  capture render_fleet "${1:-}"
   fleet=$CAPTURED
   capture render_next
   next=$CAPTURED
@@ -1080,10 +1084,12 @@ for i in $RULE_FILL_ORDER; do
   assemble
   [ "$REPLY" -le "$SESSION_BUDGET_BYTES" ] || RULE_PRINTED[i]=0
 done
+assemble "$DECISION_INBOX_OUT"
+[ "$REPLY" -le "$SESSION_BUDGET_BYTES" ] || DECISION_INBOX_OUT=
 level=0
 while :; do
   set_fleet_level "$level"
-  assemble
+  assemble "$DECISION_INBOX_OUT"
   [ "$REPLY" -le "$SESSION_BUDGET_BYTES" ] && break
   [ "$level" -ge 4 ] && break
   level=$((level + 1))

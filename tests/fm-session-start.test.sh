@@ -2369,7 +2369,7 @@ EOF
   make_fake_ps_claude "$fakebin"
   make_decision_inbox_fixture "$home"
   jq -n '{Demo: [range(25) | {id: ("Q" + tostring), key: ("key-" + tostring), title: ("é" * 500 + "\nINJECTED_LINE\t"), answer: ""}]}' > "$home/data/private decisions/inbox.json"
-  out=$(FM_SESSION_START_BUDGET_BYTES=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
   section=$(printf '%s\n' "$out" | awk '/^Decision inbox$/{on=1;next} on && /^AFK$/{on=0} on')
   assert_contains "$section" 'Open questions (25; showing 20):' 'row bound or total count wrong'
   assert_contains "$section" 'Demo | Q19 | key-19 |' 'last bounded row missing'
@@ -2380,6 +2380,11 @@ EOF
   [ "$bytes" -lt 20000 ] || fail "compact inbox too large: $bytes"
   lines=$(printf '%s\n' "$section" | grep -c '^Demo |')
   [ "$lines" -eq 20 ] || fail "expected 20 short rows, got $lines"
+  out=$(FM_SESSION_START_BUDGET_BYTES=1 run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$out" 'Decision inbox' 'inbox heading survived without budget space'
+  assert_not_contains "$out" 'Inbox source:' 'inbox source survived without budget space'
+  assert_not_contains "$out" 'Open questions' 'inbox rows survived without budget space'
+  assert_not_contains "$out" 'STOP: decision inbox' 'budget demanded a full inbox read'
   mkdir "$home/alternate config"
   printf 'data/private decisions/inbox.json\n' > "$home/alternate config/decision-inbox"
   printf '[["Other shape", .qid, .binding, .prompt]]\n' > "$home/alternate config/decision-inbox-query.jq"
@@ -2389,6 +2394,69 @@ EOF
   pass 'open rows stay bounded under digest pressure and a private query owns the inbox format'
 }
 
+test_decision_inbox_cannot_defer_rules() {
+  local rec root home fakebin baseline out rule other bytes
+  local rules='data/captain.md CLAUDE.local.md data/captain-shared.md data/learnings.md data/projects.md data/secondmates.md'
+  for rule in $rules; do
+    rec=$(new_world "inbox-priority-${rule##*/}")
+    IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+    make_fake_toolchain "$fakebin"
+    make_fake_ps_harness "$fakebin" codex
+    printf '%s\n' manual > "$home/config/backlog-backend"
+    for other in $rules; do
+      write_sized_file "$home/$other" 128 "RULE_${other##*/}"
+    done
+    write_sized_file "$home/$rule" 35023 "RULE_${rule##*/}"
+    baseline=$(FM_FAKE_HARNESS=codex run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    assert_not_contains "$baseline" 'STOP:' "$rule pressure fixture already deferred rules without inbox"
+    bytes=$(printf '%s\n' "$baseline" | LC_ALL=C wc -c | tr -d ' ')
+    [ "$bytes" -le 46080 ] || fail "no-inbox baseline exceeds default budget: $bytes"
+    make_decision_inbox_fixture "$home"
+    jq -n '{("界" * 40): [range(25) | {id: ("界" * 24), key: ("界" * 48), title: ("界" * 120), answer: ""}]}' > "$home/data/private decisions/inbox.json"
+    out=$(FM_FAKE_HARNESS=codex run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+    for other in $rules; do
+      assert_contains "$baseline" "$(cat "$home/$other")" "baseline omitted full $other"
+      assert_contains "$out" "$(cat "$home/$other")" "inbox newly deferred $other with $rule under default-budget pressure"
+    done
+    assert_not_contains "$out" 'STOP:' 'inbox introduced a rule STOP pointer'
+    assert_not_contains "$out" 'Decision inbox' 'oversized optional question block was partially retained'
+    bytes=$(printf '%s\n' "$out" | LC_ALL=C wc -c | tr -d ' ')
+    [ "$bytes" -le 46080 ] || fail "inbox priority digest exceeds default budget: $bytes"
+  done
+  pass 'wide inbox rows cannot defer any of the six rule-file priorities under the default budget'
+}
+
+test_decision_inbox_metadata_cannot_defer_rules() {
+  local rec root home fakebin baseline out bytes
+  rec=$(new_world inbox-metadata-priority)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' manual > "$home/config/backlog-backend"
+  write_sized_file "$home/data/secondmates.md" 35023 RULE_LAST_PRIORITY
+  baseline=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_not_contains "$baseline" 'STOP:' 'metadata fixture deferred a rule without inbox'
+  bytes=$(printf '%s\n' "$baseline" | LC_ALL=C wc -c | tr -d ' ')
+  baseline=$(FM_SESSION_START_BUDGET_BYTES="$bytes" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$baseline" "$(cat "$home/data/secondmates.md")" 'tight no-inbox baseline lost its rule'
+  make_decision_inbox_fixture "$home"
+  printf '{}\n' > "$home/data/private decisions/inbox.json"
+  out=$(FM_SESSION_START_BUDGET_BYTES="$bytes" run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "$(cat "$home/data/secondmates.md")" 'empty inbox metadata newly deferred the last-priority rule'
+  assert_not_contains "$out" 'STOP:' 'empty inbox metadata introduced a STOP pointer'
+  assert_not_contains "$out" 'Decision inbox' 'question heading survived the tight budget'
+  assert_not_contains "$out" 'Inbox source:' 'question source survived the tight budget'
+  assert_not_contains "$out" 'Open questions' 'question count survived the tight budget'
+  [ "$(printf '%s\n' "$out" | LC_ALL=C wc -c | tr -d ' ')" -le "$bytes" ] || fail 'question metadata or omission notice exceeded tight budget'
+  pass 'even empty-inbox metadata cannot displace a rule or exceed a tight no-inbox budget'
+}
+
+test_decision_inbox_cannot_defer_rules
+test_decision_inbox_metadata_cannot_defer_rules
 test_decision_inbox_compact_home_context
 test_decision_inbox_input_errors_and_empty
 test_decision_inbox_bounds_and_private_projection
