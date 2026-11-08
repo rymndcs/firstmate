@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+const [root, lab] = process.argv.slice(2);
+const protocol = spawnSync(`${root}/bin/fm-supervision-instructions.sh`, ['--harness','omp'], {encoding:'utf8'});
+assert.equal(protocol.status, 0);
+writeFileSync(`${lab}/model-flow.md`, `This is a bounded instruction-execution test, not a code review. Do not use tools or propose changes. You are at the end of the numbered list beginning "When the arm job's completion arrives". Steps 1-3 are done. Execute its step 4 literally, following an explicit cross-reference if present: what is its first operation for an ordinary wake when work remains in flight and only keeping watch remains? Return exactly PREPARE_RESET or REARM. Do not resolve conflicts using other paragraphs.\n\n${protocol.stdout}`);
+const model = spawnSync('omp', ['--no-context-files','--no-rules','--no-skills','--no-extensions','--no-tools','--no-session','--no-title','--thinking','low','--model',process.env.FM_OMP_LIVE_MODEL??'anthropic/claude-sonnet-5-5','-p','@model-flow.md'], {cwd:lab,encoding:'utf8'});
+writeFileSync(`${lab}/model-flow.out`, model.stdout + model.stderr);
+assert.equal(model.status,0,model.stderr);
+assert.match(model.stdout, /(?:^|\n)PREPARE_RESET\s*$/, `ordinary-wake flow selected ${model.stdout.trim()}`);
+console.log('ok - model follows emitted ordinary-wake continuation to prepare reset');

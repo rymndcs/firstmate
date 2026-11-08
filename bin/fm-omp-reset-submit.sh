@@ -5,6 +5,8 @@
 # This helper never starts a terminal or guesses a primary pane. The extension
 # owns fresh readiness and native idle/queue checks; this last transport boundary
 # requires the same live home lock, no global hold, and a confirmed empty composer.
+# The literal private CSI trigger contains no Enter or draft text; the native
+# synchronous input listener alone admits the registered command and Enter.
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -30,15 +32,24 @@ target=$(discover_supervisor_target) || exit 1
 backend=$(discover_supervisor_backend) || exit 1
 case "$backend" in tmux|herdr) ;; *) exit 1 ;; esac
 [ "$1" != check ] || exit 0
-case "$nonce" in ''|*[!a-f0-9-]*) exit 2 ;; esac
-# Reuse away-mode primary busy/composer detection and the shared type-once
-# submit primitive without starting its daemon or changing away-mode presence.
+[[ "$nonce" =~ ^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$ ]] || exit 2
+# Reuse the existing primary composer reader and literal transport.
+# No daemon or away-mode presence change is needed.
 # shellcheck source=bin/fm-supervise-daemon.sh
 . "$SCRIPT_DIR/fm-supervise-daemon.sh"
-FM_DAEMON_PRIMARY_HARNESS=omp
 fm_backend_target_exists "$backend" "$target" || exit 1
-pane_is_busy "$target" "$backend" && exit 1
 [ "$(FM_COMPOSER_HARNESS=omp fm_backend_composer_state "$backend" "$target")" = empty ] || exit 1
 [ ! -e "$STATE/.captain-hold" ] || exit 1
-verdict=$(FM_COMPOSER_HARNESS=omp fm_backend_send_text_submit "$backend" "$target" "/fm-reset $nonce" 1 0 0)
-[ "$verdict" = empty ]
+hex=${nonce//-/}
+trigger=$'\033[?9001'
+while [ -n "$hex" ]; do
+  part=${hex:0:4}
+  hex=${hex:4}
+  trigger="$trigger;$((16#$part))"
+done
+trigger="$trigger~"
+fm_backend_source "$backend" || exit 1
+case "$backend" in
+  tmux) fm_backend_tmux_send_literal "$target" "$trigger" ;;
+  herdr) fm_backend_herdr_send_literal "$target" "$trigger" ;;
+esac

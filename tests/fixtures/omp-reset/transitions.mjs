@@ -44,7 +44,13 @@ assert.ok(tool, 'primary extension must register firstmate_watch_reset');
 assert.ok(commands.has('fm-reset'), 'primary extension must register fm-reset');
 const call = params => tool.execute('tool-id', params, undefined, undefined, ctx);
 await emit('session_start');
-await emit('input', { text: 'Delegate this work.' });
+async function arm() {
+  jobs = {running:[{id:'watcher',command:'exec bin/fm-watch-arm.sh'}],recent:[],delivery:{queued:0,delivering:false,pendingJobIds:[]}};
+  await emit('tool_result',{toolName:'read',input:{path:'proc://watcher'},isError:false,content:[{type:'text',text:'watcher: started pid=42 (beacon fresh)'}]});
+  jobs = null;
+}
+await arm();
+await emit('input' , { text: 'Delegate this work.' });
 async function prepare() {
   const result = await call({ action: 'prepare' });
   assert.equal(result.isError, undefined, text(result));
@@ -59,7 +65,7 @@ async function submittedToken() {
   const result = await ready(await prepare());
   assert.equal(result.isError, undefined, text(result));
   await emit('session_stop', { stop_hook_active: false });
-  const next = timers.findIndex(x => x.ms < 30000);
+  const next = timers.findLastIndex(x => x.ms < 30000);
   assert.ok(next >= 0, "reset must schedule submission");
   await timers.splice(next, 1)[0].fn();
   return readFileSync(`${home}/state/submissions`, 'utf8').trim().split('\n').at(-1);
@@ -123,7 +129,7 @@ assert.match(messages.find(x => x.message.customType === 'firstmate-reset-start'
 await commands.get('fm-reset').handler(token, ctx);
 assert.equal(switches, 1, 'token cannot replay');
 assert.equal((await call({action:'prepare'})).isError, true, 'startup handoff cannot cause a reset loop');
-await emit('tool_call', {toolName:'bash',input:{command:'exec bin/fm-watch-arm.sh'}});
+await arm();
 assert.equal((await call({action:'prepare'})).isError, undefined, 'normal supervision enables future resets');
 await emit('input', {text:'Continue'});
 writeFileSync(`${home}/state/submit-fails`, '');

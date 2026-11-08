@@ -179,23 +179,29 @@ Against that TUI, `FM_COMPOSER_HARNESS=omp fm_tmux_composer_state` printed `empt
 
 ### omp automatic stow and reset
 
-I verified the native reset route on 2026-11-08 with omp 18.18.1 and tmux 3.8 on a dedicated socket and the real `anthropic/claude-sonnet-5-5` provider.
+I verified the complete current-tree native reset route on 2026-11-08 with omp 18.18.1, tmux 3.8 and the real `anthropic/claude-sonnet-5-5` provider on a dedicated socket.
 Refresh it with:
 
 ```sh
-FM_OMP_RESET_LIVE=1 bash tests/fm-omp-reset-live-e2e.test.sh
+FM_OMP_RESET_LIVE=1 bin/fm-test-run.sh tests/fm-omp-reset-live-e2e.test.sh
 ```
 
-The bounded result was:
+The bounded results were:
 
 ```text
-ok - omp/18.18.1 native reset: stow failure, draft and input cancellation; one seeded startup, durable wake, one supervision cycle, no reset loop
+ok - model follows emitted ordinary-wake continuation to prepare reset
+ok - omp/18.18.1 integrated reset: model follows emitted wake protocol, stows, switches with live supervision, runs startup once, drains durable wake, arms one cycle, vetoes interleaved draft
 ```
 
-The fixture drives the registered tool with isolated empty memory files, then exercises the real command transport, native session switch, model-driven startup, durable wake drain, and async supervision job.
-It proves the reset bridge's response to a failed stow attestation; it does not establish the semantic completeness of an agent's knowledge sweep.
-The triggered turn carries the full seed directly, since setup-only history was not reliably visible to the model in the native probe.
-`tests/fm-omp-reset.test.sh` pins the state transitions with a controlled clock, and `tests/fm-omp-reset-submit.test.sh` pins the last transport boundary.
+The fixture copies every current tracked file and additional fixture into an isolated clone and records their hashes; it does not overlay selected implementation files onto an older instruction tree.
+The interactive model loads context and skills, follows the emitted protocol, prepares the reset, performs stow against empty isolated memory files and attests readiness itself.
+An already-running supervision job is cancelled by the native switch, and the new session runs startup once, drains a wake supplied through the real queue owner, and owns exactly one supervision job.
+The triggered startup turn carries the full seed directly, since setup-only history was not reliably visible to the model in the native probe.
+A second attempted reset deterministically inserts `Wai` after the helper's composer check and before its literal terminal write; the native input veto retains that draft without submitting it and requests one recovery turn in the same session.
+The helper sends a private trigger without Enter; the native synchronous listener checks idle, queue and editor state before admitting the registered command and Enter together.
+A rendered background-job waiting row is not native agent activity, so it is not an additional reset veto.
+This proves the tested input ordering, not every physical terminal encoding or the semantic completeness of a knowledge sweep over real history.
+`tests/fm-omp-reset.test.sh` pins failed stow, cancellation, thrown and partial switches, recovery ownership and successful-arm eligibility; `tests/fm-omp-reset-submit.test.sh` pins the transport boundary.
 No live Herdr reset is claimed by this tmux proof.
 Other primary harnesses keep their existing reset behavior.
 

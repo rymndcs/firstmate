@@ -93,7 +93,7 @@ The extension submits its registered `/fm-reset` command through `bin/fm-omp-res
 That helper owns exact flags, transport mechanics and supported terminal backends.
 New input, further work, a global hold, or expired readiness cancels the transition.
 A failed submission or cancelled switch requests supervision recovery in the existing session.
-Do not retry a command left in the composer by typing another copy.
+The native switch cancels this session's old supervision job, including one still running; the new startup owns its replacement.
 
 The command consumes readiness once, writes a private handoff, and starts a native session seeded with that handoff and the startup instruction.
 Run `bin/fm-session-start.sh` exactly once there; reconcile its durable wakes before arming exactly one cycle.

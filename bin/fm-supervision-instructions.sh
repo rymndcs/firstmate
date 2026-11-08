@@ -183,7 +183,7 @@ ordinary_wake_line() {
       printf '%s\n' '- Ordinary wake: re-arm exactly one bin/fm-watch-arm.sh Grok tracked background task as directed below.'
       ;;
     omp)
-      printf '%s\n' '- Ordinary wake: re-arm exactly one bin/fm-watch-arm.sh omp async bash job as directed below.'
+      printf '%s\n' '- Ordinary wake: follow the omp continuation below to choose the next supervision transition.'
       ;;
     *)
       printf '%s\n' '- Ordinary wake: follow the continuation in the harness protocol below; do not use shell &.'
