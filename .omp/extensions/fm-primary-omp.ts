@@ -238,12 +238,13 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   pi.registerTool({
     name: "firstmate_watch_reset",
     label: "Stow before watching",
-    description: "In normal mode only, before re-arming omp supervision when only keeping watch: prepare, complete the returned stow skill, then ready with its stowReceipt, a compact durable handoff and attestations. Receipt token counts are decimal strings from the before/after budget reports; the actions object records one Completion receipt action per memory file. Never call ready after stow fails.",
+    description: "In normal mode only, before re-arming omp supervision when only keeping watch: prepare, complete the returned stow skill, then ready with its stowReceipt, a compact durable handoff and true stowComplete, onlyKeepingWatch and pendingQuestionsRecorded attestations. pendingQuestionsRecorded confirms every unanswered captain question is durably recorded in the home's decision inbox or backlog, or as a mockup question with an open captain decision hold; none lives only in chat or the handoff. Receipt token counts are decimal strings from the before/after budget reports; the actions object records one Completion receipt action per memory file. Never call ready after stow fails.",
     parameters: pi.zod.object({
       action: pi.zod.enum(["prepare", "ready", "cancel"]),
       nonce: pi.zod.string().optional(),
       stowComplete: pi.zod.boolean().optional(),
       onlyKeepingWatch: pi.zod.boolean().optional(),
+      pendingQuestionsRecorded: pi.zod.boolean().optional(),
       stowReceipt: pi.zod.object({
         effectiveBudgetTokens: pi.zod.string(),
         totalTokensBefore: pi.zod.string(),
@@ -274,13 +275,13 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
       const receipt = params.stowReceipt;
       const measured = budget();
       if (!prepared || prepared.nonce !== params.nonce || prepared.session !== sessionId(ctx)
-        || params.stowComplete !== true || params.onlyKeepingWatch !== true
+        || params.stowComplete !== true || params.onlyKeepingWatch !== true || params.pendingQuestionsRecorded !== true
         || !params.handoff?.trim() || params.handoff.length > 4000
         || !receipt || !/^(0|[1-9][0-9]*)$/.test(receipt.totalTokensBefore)
         || !memoryFiles.every(file => actions.some(action => action === receipt.actions?.[file]))
         || !measured || receipt.effectiveBudgetTokens !== measured.effectiveBudgetTokens
         || receipt.totalTokensAfter !== measured.totalTokensAfter || !available(ctx)) {
-        return result("Stow or readiness incomplete. Keep this session and resume supervision; prepare again after resolving the problem.", true);
+        return result("Stow or readiness incomplete: stowComplete, onlyKeepingWatch and pendingQuestionsRecorded must all be true, with a valid nonce, handoff and stowReceipt. Keep this session and resume supervision; prepare again after resolving the problem.", true);
       }
       save(params.handoff, prepared.session);
       request = { ...prepared, readyAt: Date.now(), handoff: params.handoff };

@@ -97,7 +97,7 @@ async function ready() {
   assert.equal(prep.isError, undefined, 'prepare must accept completed startup with only watching left');
   const n = prep.details.nonce;
   assert.ok(prep.content.some(x=>x.text?.includes(n)), 'prepare must expose its nonce in model-visible content');
-  const result = await call({action:'ready',nonce:n,stowComplete:true,onlyKeepingWatch:true,stowReceipt:stowReceipt(),handoff:'Open: backlog. Already reported: reply. Next: supervise.'});
+  const result = await call({action:'ready',nonce:n,stowComplete:true,onlyKeepingWatch:true,pendingQuestionsRecorded:true,stowReceipt:stowReceipt(),handoff:'Open: backlog. Already reported: reply. Next: supervise.'});
   assert.equal(result.isError, undefined, 'readiness must accept only a confirmed supervision job');
   return n;
 }
@@ -117,7 +117,28 @@ mkdirSync(`${home}/state/classifier-away`, { recursive: true });
 writeFileSync(`${home}/state/classifier-away/.afk`, '');
 assert.deepEqual(classify('I am back; please show the investigation results.'), ['', '', 'yes'], 'a real human return must remain unmarked and end away mode');
 await emit('session_start');
-if (scenario.startsWith('receipt-')) {
+if (scenario.startsWith('questions-')) {
+  await arm();
+  const nonce = (await call({action:'prepare'})).details.nonce;
+  const params = {action:'ready',nonce,stowComplete:true,onlyKeepingWatch:true,
+    stowReceipt:stowReceipt(),handoff:'Open question: should I push? Next: supervise.'};
+  const kind = scenario.slice('questions-'.length);
+  if (kind !== 'missing') params.pendingQuestionsRecorded = {false:false,string:'true',valid:true}[kind];
+  const result = await call(params);
+  if (kind === 'valid') {
+    assert.equal(result.isError, undefined, 'recorded questions must allow readiness');
+    assert.equal(timers.filter(x => x.ms < 30000).length, 1, 'attested readiness must schedule reset');
+    await commands.get('fm-reset').handler(nonce, ctx);
+    assert.equal(switches, 1, 'attested readiness must still reset');
+  } else {
+    assert.equal(result.isError, true, `${scenario}: chat-only questions must block readiness without a true attestation`);
+    assert.match(result.content.map(x => x.text ?? '').join('\n'), /pendingQuestionsRecorded/, 'refusal must name the missing attestation');
+    assert.equal(timers.length, 0, 'refused attestation must not schedule reset');
+    assert.equal(existsSync(`${home}/state/.omp-reset-handoff.json`), false, 'refused attestation must not save a handoff');
+    await commands.get('fm-reset').handler(nonce, ctx);
+    assert.equal(switches, 0, 'refused attestation must preserve this session');
+  }
+} else if (scenario.startsWith('receipt-')) {
   await arm();
   const nonce = (await call({action:'prepare'})).details.nonce;
   const receipt = stowReceipt();
@@ -139,7 +160,7 @@ if (scenario.startsWith('receipt-')) {
     if (kind === 'valid') { receipt.actions['data/captain.md'] = 'rewritten'; receipt.actions['data/learnings.md'] = 'routed'; }
   }
   if (kind === 'report-missing-total' || kind === 'report-missing-budget') writeFileSync(`${home}/state/${kind}`, '');
-  const result = await call({action:'ready',nonce,stowComplete:true,onlyKeepingWatch:true,
+  const result = await call({action:'ready',nonce,stowComplete:true,onlyKeepingWatch:true,pendingQuestionsRecorded:true,
     stowReceipt:kind === 'missing' ? undefined : receipt,handoff:'Open: backlog. Already reported: reply. Next: supervise.'});
   if (kind === 'valid') {
     assert.equal(result.isError, undefined, 'complete matching receipt must accept readiness');
@@ -231,7 +252,7 @@ if (scenario.startsWith('receipt-')) {
     const n = (await call({action:'prepare'})).details.nonce;
     if (phase === 'ready-budget') writeFileSync(`${home}/state/budget-takeover`, signal);
     else enterAway();
-    assert.equal((await call({action:'ready',nonce:n,stowComplete:true,onlyKeepingWatch:true,stowReceipt:stowReceipt(),handoff:'Stowed in normal mode.'})).isError,true,`${signal} takeover must veto readiness`);
+    assert.equal((await call({action:'ready',nonce:n,stowComplete:true,onlyKeepingWatch:true,pendingQuestionsRecorded:true,stowReceipt:stowReceipt(),handoff:'Stowed in normal mode.'})).isError,true,`${signal} takeover must veto readiness`);
     assert.equal(timers.length,0,'away readiness must not schedule transport');
   } else {
     if (phase.startsWith('in-flight')) writeFileSync(`${home}/state/submit-pauses`, '');

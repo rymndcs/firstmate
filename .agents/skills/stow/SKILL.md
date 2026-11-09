@@ -87,9 +87,9 @@ While away mode is active (`state/.afk` or the selected omp away owner), re-arm 
 Startup and reset recovery also arm using the omp protocol; neither prepares another reset in that turn.
 In normal mode at other transitions, when all instructions have reached the workers and nothing waits on firstmate's next step, use `firstmate_watch_reset` instead of re-arming, regardless of context size.
 Otherwise continue work, then arm using the omp protocol when supervision is required.
-The last message must be answered, questions must be recorded in the decision inbox and backlog, and no push, merge, cleanup or steer may be half done.
+The last message must be answered, every question still waiting on the captain must be durably recorded in the home's decision inbox or backlog, or as a mockup question with an open captain decision hold, and no push, merge, cleanup or steer may be half done; any unanswered question living only in chat or the handoff blocks reset until recorded.
 If not already prepared, call its `prepare` action first.
-Complete this skill, then call `ready` with its Completion receipt in `stowReceipt` using the tool schema, the returned nonce, both true attestations, and a compact handoff of open-thread pointers, already-reported outcomes, and the immediate supervision action.
+Complete this skill, then call `ready` with its Completion receipt in `stowReceipt` using the tool schema, the returned nonce, all three true attestations (`stowComplete`, `onlyKeepingWatch`, and `pendingQuestionsRecorded`), and a compact handoff of open-thread pointers, already-reported outcomes, and the immediate supervision action.
 The extension independently reruns the budget report at readiness and refuses an incomplete, mismatched or over-budget receipt.
 An incomplete stow or unresolved exception means cancel the reset and continue supervision in the current session.
 
