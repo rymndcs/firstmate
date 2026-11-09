@@ -3,7 +3,7 @@ set -eu
 # shellcheck source=tests/pr-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/pr-helpers.sh"
 mkdir "$PR_TMP/denybin"
-for service in jira gh gh-axi glab tmux treehouse herdr orca zellij; do
+for service in jira gh gh-axi glab tmux treehouse herdr orca zellij linear curl wget; do
   cat > "$PR_TMP/denybin/$service" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$0 $*" >> "$JIRA_DENIED_LOG"
@@ -468,6 +468,135 @@ FAKE
   pass 'direct merge failure survives ordinary cleanup and publishes once after ephemeral state disappears'
 }
 
+jira_cleanup_record_failure_regression() {
+  local FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_JIRA_TIMEOUT FM_TEST_GH_STATE
+  local scenario task_url dir tool cleanup_home
+  local -a cleanup_args
+  export FM_JIRA_TIMEOUT=1 FM_TEST_GH_STATE=MERGED
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$PR_CODE/bin/fm-wake-lib.sh"
+  for scenario in ${FM_JIRA_RECORD_SCENARIO:-lock record repaired receipt open other lookup-failure child retirement}; do
+    export FM_HOME="$PR_TMP/record-cleanup-$scenario"
+    export FM_STATE_OVERRIDE="$FM_HOME/state" FM_DATA_OVERRIDE="$FM_HOME/data" FM_CONFIG_OVERRIDE="$FM_HOME/config"
+    export FM_TEST_GH_STATE=MERGED
+    mkdir -p "$FM_HOME/state" "$FM_HOME/data" "$FM_HOME/config"
+    printf '%s\n' '- thanos [no-mistakes]' > "$FM_HOME/data/projects.md"
+    fm_git_init_commit "$FM_HOME/thanos"
+    git -C "$FM_HOME/thanos" update-ref refs/remotes/origin/main HEAD
+    git -C "$FM_HOME/thanos" worktree add --detach -q "$FM_HOME/task-tree" HEAD
+    fm_write_meta "$FM_HOME/state/task-record.meta" 'window=firstmate:fm-task-record' \
+      'endpoint_task_id=task-record' 'backend=tmux' "worktree=$FM_HOME/task-tree" \
+      "project=$FM_HOME/thanos" 'branch=rcs/swvl-9995-record' 'kind=ship' 'mode=no-mistakes'
+    task_url=https://github.com/owner/repo/pull/75
+    dir="$FM_HOME/state/jira/github.com/owner/repo/75"
+    cat > "$PR_TMP/fakebin/gh-axi" <<'FAKE'
+#!/usr/bin/env bash
+[ "$1 $2" = 'pr merge' ] || exit 97
+printf 'fake merge succeeded\n'
+FAKE
+    cat > "$PR_TMP/fakebin/jira" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s|%s|%s|%s\n' "$@" >> "$JIRA_LOG"
+FAKE
+    cp "$ROOT/bin/fm-linear.sh" "$PR_CODE/bin/fm-linear.sh"
+    for tool in tmux treehouse; do fm_fake_exit0 "$PR_TMP/fakebin" "$tool"; done
+    fm_fake_exit0 "$PR_CODE/bin" fm-protected-paths.sh fm-fleet-sync.sh
+    chmod +x "$PR_TMP/fakebin/gh-axi" "$PR_TMP/fakebin/jira"
+    for tool in gh gh-axi jira tmux treehouse; do
+      [ -x "$PR_TMP/fakebin/$tool" ] && [ "$(command -v "$tool")" = "$PR_TMP/fakebin/$tool" ] \
+        || fail "record cleanup fixture must resolve executable fake $tool"
+    done
+    mkdir -p "$dir"
+    case "$scenario" in
+      lock) fm_lock_try_acquire "$dir/followups.lock" || fail 'fixture must hold the actual reminder lock' ;;
+      *) mkdir "$dir/followups.owed" ;;
+    esac
+    : > "$JIRA_LOG"
+    "$PR_CODE/bin/fm-pr-merge.sh" task-record "$task_url" > "$PR_TMP/record-$scenario.merge" 2> "$PR_TMP/record-$scenario.err" \
+      || fail 'failed obligation recording must preserve successful direct merge'
+    assert_grep 'fake merge succeeded' "$PR_TMP/record-$scenario.merge" 'direct merge must retain its successful output'
+    assert_no_grep 'issue|move|SWVL-9995|Done' "$JIRA_LOG" 'initial recording failure must defer Jira Done'
+    assert_no_grep 'to Done yourself' "$PR_TMP/record-$scenario.err" 'initial recording failure must defer Linear Done'
+    [ ! -f "$dir/followups.owed" ] || fail 'fixture must reproduce failure to establish the owed file'
+    assert_absent "$dir/followups" 'initial recording failure must not acquire a publication receipt'
+    assert_present "$FM_HOME/state/task-record.check.sh" 'failed merge recording must retain poll discovery'
+    if [ "$scenario" = retirement ]; then
+      # shellcheck source=bin/fm-pr-lib.sh
+      . "$PR_CODE/bin/fm-pr-lib.sh"
+      fm_pr_poll_snapshot_capture "$FM_HOME/state" task-record "$PR_CODE/bin/fm-pr-poll.sh" \
+        || fail 'fixture must capture the canonical poll identity'
+      fm_pr_poll_retirement_publish "$FM_HOME/state" task-record "$PR_CODE/bin/fm-pr-poll.sh" merged \
+        || fail 'fixture must establish a valid pending retirement'
+    fi
+    cleanup_home=$FM_HOME
+    cleanup_args=(task-record)
+    if [ "$scenario" = child ]; then
+      cleanup_home="$PR_TMP/record-parent"
+      cleanup_args=(parent-record --force)
+      mkdir -p "$cleanup_home/state" "$cleanup_home/data" "$cleanup_home/config"
+      printf '%s\n' '- wms [no-mistakes]' > "$cleanup_home/data/projects.md"
+      printf '%s\n' parent-record > "$FM_HOME/.fm-secondmate-home"
+      fm_write_meta "$cleanup_home/state/parent-record.meta" 'window=firstmate:fm-parent-record' \
+        'endpoint_task_id=parent-record' 'backend=tmux' "worktree=$FM_HOME" "home=$FM_HOME" "project=$PR_CODE" \
+        'kind=secondmate' 'mode=no-mistakes'
+    fi
+    if [ "$scenario" = lock ] || [ "$scenario" = record ] || [ "$scenario" = lookup-failure ] || [ "$scenario" = child ] || [ "$scenario" = retirement ]; then
+      if [ "$scenario" = lookup-failure ]; then
+        cp "$PR_TMP/fakebin/gh" "$PR_TMP/record-gh.saved"
+        printf '#!/usr/bin/env bash\nexit 1\n' > "$PR_TMP/fakebin/gh"
+      fi
+      if FM_HOME="$cleanup_home" FM_STATE_OVERRIDE="$cleanup_home/state" \
+          FM_DATA_OVERRIDE="$cleanup_home/data" FM_CONFIG_OVERRIDE="$cleanup_home/config" \
+          "$PR_CODE/bin/fm-teardown.sh" "${cleanup_args[@]}" > "$PR_TMP/record-$scenario.cleanup" 2> "$PR_TMP/record-$scenario.cleanup.err"; then
+        fail 'cleanup must refuse when it cannot establish the merged reminder obligation'
+      fi
+      assert_grep 'could not establish merged PR follow-ups' "$PR_TMP/record-$scenario.cleanup.err" 'cleanup must reach the reminder ownership boundary'
+      assert_present "$FM_HOME/state/task-record.meta" 'refused cleanup must preserve metadata discovery'
+      assert_present "$FM_HOME/state/task-record.check.sh" 'refused cleanup must preserve poll discovery'
+      assert_present "$FM_HOME/state/task-record.pr-poll" 'refused cleanup must preserve the canonical PR identity'
+      assert_no_grep 'issue|move|SWVL-9995|Done' "$JIRA_LOG" 'refused cleanup must keep Jira Done deferred'
+      assert_no_grep 'to Done yourself' "$PR_TMP/record-$scenario.cleanup.err" 'refused cleanup must keep Linear Done deferred'
+    fi
+    case "$scenario" in
+      lock) fm_lock_release "$dir/followups.lock" ;;
+      *) rmdir "${dir:?}/followups.owed" ;;
+    esac
+    case "$scenario" in
+      receipt) "$PR_CODE/bin/fm-jira.sh" followups "$task_url" ;;
+      open) export FM_TEST_GH_STATE=OPEN ;;
+      other) ln -s "$FM_HOME/thanos" "$FM_HOME/wms"; sed 's@/thanos$@/wms@' "$FM_HOME/state/task-record.meta" > "$PR_TMP/record-other.meta"; cp "$PR_TMP/record-other.meta" "$FM_HOME/state/task-record.meta" ;;
+      lookup-failure) cp "$PR_TMP/record-gh.saved" "$PR_TMP/fakebin/gh" ;;
+    esac
+    "$PR_CODE/bin/fm-teardown.sh" task-record > "$PR_TMP/record-$scenario.recovery" 2> "$PR_TMP/record-$scenario.recovery.err" \
+      || { cat "$PR_TMP/record-$scenario.recovery.err" >&2; fail 'repaired recording or existing successful receipt must permit normal cleanup'; }
+    assert_absent "$FM_HOME/state/task-record.meta" 'successful cleanup must remove task metadata'
+    assert_absent "$FM_HOME/state/task-record.check.sh" 'successful cleanup must remove the poll'
+    "$PR_CODE/bin/fm-jira.sh" retry-followups "$task_url"
+    drain_pr > "$PR_TMP/record-$scenario.wake"
+    case "$scenario" in
+      open|other)
+        assert_absent "$dir/followups.owed" 'unmerged or other-project cleanup must not create owed work'
+        assert_absent "$dir/followups" 'unmerged or other-project cleanup must not publish a reminder'
+        assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/record-$scenario.wake" 'unmerged or other-project cleanup must stay silent'
+        assert_no_grep 'issue|move|SWVL-9995|Done' "$JIRA_LOG" 'unmerged or other-project cleanup must not move Jira Done'
+        assert_no_grep 'to Done yourself' "$PR_TMP/record-$scenario.recovery.err" 'unmerged or other-project cleanup must not move Linear Done' ;;
+      *)
+        assert_grep 'LINEAR: no API key configured - move SWVL-9995 to Done yourself' "$PR_TMP/record-$scenario.recovery.err" 'cleanup recovery must replay deferred status through the existing Linear owner'
+        [ "$(grep -c 'issue|move|SWVL-9995|Done' "$JIRA_LOG")" = 1 ] || fail 'cleanup recovery must perform deferred Jira Done once'
+        assert_grep "$task_url" "$dir/followups" 'recovery must leave a successful URL-bearing publication receipt'
+        assert_absent "$dir/followups.owed" 'successful publication must clear owed state'
+        [ "$(grep -c 'MERGE FOLLOW-UPS:' "$PR_TMP/record-$scenario.wake")" = 1 ] || fail 'cleanup recovery must deliver both follow-ups once'
+        assert_grep 'check MCP covers what changed unless explicitly skipped; put any MCP gap in a separate follow-up PR' "$PR_TMP/record-$scenario.wake" 'recording recovery must deliver the accepted MCP follow-up'
+        assert_grep 'update /help-center with the change' "$PR_TMP/record-$scenario.wake" 'recording recovery must deliver the help-center follow-up'
+        "$PR_CODE/bin/fm-jira.sh" followups "$task_url"
+        drain_pr > "$PR_TMP/record-$scenario.repeat"
+        assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/record-$scenario.repeat" 'recovered recording must share the once-per-PR receipt' ;;
+    esac
+    pass "failed obligation establishment, normal cleanup and retry: $scenario"
+  done
+  fm_fake_exit0 "$PR_CODE/bin" fm-linear.sh
+}
+
 jira_owed_contract_regression() {
   local FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_JIRA_TIMEOUT FM_TEST_GH_STATE
   local dir tool scenario
@@ -617,9 +746,10 @@ FAKE
 }
 
 case "${FM_JIRA_TEST_CASE:-all}" in
-  all) jira_cleanup_regression; jira_owed_contract_regression; jira_ordering_regression; jira_deadline_regressions; jira_installed_deadlines; jira_publication_write_regression; jira_publication_lock_regression ;;
+  all) jira_cleanup_record_failure_regression; jira_cleanup_regression; jira_owed_contract_regression; jira_ordering_regression; jira_deadline_regressions; jira_installed_deadlines; jira_publication_write_regression; jira_publication_lock_regression ;;
   contract) jira_owed_contract_regression ;;
   cleanup) jira_cleanup_regression ;;
+  record-cleanup) jira_cleanup_record_failure_regression ;;
   publication-write) jira_publication_write_regression ;;
   publication-lock) jira_publication_lock_regression ;;
   ordering) jira_ordering_regression ;;

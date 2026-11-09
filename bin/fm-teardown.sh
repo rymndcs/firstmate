@@ -670,10 +670,11 @@ validate_pr_poll_cleanup() {
 remove_pr_poll_artifacts() {
   local state_dir=$1 id=$2 quarantine artifact
   validate_pr_poll_cleanup "$state_dir" "$id" || return 1
-  fm_pr_poll_retirement_recover_one "$state_dir" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" || return 1
-  if fm_pr_metadata_identity_parse "$state_dir/$id.meta"; then
-    FM_STATE_OVERRIDE="$state_dir" "$SCRIPT_DIR/fm-jira.sh" retry-followups "$FM_PR_META_URL" || true
+  if ! FM_STATE_OVERRIDE="$state_dir" "$SCRIPT_DIR/fm-jira.sh" cleanup "$id"; then
+    echo "REFUSED: could not establish merged PR follow-ups; preserving task metadata and poll for retry." >&2
+    return 1
   fi
+  fm_pr_poll_retirement_recover_one "$state_dir" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" || return 1
   rm -f "$state_dir/$id.check.sh" "$state_dir/$id.pr-poll" \
     "$state_dir/$id.pr-poll-registration" "$state_dir/$id.pr-poll-retirement" \
     "$state_dir/$id.check-trust" "$state_dir/$id.pr-registered" "$state_dir/$id.pr-ci" || return 1
@@ -2074,7 +2075,8 @@ cleanup_firstmate_home_children() {
     fi
     remove_grok_turnend_auth "$sub_state" "$child_id"
     remove_kimi_turnend_auth "$sub_state" "$child_id"
-    remove_pr_poll_artifacts "$sub_state" "$child_id" || return 1
+    FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+      remove_pr_poll_artifacts "$sub_state" "$child_id" || return 1
     child_busy_gen=$(meta_value "$child_meta" busy_gen)
     if [ -z "$child_busy_gen" ]; then
       child_busy_gen=$(cat "$sub_state/$child_id.busy-gen" 2>/dev/null || true)
