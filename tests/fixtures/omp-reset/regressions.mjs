@@ -121,7 +121,12 @@ if (scenario.startsWith('startup-') || scenario.startsWith('recovery-')) {
   await arm();
   const n = await ready();
   const startup = scenario.startsWith('startup-');
-  const recoveryFails = !startup || scenario.startsWith('startup-recovery-');
+  const refused = scenario === 'startup-refused';
+  const recoveryFails = !startup || scenario.startsWith('startup-recovery-') || refused;
+  if (refused) {
+    switchMode = 'throw';
+    writeFileSync(`${home}/state/recovery-refused`, '');
+  }
   if (scenario.endsWith('encoding')) {
     writeFileSync(`${home}/state/encoding-failures`, startup ? recoveryFails ? '2,3' : '2' : '1');
     if (existsSync(`${home}/state/encoding-count`)) unlinkSync(`${home}/state/encoding-count`);
@@ -135,7 +140,7 @@ if (scenario.startsWith('startup-') || scenario.startsWith('recovery-')) {
       assert.equal(editor, 'Wai', 'failed recovery must retain the human draft');
     }
   }, `${scenario}: recovery must report delivery failure rather than throw it out of the callback`);
-  assert.equal(switches, startup ? 1 : 0, 'fault must reach the intended switch boundary');
+  assert.equal(switches, startup && !refused ? 1 : 0, 'fault must reach the intended switch boundary');
   assert.equal(checks(), checksBefore + 1, `${scenario}: delivery failure must reach the independent recovery check`);
   const turns = messages.filter(x => x.options?.triggerTurn);
   assert.equal(turns.length, recoveryFails ? 0 : 1, `${scenario}: queue exactly one continuation when recovery succeeds`);
@@ -151,12 +156,15 @@ if (scenario.startsWith('startup-') || scenario.startsWith('recovery-')) {
     assert.match(turns[0].message.content, /arm exactly one supervision cycle/);
     assert.match(turns[0].message.content, /Open: backlog\. Already reported: reply/);
   }
-  const failure = errors.find(x => x.text.startsWith(recoveryFails ? 'Automatic reset recovery failed:' : 'Automatic reset failed:'));
+  assert.equal(errors.some(x => x.text.includes('Supervision recovery requested.')), !recoveryFails,
+    `${scenario}: recovery requested notice must reflect accepted submission only`);
+  assert.equal(errors.length, 1, `${scenario}: report one failure without a contradictory extra notice`);
+  const failure = errors.find(x => x.text.startsWith(recoveryFails && !refused ? 'Automatic reset recovery failed:' : 'Automatic reset failed:'));
   assert.ok(failure, `${scenario}: failed delivery must leave a visible failure line through the native error UI`);
   assert.equal(failure.type, 'error', 'only the error UI is verified to render a chat error line');
-  assert.equal(failure.session, startup ? 'new' : 'old');
-  assert.match(failure.text, /injected (encoding|enqueue) failure/);
-  if (recoveryFails) assert.match(failure.text, /could not be queued/);
+  assert.equal(failure.session, startup && !refused ? 'new' : 'old');
+  assert.match(failure.text, refused ? /switch failed/ : /injected (encoding|enqueue) failure/);
+  if (recoveryFails && !refused) assert.match(failure.text, /could not be queued/);
   const before = { messages: messages.length, errors: errors.length, enqueueCalls,
     encodings: existsSync(`${home}/state/encoding-count`) ? readFileSync(`${home}/state/encoding-count`, 'utf8') : '' };
   for (const t of timers) await t.fn();
@@ -164,6 +172,7 @@ if (scenario.startsWith('startup-') || scenario.startsWith('recovery-')) {
   assert.deepEqual({ messages: messages.length, errors: errors.length, enqueueCalls,
     encodings: existsSync(`${home}/state/encoding-count`) ? readFileSync(`${home}/state/encoding-count`, 'utf8') : '' }, before,
     'late deadline, submit and command must not retry or duplicate the completed recovery attempt');
+  if (refused) unlinkSync(`${home}/state/recovery-refused`);
   if (existsSync(`${home}/state/encoding-failures`)) unlinkSync(`${home}/state/encoding-failures`);
 } else if (scenario.startsWith('away-')) {
   const [, signal, ...parts] = scenario.split('-');

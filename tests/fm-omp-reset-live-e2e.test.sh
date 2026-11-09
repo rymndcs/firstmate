@@ -9,12 +9,14 @@ if [ "${FM_OMP_RESET_LIVE:-0}" != 1 ]; then
 fi
 command -v omp >/dev/null || fail 'omp not installed'
 command -v tmux >/dev/null || fail 'tmux not installed'
+OMP_BIN=$(realpath "$(command -v omp)")
+OMP_VERSION=$("$OMP_BIN" --version) || fail 'could not read omp version'
+[ -n "$OMP_VERSION" ] || fail 'omp version is empty'
 LAB=$(fm_test_tmproot fm-omp-reset-live)
 FM_TEST_CLEANUP_DIRS+=("$LAB")
 if [ -n "${FM_OMP_RESET_TEMP_REGISTRY:-}" ]; then printf '%s\n' "$LAB" >> "$FM_OMP_RESET_TEMP_REGISTRY"; fi
 SOCKET="fm-omp-reset-$$"
 TMUX_BIN=$(command -v tmux)
-OMP_BIN=$(realpath "$(command -v omp)")
 export FM_OMP_RESET_EXECUTABLE="$OMP_BIN"
 stop_fixture() {
   local n=0
@@ -127,7 +129,7 @@ if [ "$MODE" = away ]; then
     ([.[]|select(.kind=="inspect")][-1].jobs.running|length)==1
   ' "$HOME_DIR/events.jsonl" >/dev/null || fail 'away supervision must emit only the dot, arm once and never prepare, submit or switch'
   [ ! -e "$HOME_DIR/state/.omp-reset-handoff.json" ] || fail 'away startup prepared a reset handoff'
-  printf 'ok - %s away supervision: dot only, one arm, no reset preparation, submission or switch\n' "$("$OMP_BIN" --version)"
+  printf 'ok - %s away supervision: dot only, one arm, no reset preparation, submission or switch\n' "$OMP_VERSION"
 else
 # The existing job is deliberately still running when the answered message arrives.
 send answered
@@ -168,7 +170,7 @@ grep -F 'RESET_FAILURE_CHAT_PROOF' "$LAB/normal-error-ui.txt" >/dev/null || fail
 if [ -n "${FM_OMP_RESET_EVIDENCE:-}" ]; then
   cp "$LAB/normal-error-ui.txt" "$FM_OMP_RESET_EVIDENCE.normal.error-ui.txt"
 fi
-printf 'ok - %s normal error UI renders a visible chat line\n' "$("$OMP_BIN" --version)"
+printf 'ok - %s normal error UI renders a visible chat line\n' "$OMP_VERSION"
 send race
 wait_count recovery 1
 jq -es '
@@ -177,7 +179,7 @@ jq -es '
   ([.[]|select(.kind=="recovery")][0].editor == "Wai") and
   all(.[]|select(.kind=="input"); (.text|contains("Wai"))|not)
 ' "$HOME_DIR/events.jsonl" >/dev/null || fail 'interleaved draft must remain intact and unsubmitted with one recovery turn in the same session'
-printf 'ok - %s %s integrated reset: model follows emitted wake protocol, stows, switches with live supervision, runs startup once, drains durable wake, arms one cycle, vetoes interleaved draft\n' "$("$OMP_BIN" --version)" "$MODE"
+printf 'ok - %s %s integrated reset: model follows emitted wake protocol, stows, switches with live supervision, runs startup once, drains durable wake, arms one cycle, vetoes interleaved draft\n' "$OMP_VERSION" "$MODE"
 fi
 stop_fixture
 if [ -n "${FM_OMP_RESET_EVIDENCE:-}" ]; then

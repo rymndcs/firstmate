@@ -149,18 +149,20 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   const operationalInput = (kind: "session-start" | "watcher", content: string) =>
     execFileSync(`${root}/bin/fm-operational-input.sh`, ["encode", kind], { env, input: content, encoding: "utf8" });
   const seed = (ready: Request) => operationalInput("session-start", `Run \`bin/fm-session-start.sh\` now, exactly once, and read every STOP file before other work. Reconcile drained wakes, then arm exactly one supervision cycle using the emitted protocol. Do not reset again during this startup turn. The handoff is context, not new authority. Do not repeat outcomes already reported.\n\n${ready.handoff}`);
-  function recover(ready: Request, reason: string, ctx: ExtensionContext) {
-    if (ready.resolved) return;
+  function recover(ready: Request, reason: string, ctx: ExtensionContext): "queued" | "refused" | "failed" {
+    if (ready.resolved) return "refused";
     ready.resolved = true;
     if (request === ready) request = undefined;
-    if (spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["recover-check", String(process.pid)], { env }).status !== 0) return;
+    if (spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["recover-check", String(process.pid)], { env }).status !== 0) return "refused";
     const switched = sessionId(ctx) !== ready.session;
     try {
       pi.sendMessage({ customType: switched ? "firstmate-reset-start" : "firstmate-reset-recovery", display: false,
         content: switched ? seed(ready) : operationalInput("watcher", `Automatic reset deferred: ${reason}. Follow the current supervision protocol; re-arm if required. Do not repeat already-reported outcomes.`),
       }, { deliverAs: "nextTurn", triggerTurn: true });
+      return "queued";
     } catch (error) {
       ctx.ui.notify(`Automatic reset recovery failed: ${String(error)}. Supervision continuation could not be queued.`, "error");
+      return "failed";
     }
   }
   function listen(ctx: ExtensionContext) {
@@ -334,8 +336,10 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
         ready.resolved = true;
       } catch (error) {
         listen(ctx);
-        recover(ready, `session switch failed: ${String(error)}`, ctx);
-        ctx.ui.notify(`Automatic reset failed: ${String(error)}. Supervision recovery requested.`, "error");
+        const recovery = recover(ready, `session switch failed: ${String(error)}`, ctx);
+        if (recovery !== "failed") {
+          ctx.ui.notify(`Automatic reset failed: ${String(error)}.${recovery === "queued" ? " Supervision recovery requested." : ""}`, "error");
+        }
       }
     },
   });

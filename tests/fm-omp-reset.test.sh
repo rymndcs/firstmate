@@ -28,7 +28,8 @@ cat > "$LAB/bin/fm-omp-reset-submit.sh" <<'SH'
 [ ! -f "$FM_HOME/state/refuse" ] || exit 1
 if [ "$1" = recover-check ]; then
   printf 'checked\n' >> "$FM_HOME/state/recovery-checks"
-  exit 0
+  [ ! -f "$FM_HOME/state/recovery-refused" ]
+  exit $?
 fi
 if [ "$1" = check ]; then
   [ ! -e "$FM_HOME/state/.afk" ] && [ ! -e "$FM_HOME/state/.afk-daemon-terminal" ]
@@ -73,7 +74,9 @@ if [ -n "${FM_RESET_REGRESSION:-}" ]; then
   FM_HOME="$LAB" FM_STATE_OVERRIDE="$LAB/state" node --experimental-strip-types "$ROOT/tests/fixtures/omp-reset/regressions.mjs" "$FM_RESET_REGRESSION"
   exit
 fi
-for scenario in startup-encoding startup-enqueue startup-recovery-encoding startup-recovery-enqueue recovery-encoding recovery-enqueue normal-seed unquoted-arm away-flag-prepare away-flag-ready away-flag-ready-budget away-flag-command-budget away-flag-scheduled away-flag-input away-flag-command away-flag-in-flight away-flag-in-flight-clean away-owner-prepare away-owner-ready away-owner-ready-budget away-owner-command-budget away-owner-scheduled away-owner-input away-owner-command away-owner-in-flight away-owner-in-flight-clean arm-gate draft-race in-flight cancelled-switch thrown-switch partial-switch running-watcher veto-draft veto-busy veto-queued veto-forged veto-foreign-job; do
+node "$ROOT/tests/fixtures/omp-reset/live-reporter.mjs" "$ROOT" "$LAB/reporter"
+if [ -n "${FM_RESET_REPORTER_CASE:-}" ]; then exit; fi
+for scenario in startup-refused startup-encoding startup-enqueue startup-recovery-encoding startup-recovery-enqueue recovery-encoding recovery-enqueue normal-seed unquoted-arm away-flag-prepare away-flag-ready away-flag-ready-budget away-flag-command-budget away-flag-scheduled away-flag-input away-flag-command away-flag-in-flight away-flag-in-flight-clean away-owner-prepare away-owner-ready away-owner-ready-budget away-owner-command-budget away-owner-scheduled away-owner-input away-owner-command away-owner-in-flight away-owner-in-flight-clean arm-gate draft-race in-flight cancelled-switch thrown-switch partial-switch running-watcher veto-draft veto-busy veto-queued veto-forged veto-foreign-job; do
   FM_HOME="$LAB" FM_STATE_OVERRIDE="$LAB/state" node --experimental-strip-types "$ROOT/tests/fixtures/omp-reset/regressions.mjs" "$scenario"
 done
 FM_HOME="$LAB" FM_STATE_OVERRIDE="$LAB/state" node --experimental-strip-types "$ROOT/tests/fixtures/omp-reset/transitions.mjs"
