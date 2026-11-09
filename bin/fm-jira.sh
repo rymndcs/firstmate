@@ -2,6 +2,8 @@
 # Move Jira status and queue merge follow-ups for registered Thanos PRs.
 # Usage: fm-jira.sh transition <task-id> in-review|done
 #        fm-jira.sh merged|followups <github-pr-url>
+#        fm-jira.sh owe <task-id>
+#        fm-jira.sh retry-followups [github-pr-url]
 # fm-pr-check.sh owns Ready for Review; fm-pr-merge.sh and fm-pr-poll.sh own Done.
 # Resolve SWVL keys from the recorded branch, falling back to the PR title/branch.
 # Each PR has a serialized, forward-only receipt shared across task registrations.
@@ -12,7 +14,12 @@
 # (default 5 seconds, plus the deadline helper's kill grace); Jira timeouts retry.
 # followups publishes without Jira work and returns nonzero on failure;
 # fm-watch.sh requires that success before retiring a merged poll.
-# Merge follow-ups have their own per-PR lock and receipt before Jira work.
+# Merge follow-ups use state/jira/<host>/<path>/<number>/followups.lock.
+# Under that lock, followups.owed records the merged URL before Done work;
+# only a successful queue append and followups receipt clear the obligation.
+# Task cleanup preserves this directory and attempts already-owed publication;
+# retry-followups and wake drain can replay it without task metadata/registry.
+# owe establishes that obligation without status work or publication.
 # No comments or other Jira fields are written; other projects stay silent.
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -47,6 +54,14 @@ transition_one() (
   fm_pr_metadata_identity_parse "$meta" && [ "$FM_PR_META_PROVIDER" = github ] || exit 1
   url=$FM_PR_META_URL
   [ -z "${MERGED_URL:-}" ] || [ "$url" = "$MERGED_URL" ] || exit 1
+  case "$step" in
+    done|followups|owe)
+      fm_axi_bounded_run "${FM_JIRA_TIMEOUT:-5}" bash "$SCRIPT_DIR/fm-jira.sh" --followups "$url" owe || {
+        printf 'MERGE FOLLOW-UPS: %s - could not record owed reminder; status work deferred\n' "$url" >&2
+        exit 2
+      } ;;
+  esac
+  [ "$step" != owe ] || exit 0
   if [ "$step" = followups ]; then
     publish_followups_bounded "$url" || exit 2
     exit 0
@@ -78,7 +93,7 @@ publish_followups_bounded() {
 }
 
 publish_followups() {
-  url=$1
+  url=$1 action=${2:-publish}
   fm_pr_url_parse "$url" || exit 1
   dir="$STATE/jira/$FM_PR_HOST/$FM_PR_PATH/$FM_PR_NUMBER"
   mkdir -p "$dir"
@@ -86,11 +101,30 @@ publish_followups() {
   trap 'fm_lock_release "$lock"' EXIT
   trap 'exit 1' HUP INT TERM
   fm_lock_acquire_wait "$lock"
-  if [ ! -f "$dir/followups" ]; then
-    fm_wake_append check "merge-followups:$url" "check: MERGE FOLLOW-UPS: $url - (1) check MCP covers what changed unless explicitly skipped; put any MCP gap in a separate follow-up PR; (2) update /help-center with the change" || exit 1
-    printf '%s\n' "$url" > "$dir/followups"
+  if [ "$action" = owe ]; then
+    if ! grep -qxF "$url" "$dir/followups" 2>/dev/null; then
+      printf '%s\n' "$url" > "$dir/followups.owed" || exit 1
+    fi
+    exit 0
   fi
+  if ! grep -qxF "$url" "$dir/followups" 2>/dev/null; then
+    fm_wake_append check "merge-followups:$url" "check: MERGE FOLLOW-UPS: $url - (1) check MCP covers what changed unless explicitly skipped; put any MCP gap in a separate follow-up PR; (2) update /help-center with the change" || exit 1
+    printf '%s\n' "$url" > "$dir/followups" || exit 1
+  fi
+  rm -f -- "$dir/followups.owed"
 }
+
+retry_followups() (
+  requested=${1:-}
+  result=0
+  for owed in "$STATE"/jira/*/*/*/*/followups.owed; do
+    [ -f "$owed" ] || continue
+    url=$(cat "$owed")
+    [ -z "$requested" ] || [ "$url" = "$requested" ] || continue
+    publish_followups_bounded "$url" || result=1
+  done
+  exit "$result"
+)
 
 transition_attempt() {
   url=$1 step=$2 ticket=$3 label=$4
@@ -146,12 +180,25 @@ case "${1:-}" in
     [ "$#" -eq 3 ] || exit 0
     transition_one "$2" "$3" || true
     ;;
+  owe)
+    [ "$#" -eq 2 ] || exit 1
+    result=0
+    transition_one "$2" owe || result=$?
+    [ "$result" -ne 2 ] || exit 1
+    ;;
+  retry-followups)
+    retry_followups "${2:-}"
+    ;;
   merged|followups)
     [ "$#" -eq 2 ] || exit 0
     step='done'
     [ "$1" != followups ] || step=followups
     MERGED_URL=$2
     fm_pr_url_parse "$MERGED_URL" && [ "$FM_PR_PROVIDER" = github ] || exit 0
+    if [ "$step" = followups ] && [ -f "$STATE/jira/$FM_PR_HOST/$FM_PR_PATH/$FM_PR_NUMBER/followups.owed" ]; then
+      publish_followups_bounded "$FM_PR_URL"
+      exit "$?"
+    fi
     for meta in "$STATE"/*.meta; do
       [ -f "$meta" ] && [ ! -L "$meta" ] || continue
       result=0
@@ -163,7 +210,7 @@ case "${1:-}" in
     done
     ;;
   --followups)
-    publish_followups "$2"
+    publish_followups "$2" "${3:-publish}"
     ;;
   --attempt)
     [ "$#" -eq 5 ] || exit 1

@@ -139,7 +139,9 @@ fi
 # fails, and can never unmake a merge that already landed. fm-pr-check.sh above
 # owns the In Review transition.
 if [ "$MERGE_STATUS" -eq 0 ] && ! caller_defers_merge "$@"; then
-  "$SCRIPT_DIR/fm-linear.sh" transition "$ID" 'done' || true
-  "$SCRIPT_DIR/fm-jira.sh" transition "$ID" 'done' || true
+  if "$SCRIPT_DIR/fm-jira.sh" owe "$ID"; then
+    "$SCRIPT_DIR/fm-linear.sh" transition "$ID" 'done' || true
+    "$SCRIPT_DIR/fm-jira.sh" transition "$ID" 'done' || true
+  fi
 fi
 exit "$MERGE_STATUS"

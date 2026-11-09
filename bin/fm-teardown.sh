@@ -85,7 +85,8 @@
 # matching quarantine entries as ordinary single-link files on the state
 # device. It refuses and preserves task state when that proof fails; otherwise
 # it removes the task's check, trust record, PR sidecar, publication record, and
-# quarantine entries with the rest of the volatile state.
+# quarantine entries with the rest of the volatile state. Owed merge reminders
+# remain under state/jira/ until fm-jira.sh publishes them successfully.
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
@@ -670,6 +671,9 @@ remove_pr_poll_artifacts() {
   local state_dir=$1 id=$2 quarantine artifact
   validate_pr_poll_cleanup "$state_dir" "$id" || return 1
   fm_pr_poll_retirement_recover_one "$state_dir" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" || return 1
+  if fm_pr_metadata_identity_parse "$state_dir/$id.meta"; then
+    FM_STATE_OVERRIDE="$state_dir" "$SCRIPT_DIR/fm-jira.sh" retry-followups "$FM_PR_META_URL" || true
+  fi
   rm -f "$state_dir/$id.check.sh" "$state_dir/$id.pr-poll" \
     "$state_dir/$id.pr-poll-registration" "$state_dir/$id.pr-poll-retirement" \
     "$state_dir/$id.check-trust" "$state_dir/$id.pr-registered" "$state_dir/$id.pr-ci" || return 1
