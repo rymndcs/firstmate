@@ -208,7 +208,7 @@ A second attempted reset deterministically inserts `Wai` after the helper's comp
 The helper sends a private trigger without Enter; the native synchronous listener checks idle, queue and editor state before admitting the registered command and Enter together.
 A rendered background-job waiting row is not native agent activity, so it is not an additional reset veto.
 This proves the tested input ordering, not every physical terminal encoding or the semantic completeness of a knowledge sweep over real history.
-`tests/fm-omp-reset.test.sh` pins failed stow, stow-receipt and ready-time budget refusals, post-switch startup delivery failure with its reported recovery outcome, cancellation, thrown and partial switches, recovery ownership and successful-arm eligibility; `tests/fm-omp-reset-submit.test.sh` pins the transport boundary.
+`tests/fm-omp-reset.test.sh` pins failed stow, missing or non-true `pendingQuestionsRecorded`, stow-receipt and ready-time budget refusals, post-switch startup delivery failure with its reported recovery outcome, cancellation, thrown and partial switches, recovery ownership and successful-arm eligibility; `tests/fm-omp-reset-submit.test.sh` pins the transport boundary.
 No live Herdr reset is claimed by this tmux proof.
 Other primary harnesses keep their existing reset behavior.
 
