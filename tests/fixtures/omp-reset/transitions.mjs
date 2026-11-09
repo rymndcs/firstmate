@@ -61,7 +61,7 @@ async function prepare() {
 }
 async function ready(nonce, overrides = {}) {
   return call({ action: 'ready', nonce, stowComplete: true, onlyKeepingWatch: true,
-    handoff: 'Open threads: task record in backlog. Already reported: dispatch answered. Next: watch.', ...overrides });
+    handoff: 'Open threads: data/backlog.md#reset-followup. Already reported: investigation result delivered. Next: watch.', ...overrides });
 }
 async function submittedToken() {
   const result = await ready(await prepare());
@@ -125,9 +125,12 @@ await commands.get('fm-reset').handler(token, ctx);
 assert.equal(switches, 1);
 assert.equal(seeds.length, 1);
 assert.match(seeds[0].content[0].text, /bin\/fm-session-start.sh/);
-assert.match(seeds[0].content[0].text, /Already reported/);
+assert.match(seeds[0].content[0].text, /Open threads: data\/backlog\.md#reset-followup/);
+assert.match(seeds[0].content[0].text, /Already reported: investigation result delivered/);
 assert.equal(messages.filter(x => x.message.customType === 'firstmate-reset-start' && x.options?.triggerTurn).length, 1, 'new session must start one turn');
 assert.match(messages.find(x => x.message.customType === 'firstmate-reset-start').message.content, /bin\/fm-session-start.sh/, 'triggered turn must receive the full seed without relying on setup-only history');
+assert.match(messages.find(x => x.message.customType === 'firstmate-reset-start').message.content, /Open threads: data\/backlog\.md#reset-followup/, 'triggered startup must retain the specific open-thread pointer');
+assert.match(messages.find(x => x.message.customType === 'firstmate-reset-start').message.content, /Already reported: investigation result delivered/, 'triggered startup must retain the specific already-reported outcome');
 await commands.get('fm-reset').handler(token, ctx);
 assert.equal(switches, 1, 'token cannot replay');
 assert.equal((await call({action:'prepare'})).isError, true, 'startup handoff cannot cause a reset loop');

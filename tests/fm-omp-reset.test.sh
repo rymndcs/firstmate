@@ -8,6 +8,8 @@ FM_TEST_CLEANUP_DIRS+=("$LAB")
 trap fm_test_cleanup EXIT
 mkdir -p "$LAB/.omp/extensions" "$LAB/bin" "$LAB/state"
 cp "${FM_RESET_EXTENSION:-$ROOT/.omp/extensions/fm-primary-omp.ts}" "$LAB/.omp/extensions/fm-primary-omp.ts"
+cp "$ROOT/bin/fm-operational-input.sh" "$LAB/bin/"
+export FM_RESET_SOURCE_ROOT="$ROOT"
 cat > "$LAB/bin/fm-omp-reset-submit.sh" <<'SH'
 #!/usr/bin/env bash
 [ ! -f "$FM_HOME/state/refuse" ] || exit 1

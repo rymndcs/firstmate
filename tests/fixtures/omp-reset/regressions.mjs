@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync, unlinkSync, watch } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, watch } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const home = process.env.FM_HOME;
 const scenario = process.argv[2];
@@ -41,6 +42,30 @@ async function emit(name, event = {}) {
 }
 const call = params => tools.get('firstmate_watch_reset').execute('test', params, undefined, undefined, ctx);
 const recoveries = () => messages.filter(x => x.message.customType === 'firstmate-reset-recovery' && x.options.triggerTurn);
+function classify(content) {
+  const result = spawnSync('bash', ['-c', `
+    . "$1/bin/fm-supervise-daemon.sh"
+    message=$(cat)
+    kind=$(printf '%s' "$message" | "$1/bin/fm-operational-input.sh" kind)
+    classified=$(printf '%s' "$message" | "$1/bin/fm-operational-input.sh" classify)
+    if should_exit_afk "$2" "$message"; then returns=yes; else returns=no; fi
+    printf '%s\\t%s\\t%s' "$kind" "$classified" "$returns"
+  `, '_', process.env.FM_RESET_SOURCE_ROOT, `${home}/state/classifier-away`], { input: content, encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.split('\t');
+}
+function assertOperational(message) {
+  const kind = message.customType === 'firstmate-reset-start' ? 'session-start' : 'watcher';
+  const classification = classify(message.content);
+  assert.deepEqual(classification, [kind, kind, 'no'], `${scenario}: ${message.customType} must parse as internal and must not end away mode; got ${JSON.stringify(classification)} for ${JSON.stringify(message.content)}`);
+  const owner = `${process.env.FM_RESET_SOURCE_ROOT}/bin/fm-operational-input.sh`;
+  const body = spawnSync(owner, ['body'], { input: message.content, encoding: 'utf8' });
+  assert.equal(body.status, 0, body.stderr);
+  const encoded = spawnSync(owner, ['encode', kind], { input: body.stdout, encoding: 'utf8' });
+  assert.equal(encoded.status, 0, encoded.stderr);
+  assert.equal(message.content, encoded.stdout, 'reset messages must retain the exact owned protocol bytes');
+  assert.match(body.stdout, kind === 'watcher' ? /^Automatic reset deferred:/ : /^Run `bin\/fm-session-start.sh`/);
+}
 const frame = nonce => `\x1b[?9001;${nonce.replaceAll('-', '').match(/.{4}/g).map(x => parseInt(x, 16)).join(';')}~`;
 function input(data) {
   const result = terminalInput?.(data);
@@ -79,6 +104,9 @@ function waitFile(path) {
   });
 }
 extension(pi);
+mkdirSync(`${home}/state/classifier-away`, { recursive: true });
+writeFileSync(`${home}/state/classifier-away/.afk`, '');
+assert.deepEqual(classify('I am back; please show the investigation results.'), ['', '', 'yes'], 'a real human return must remain unmarked and end away mode');
 await emit('session_start');
 if (scenario.startsWith('away-')) {
   const [, signal, ...parts] = scenario.split('-');
@@ -232,5 +260,8 @@ if (scenario.startsWith('away-')) {
     if(switchMode === 'partial') assert.match(turns[0].message.content,/bin\/fm-session-start.sh/);
     assert.equal(switches,0);
   }
+}
+for (const { message } of messages.filter(x => /^firstmate-reset-(start|recovery)$/.test(x.message.customType))) {
+  assertOperational(message);
 }
 console.log(`ok - reset regression ${scenario}`);
