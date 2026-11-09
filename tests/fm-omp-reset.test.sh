@@ -6,7 +6,10 @@ set -eu
 LAB=$(fm_test_tmproot fm-omp-reset)
 FM_TEST_CLEANUP_DIRS+=("$LAB")
 trap fm_test_cleanup EXIT
-mkdir -p "$LAB/.omp/extensions" "$LAB/bin" "$LAB/state"
+mkdir -p "$LAB/.omp/extensions" "$LAB/bin" "$LAB/state" "$LAB/data" "$LAB/config"
+printf '4800\n' > "$LAB/config/startup-memory-budget"
+cp "$ROOT/bin/fm-startup-memory-budget.sh" "$LAB/bin/fm-startup-memory-budget.real.sh"
+cp "$ROOT/bin/fm-startup-memory-budget-lib.sh" "$LAB/bin/"
 cp "${FM_RESET_EXTENSION:-$ROOT/.omp/extensions/fm-primary-omp.ts}" "$LAB/.omp/extensions/fm-primary-omp.ts"
 cp "$ROOT/bin/fm-operational-input.sh" "$LAB/bin/fm-operational-input.real.sh"
 cat > "$LAB/bin/fm-operational-input.sh" <<'SH'
@@ -54,10 +57,18 @@ if [ -f "$FM_HOME/state/budget-takeover" ]; then
 fi
 if [ -f "$FM_HOME/state/budget-fails" ]; then echo budget_status=within-budget; exit 2; fi
 if [ -f "$FM_HOME/state/over-budget" ]; then
-  echo budget_status=over-budget
-else
-  echo budget_status=within-budget
+  printf 'effective_budget_tokens=4800\ntotal_estimated_tokens=4801\nbudget_status=over-budget\n'
+  exit
 fi
+if [ -f "$FM_HOME/state/report-missing-budget" ]; then
+  printf 'total_estimated_tokens=0\nbudget_status=within-budget\n'
+  exit
+fi
+if [ -f "$FM_HOME/state/report-missing-total" ]; then
+  printf 'effective_budget_tokens=4800\nbudget_status=within-budget\n'
+  exit
+fi
+exec "$FM_HOME/bin/fm-startup-memory-budget.real.sh" "$@"
 SH
 for file in fm-turnend-guard.sh fm-sessionstart-nudge.sh fm-cd-pretool-check.sh fm-arm-pretool-check.sh; do
   printf '#!/usr/bin/env bash\nexit 0\n' > "$LAB/bin/$file"
@@ -76,7 +87,7 @@ if [ -n "${FM_RESET_REGRESSION:-}" ]; then
 fi
 node "$ROOT/tests/fixtures/omp-reset/live-reporter.mjs" "$ROOT" "$LAB/reporter"
 if [ -n "${FM_RESET_REPORTER_CASE:-}" ]; then exit; fi
-for scenario in startup-refused startup-encoding startup-enqueue startup-recovery-encoding startup-recovery-enqueue recovery-encoding recovery-enqueue normal-seed unquoted-arm away-flag-prepare away-flag-ready away-flag-ready-budget away-flag-command-budget away-flag-scheduled away-flag-input away-flag-command away-flag-in-flight away-flag-in-flight-clean away-owner-prepare away-owner-ready away-owner-ready-budget away-owner-command-budget away-owner-scheduled away-owner-input away-owner-command away-owner-in-flight away-owner-in-flight-clean arm-gate draft-race in-flight cancelled-switch thrown-switch partial-switch running-watcher veto-draft veto-busy veto-queued veto-forged veto-foreign-job; do
+for scenario in receipt-missing receipt-after receipt-before receipt-before-invalid receipt-budget receipt-action-captain receipt-action-shared receipt-action-learnings receipt-action-invalid receipt-mismatch receipt-budget-mismatch receipt-over-budget receipt-report-missing-total receipt-report-missing-budget receipt-valid startup-refused startup-encoding startup-enqueue startup-recovery-encoding startup-recovery-enqueue recovery-encoding recovery-enqueue normal-seed unquoted-arm away-flag-prepare away-flag-ready away-flag-ready-budget away-flag-command-budget away-flag-scheduled away-flag-input away-flag-command away-flag-in-flight away-flag-in-flight-clean away-owner-prepare away-owner-ready away-owner-ready-budget away-owner-command-budget away-owner-scheduled away-owner-input away-owner-command away-owner-in-flight away-owner-in-flight-clean arm-gate draft-race in-flight cancelled-switch thrown-switch partial-switch running-watcher veto-draft veto-busy veto-queued veto-forged veto-foreign-job; do
   FM_HOME="$LAB" FM_STATE_OVERRIDE="$LAB/state" node --experimental-strip-types "$ROOT/tests/fixtures/omp-reset/regressions.mjs" "$scenario"
 done
 FM_HOME="$LAB" FM_STATE_OVERRIDE="$LAB/state" node --experimental-strip-types "$ROOT/tests/fixtures/omp-reset/transitions.mjs"

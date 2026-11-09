@@ -89,7 +89,8 @@ In normal mode at other transitions, when all instructions have reached the work
 Otherwise continue work, then arm using the omp protocol when supervision is required.
 The last message must be answered, questions must be recorded in the decision inbox and backlog, and no push, merge, cleanup or steer may be half done.
 If not already prepared, call its `prepare` action first.
-Complete this skill and preserve its Completion receipt, then call `ready` with the returned nonce, both true attestations, and a compact handoff of open-thread pointers, already-reported outcomes, and the immediate supervision action.
+Complete this skill, then call `ready` with its Completion receipt in `stowReceipt` using the tool schema, the returned nonce, both true attestations, and a compact handoff of open-thread pointers, already-reported outcomes, and the immediate supervision action.
+The extension independently reruns the budget report at readiness and refuses an incomplete, mismatched or over-budget receipt.
 An incomplete stow or unresolved exception means cancel the reset and continue supervision in the current session.
 
 End the turn after readiness; do not arm another job in that turn.

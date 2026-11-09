@@ -89,12 +89,15 @@ async function arm({ command = 'exec bin/fm-watch-arm.sh', status = 'watcher: st
   await emit('tool_result', {toolName:'read',input:{path:'proc://watcher'},content:[{type:'text',text:outputStatus}],isError:false});
   jobs = null;
 }
+const stowReceipt = () => ({effectiveBudgetTokens:'4800',totalTokensBefore:'0',totalTokensAfter:'0',actions:{
+  'data/captain.md':'unchanged','data/captain-shared.md':'unchanged','data/learnings.md':'unchanged',
+}});
 async function ready() {
   const prep = await call({action:'prepare'});
   assert.equal(prep.isError, undefined, 'prepare must accept completed startup with only watching left');
   const n = prep.details.nonce;
   assert.ok(prep.content.some(x=>x.text?.includes(n)), 'prepare must expose its nonce in model-visible content');
-  const result = await call({action:'ready',nonce:n,stowComplete:true,onlyKeepingWatch:true,handoff:'Open: backlog. Already reported: reply. Next: supervise.'});
+  const result = await call({action:'ready',nonce:n,stowComplete:true,onlyKeepingWatch:true,stowReceipt:stowReceipt(),handoff:'Open: backlog. Already reported: reply. Next: supervise.'});
   assert.equal(result.isError, undefined, 'readiness must accept only a confirmed supervision job');
   return n;
 }
@@ -114,7 +117,45 @@ mkdirSync(`${home}/state/classifier-away`, { recursive: true });
 writeFileSync(`${home}/state/classifier-away/.afk`, '');
 assert.deepEqual(classify('I am back; please show the investigation results.'), ['', '', 'yes'], 'a real human return must remain unmarked and end away mode');
 await emit('session_start');
-if (scenario.startsWith('startup-') || scenario.startsWith('recovery-')) {
+if (scenario.startsWith('receipt-')) {
+  await arm();
+  const nonce = (await call({action:'prepare'})).details.nonce;
+  const receipt = stowReceipt();
+  const kind = scenario.slice('receipt-'.length);
+  if (['after','before','budget'].includes(kind)) delete receipt[{after:'totalTokensAfter',before:'totalTokensBefore',budget:'effectiveBudgetTokens'}[kind]];
+  if (kind.startsWith('action-')) {
+    const file = {captain:'captain.md',shared:'captain-shared.md',learnings:'learnings.md'}[kind.slice(7)];
+    if (file) delete receipt.actions[`data/${file}`];
+    else receipt.actions['data/captain.md'] = 'skipped';
+  }
+  if (kind === 'before-invalid') receipt.totalTokensBefore = 'unknown';
+  if (kind === 'mismatch') receipt.totalTokensAfter = '1';
+  if (kind === 'budget-mismatch') receipt.effectiveBudgetTokens = '4801';
+  if (kind === 'over-budget' || kind === 'valid') {
+    writeFileSync(`${home}/config/startup-memory-budget`, '2\n');
+    writeFileSync(`${home}/data/captain.md`, kind === 'valid' ? 'abc' : 'abcdefghi');
+    receipt.effectiveBudgetTokens = '2'; receipt.totalTokensBefore = '9';
+    receipt.totalTokensAfter = kind === 'valid' ? '1' : '3';
+    if (kind === 'valid') { receipt.actions['data/captain.md'] = 'rewritten'; receipt.actions['data/learnings.md'] = 'routed'; }
+  }
+  if (kind === 'report-missing-total' || kind === 'report-missing-budget') writeFileSync(`${home}/state/${kind}`, '');
+  const result = await call({action:'ready',nonce,stowComplete:true,onlyKeepingWatch:true,
+    stowReceipt:kind === 'missing' ? undefined : receipt,handoff:'Open: backlog. Already reported: reply. Next: supervise.'});
+  if (kind === 'valid') {
+    assert.equal(result.isError, undefined, 'complete matching receipt must accept readiness');
+    assert.deepEqual(result.details.stowReceipt, receipt, 'ready must return the verified receipt');
+    assert.equal(result.details.budgetVerified, true, 'ready result must witness the extension budget recheck');
+  } else {
+    assert.equal(result.isError, true, `${scenario}: incomplete or unverified stow receipt must refuse readiness`);
+    assert.equal(timers.length, 0, 'refused receipt must not schedule reset');
+    await commands.get('fm-reset').handler(nonce, ctx);
+    assert.equal(switches, 0, 'refused receipt must preserve this session');
+  }
+  writeFileSync(`${home}/config/startup-memory-budget`, '4800\n');
+  for (const file of ['data/captain.md','state/report-missing-total','state/report-missing-budget']) {
+    if (existsSync(`${home}/${file}`)) unlinkSync(`${home}/${file}`);
+  }
+} else if (scenario.startsWith('startup-') || scenario.startsWith('recovery-')) {
   const checks = () => existsSync(`${home}/state/recovery-checks`)
     ? readFileSync(`${home}/state/recovery-checks`, 'utf8').trim().split('\n').length : 0;
   const checksBefore = checks();
@@ -190,7 +231,7 @@ if (scenario.startsWith('startup-') || scenario.startsWith('recovery-')) {
     const n = (await call({action:'prepare'})).details.nonce;
     if (phase === 'ready-budget') writeFileSync(`${home}/state/budget-takeover`, signal);
     else enterAway();
-    assert.equal((await call({action:'ready',nonce:n,stowComplete:true,onlyKeepingWatch:true,handoff:'Stowed in normal mode.'})).isError,true,`${signal} takeover must veto readiness`);
+    assert.equal((await call({action:'ready',nonce:n,stowComplete:true,onlyKeepingWatch:true,stowReceipt:stowReceipt(),handoff:'Stowed in normal mode.'})).isError,true,`${signal} takeover must veto readiness`);
     assert.equal(timers.length,0,'away readiness must not schedule transport');
   } else {
     if (phase.startsWith('in-flight')) writeFileSync(`${home}/state/submit-pauses`, '');

@@ -61,6 +61,7 @@ async function prepare() {
 }
 async function ready(nonce, overrides = {}) {
   return call({ action: 'ready', nonce, stowComplete: true, onlyKeepingWatch: true,
+    stowReceipt: {effectiveBudgetTokens:'4800',totalTokensBefore:'0',totalTokensAfter:'0',actions:{'data/captain.md':'unchanged','data/captain-shared.md':'unchanged','data/learnings.md':'unchanged'}},
     handoff: 'Open threads: data/backlog.md#reset-followup. Already reported: investigation result delivered. Next: watch.', ...overrides });
 }
 async function submittedToken() {

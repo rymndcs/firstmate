@@ -146,6 +146,14 @@ jq -es '
   ([.[]|select(.kind=="reset-tool" and .input.action=="ready")]|length) == 1 and
   ([.[]|select(.kind=="inspect")][-1].jobs.running|length) == 1
 ' "$HOME_DIR/events.jsonl" >/dev/null || fail 'expected one model-driven stow/reset, one startup per session, and one resumed supervision job'
+jq -es '
+  [.[]|select(.kind=="reset-tool" and .input.action=="ready")][0] as $ready |
+  [.[]|select(.kind=="reset-result" and .input.action=="ready")][0] as $result |
+  $ready.input.stowReceipt != null and
+  $result.error == false and $result.session == $ready.session and
+  $result.details.budgetVerified == true and
+  $result.details.stowReceipt == $ready.input.stowReceipt
+' "$HOME_DIR/events.jsonl" >/dev/null || fail 'stow requires the ready completion receipt and the extension budget verification'
 [ ! -s "$HOME_DIR/state/.wake-queue" ] || fail 'new startup did not consume the durable wake'
 old_pid=$(jq -sr '[.[]|select(.kind=="armed")][0].status | capture("pid=(?<pid>[0-9]+)").pid' "$HOME_DIR/events.jsonl")
 new_pid=$(cat "$HOME_DIR/state/.watch.lock/pid")

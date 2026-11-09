@@ -107,6 +107,13 @@ function bashCommand(input: unknown): string {
   return typeof input.command === "string" ? input.command : "";
 }
 
+type StowReceipt = {
+  effectiveBudgetTokens: string;
+  totalTokensBefore: string;
+  totalTokensAfter: string;
+  actions: Record<string, string>;
+};
+
 type Request = {
   nonce: string;
   session: string;
@@ -136,8 +143,11 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   const check = () => spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["check", String(process.pid)], { env }).status === 0;
   const budget = () => {
     const result = spawnSync(`${root}/bin/fm-startup-memory-budget.sh`, ["report"], { env, encoding: "utf8" });
-    return result.status === 0 && /^budget_status=within-budget$/m.test(result.stdout)
-      && !/^exception=/m.test(result.stdout);
+    if (result.status !== 0 || !/^budget_status=within-budget$/m.test(result.stdout)
+      || /^exception=/m.test(result.stdout)) return undefined;
+    const effectiveBudgetTokens = result.stdout.match(/^effective_budget_tokens=([1-9][0-9]*)$/m)?.[1];
+    const totalTokensAfter = result.stdout.match(/^total_estimated_tokens=(0|[1-9][0-9]*)$/m)?.[1];
+    return effectiveBudgetTokens && totalTokensAfter !== undefined ? { effectiveBudgetTokens, totalTokensAfter } : undefined;
   };
   const available = (ctx: ExtensionContext) => {
     const jobs = ctx.getAsyncJobSnapshot();
@@ -217,19 +227,33 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     writeFileSync(temporary, JSON.stringify({ sourceSession, handoff }) + "\n", { mode: 0o600, flag: "wx" });
     renameSync(temporary, file);
   }
-  const result = (text: string, isError?: true, nonce?: string) => ({
-    content: [{ type: "text" as const, text }], details: { nonce }, ...(isError ? { isError } : {}),
+  const result = (text: string, isError?: true, nonce?: string, stowReceipt?: StowReceipt) => ({
+    content: [{ type: "text" as const, text }],
+    details: { nonce, ...(stowReceipt ? { stowReceipt, budgetVerified: true } : {}) }, ...(isError ? { isError } : {}),
   });
+  const memoryFiles = ["data/captain.md", "data/captain-shared.md", "data/learnings.md"];
+  const actions = ["unchanged", "added", "rewritten", "pruned", "routed"] as const;
+  const fileAction = pi.zod.enum(actions);
 
   pi.registerTool({
     name: "firstmate_watch_reset",
     label: "Stow before watching",
-    description: "In normal mode only, before re-arming omp supervision when only keeping watch: prepare, complete the returned stow skill, then ready with a compact durable handoff and attestations. Never call ready after stow fails.",
+    description: "In normal mode only, before re-arming omp supervision when only keeping watch: prepare, complete the returned stow skill, then ready with its stowReceipt, a compact durable handoff and attestations. Receipt token counts are decimal strings from the before/after budget reports; the actions object records one Completion receipt action per memory file. Never call ready after stow fails.",
     parameters: pi.zod.object({
       action: pi.zod.enum(["prepare", "ready", "cancel"]),
       nonce: pi.zod.string().optional(),
       stowComplete: pi.zod.boolean().optional(),
       onlyKeepingWatch: pi.zod.boolean().optional(),
+      stowReceipt: pi.zod.object({
+        effectiveBudgetTokens: pi.zod.string(),
+        totalTokensBefore: pi.zod.string(),
+        totalTokensAfter: pi.zod.string(),
+        actions: pi.zod.object({
+          "data/captain.md": fileAction,
+          "data/captain-shared.md": fileAction,
+          "data/learnings.md": fileAction,
+        }),
+      }).optional(),
       handoff: pi.zod.string().max(4000).optional(),
     }),
     async execute(_id, params, _signal, _update, ctx) {
@@ -243,19 +267,25 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
       }
       if (params.action === "prepare") {
         request = { nonce: randomUUID(), session: sessionId(ctx) };
-        return result(`Readiness nonce: ${request.nonce}. Complete this stow skill now. Report its full Completion receipt; only then call ready with the nonce and a short handoff containing durable open-thread pointers, already-reported outcomes, and the next supervision action.\n\n${readFileSync(`${root}/.agents/skills/stow/SKILL.md`, "utf8")}`, undefined, request.nonce);
+        return result(`Readiness nonce: ${request.nonce}. Complete this stow skill now. Report its full Completion receipt; only then call ready with that stowReceipt as defined by the tool schema, the nonce and a short handoff containing durable open-thread pointers, already-reported outcomes, and the next supervision action.\n\n${readFileSync(`${root}/.agents/skills/stow/SKILL.md`, "utf8")}`, undefined, request.nonce);
       }
       const prepared = request;
       request = undefined;
+      const receipt = params.stowReceipt;
+      const measured = budget();
       if (!prepared || prepared.nonce !== params.nonce || prepared.session !== sessionId(ctx)
         || params.stowComplete !== true || params.onlyKeepingWatch !== true
-        || !params.handoff?.trim() || params.handoff.length > 4000 || !budget() || !available(ctx)) {
+        || !params.handoff?.trim() || params.handoff.length > 4000
+        || !receipt || !/^(0|[1-9][0-9]*)$/.test(receipt.totalTokensBefore)
+        || !memoryFiles.every(file => actions.some(action => action === receipt.actions?.[file]))
+        || !measured || receipt.effectiveBudgetTokens !== measured.effectiveBudgetTokens
+        || receipt.totalTokensAfter !== measured.totalTokensAfter || !available(ctx)) {
         return result("Stow or readiness incomplete. Keep this session and resume supervision; prepare again after resolving the problem.", true);
       }
       save(params.handoff, prepared.session);
       request = { ...prepared, readyAt: Date.now(), handoff: params.handoff };
       schedule(request, ctx);
-      return result("Reset ready. End this turn now instead of re-arming. The extension will submit the registered reset command only while idle with no pending input. On cancellation, retain this session and continue supervision.", undefined, prepared.nonce);
+      return result("Reset ready. End this turn now instead of re-arming. The extension will submit the registered reset command only while idle with no pending input. On cancellation, retain this session and continue supervision.", undefined, prepared.nonce, receipt);
     },
   });
 

@@ -75,7 +75,7 @@ export default function (pi: any) {
     const text = event.content?.filter((c:any)=>c.type==='text').map((c:any)=>c.text).join('\n') ?? '';
     if (event.toolName === 'read' && /^watcher: (started|attached)/m.test(text)) log({kind:'armed',session,input:event.input,status:text.match(/^watcher:.*$/m)?.[0]});
     if (event.toolName === 'firstmate_watch_reset') {
-      log({kind:'reset-result',session,input:event.input,error:event.isError??false});
+      log({kind:'reset-result',session,input:event.input,error:event.isError??false,details:event.details});
     }
     if (text.includes('RESET_WAKE_PRESERVED')) log({kind:'wake-drained',session});
   });
