@@ -180,6 +180,7 @@ now_ms() {
 # unclassified so new tests are still runnable and visible in summaries.
 family_for_basename() {
   case "$1" in
+    fm-omp-reset.test.sh|fm-omp-reset-submit.test.sh|\
     fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|\
     fm-ask-user-pretool-check.test.sh|\
     fm-brief.test.sh|fm-vendor-auth-probe.test.sh|\
@@ -232,6 +233,7 @@ family_for_basename() {
     fm-afk-omp-herdr-live-e2e.test.sh|fm-afk-desktop-live-e2e.test.sh|fm-afk-desktop-policy-live-e2e.test.sh|fm-afk-pi-herdr-return-e2e.test.sh|fm-ask-user-gate-live-e2e.test.sh|\
     fm-codex-continuity-live-e2e.test.sh|fm-grok-continuity-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-harness-liveness-drift-live-e2e.test.sh|fm-review-round-live-e2e.test.sh|\
+    fm-omp-reset-live-e2e.test.sh|\
     fm-omp-herdr-live-e2e.test.sh|fm-omp-primary-live-e2e.test.sh|fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh)
       printf '%s\n' live-harness-optin

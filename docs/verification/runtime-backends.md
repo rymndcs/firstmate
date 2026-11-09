@@ -177,6 +177,41 @@ Observed bounded shapes, in order: an idle composer, a typed draft, a wrapped dr
 Against that TUI, `FM_COMPOSER_HARNESS=omp fm_tmux_composer_state` printed `empty`, `pending`, and `empty` for idle, typed, and cleared, while the generic reader printed `unknown`, and `fm_pane_is_busy <target> omp` read busy mid-tool and idle with the async job outstanding.
 `FM_OMP_LIVE_E2E=1 tests/fm-omp-primary-live-e2e.test.sh` refreshes the delivery evidence, and `tests/fm-omp-harness.test.sh` and `tests/fm-composer-ghost.test.sh` pin the readers portably.
 
+### omp automatic stow and reset
+
+I verified the normal native reset route on 2026-11-09 at committed revision `45b39e428f534dcf7742389d9bd87ef3d74ea93f` with omp 18.18.2 and the real `anthropic/claude-sonnet-5-5` provider on a dedicated tmux socket.
+The retained normal-only runner derives from `tests/fm-omp-reset-live-e2e.test.sh`, preserves every normal assertion, pins the executable and captures the TUI; all 417 copied source/instruction hashes matched that revision.
+This dated proof predates later corrections and is not a native proof of the current tree.
+The canonical refresh entry point below runs both native normal and away modes:
+
+```sh
+FM_OMP_RESET_LIVE=1 bin/fm-test-run.sh tests/fm-omp-reset-live-e2e.test.sh
+```
+
+The bounded results were:
+
+```text
+ok - model follows emitted normal flow: PREPARE_RESET
+ok - model follows emitted away flow: REARM
+ok - omp/18.18.2 normal integrated reset: model follows emitted wake protocol, stows, switches with live supervision, runs startup once, drains durable wake, arms one cycle, vetoes interleaved draft
+```
+
+The `REARM` line is a model-flow check, not a native away startup or reset.
+An independent normal-only run on the same revision also matched all 417 hashes and printed the same normal-flow and normal integrated-reset lines.
+The older 2026-11-08 omp 18.18.1 reset evidence and earlier native away observations are historical; they do not establish current away behavior.
+Neither 2026-11-09 normal run launched a native away session.
+The fixture copies every current tracked file and additional fixture into an isolated clone and records their hashes; it does not overlay selected implementation files onto an older instruction tree.
+The interactive model loads context and skills, follows the emitted protocol, prepares the reset, performs stow against empty isolated memory files and attests readiness itself.
+An already-running supervision job is cancelled by the native switch, and the new session runs startup once, drains a wake supplied through the real queue owner, and owns exactly one supervision job.
+The triggered startup turn carries the full seed directly, since setup-only history was not reliably visible to the model in the native probe.
+A second attempted reset deterministically inserts `Wai` after the helper's composer check and before its literal terminal write; the native input veto retains that draft without submitting it and requests one recovery turn in the same session.
+The helper sends a private trigger without Enter; the native synchronous listener checks idle, queue and editor state before admitting the registered command and Enter together.
+A rendered background-job waiting row is not native agent activity, so it is not an additional reset veto.
+This proves the tested input ordering, not every physical terminal encoding or the semantic completeness of a knowledge sweep over real history.
+`tests/fm-omp-reset.test.sh` pins failed stow, stow-receipt and ready-time budget refusals, post-switch startup delivery failure with its reported recovery outcome, cancellation, thrown and partial switches, recovery ownership and successful-arm eligibility; `tests/fm-omp-reset-submit.test.sh` pins the transport boundary.
+No live Herdr reset is claimed by this tmux proof.
+Other primary harnesses keep their existing reset behavior.
+
 ### Cleanup endpoint identity
 
 The cleanup identity boundary was validated on 2026-07-28 with tmux 3.6a and metadata fixtures for every supported backend.

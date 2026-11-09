@@ -111,8 +111,7 @@ test_cross_harness_ordinary_continuation_and_repair_matrix() {
   out=$("$RENDER" --harness omp)
   assert_contains "$out" "primary harness: omp" "omp fell through to the unknown-harness protocol"
   ordinary=$(printf '%s\n' "$out" | grep -F -- '- Ordinary wake:')
-  assert_contains "$ordinary" "re-arm" "omp ordinary-wake line does not tell the model to re-arm"
-  assert_contains "$ordinary" "bin/fm-watch-arm.sh" "omp ordinary-wake line lost the async arm command"
+  assert_contains "$ordinary" "follow the omp continuation below" "omp summary must defer the transition decision to its protocol"
   out=$("$RENDER" --harness omp --repair-line)
   assert_contains "$out" "async: true and timeout: 0" "omp recovery line lost the no-deadline async job shape"
   assert_contains "$out" "bin/fm-watch-arm.sh" "omp recovery line lost the arm command"

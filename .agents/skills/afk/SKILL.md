@@ -24,7 +24,7 @@ The script header and help own exact commands and record formats.
 - In an omp primary, `start` and `start-native` select the normal tracked async watcher as the only away owner.
   Do not launch the pane daemon or run `bin/fm-afk-start.sh`.
   Retain a healthy existing async watcher, or arm one using `docs/supervision-protocols/omp.md`.
-  Re-arm after every completion while away, even when no workers remain.
+  After each completion, follow [stow, omp watching-only reset](../stow/SKILL.md#omp-watching-only-reset).
   A watcher-job completion is internal input, not a return message.
 - In other terminal environments, retain the existing pane delivery.
   With a native tracked background tool, prepare with `start-native`, then run `FM_AFK_STATE_PREPARED=1 bin/fm-afk-start.sh` through that tool.
@@ -57,7 +57,7 @@ The selected owner continues supervision after that fixed mark.
    Move on to other work without asking or waiting for the captain.
    An unchanged parked condition must never be retried or re-escalated.
 4. Keep the current selection as the only supervision owner.
-   In omp, handling the completion and re-arming the normal async watcher continues that same owner; it is required, including after parking a decision.
+   In omp, follow [stow, omp watching-only reset](../stow/SKILL.md#omp-watching-only-reset) after handling the completion, including after parking a decision.
    Desktop renewal is an internal handling turn followed by another Stop; never manually arm a second cycle.
    A real global captain hold remains authoritative and suppresses automatic Desktop turns.
    Never set or clear that global hold to park an individual decision.

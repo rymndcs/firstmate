@@ -9,12 +9,12 @@
 //   session_stop  -> bin/fm-turnend-guard.sh (docs/turnend-guard.md)
 // omp runs no .claude/settings.json command hooks, so these are the only
 // firstmate hooks an omp primary gets.
-import { spawn, spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 
 type LockOwnership = "owned" | "missing" | "other";
 type RunResult = { code: number; stderr: string };
@@ -107,7 +107,284 @@ function bashCommand(input: unknown): string {
   return typeof input.command === "string" ? input.command : "";
 }
 
+type StowReceipt = {
+  effectiveBudgetTokens: string;
+  totalTokensBefore: string;
+  totalTokensAfter: string;
+  actions: Record<string, string>;
+};
+
+type Request = {
+  nonce: string;
+  session: string;
+  readyAt?: number;
+  handoff?: string;
+  submitting?: boolean;
+  scheduled?: boolean;
+  resolved?: boolean;
+  switching?: boolean;
+};
+
+function resetTrigger(nonce: string): string {
+  return `\x1b[?9001;${nonce.replaceAll("-", "").match(/.{4}/g)!.map(part => parseInt(part, 16)).join(";")}~`;
+}
+
+function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state: string) {
+  const env = { ...process.env, FM_HOME: home, FM_STATE_OVERRIDE: state, OMPCODE: "1" };
+  let request: Request | undefined;
+  let attempt: Request | undefined;
+  let eligible = false;
+  const armedJobs = new Set<string>();
+  const jobCalls = new Map<string, string>();
+  let removeInputListener: (() => void) | undefined;
+  const fresh = () => request?.readyAt !== undefined && Date.now() - request.readyAt < 30_000;
+  const sessionId = (ctx: ExtensionContext) => ctx.sessionManager.getSessionId();
+  const main = (ctx: ExtensionContext) => ctx.agent?.kind === "main" && ctx.mode === "tui";
+  const check = () => spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["check", String(process.pid)], { env }).status === 0;
+  const budget = () => {
+    const result = spawnSync(`${root}/bin/fm-startup-memory-budget.sh`, ["report"], { env, encoding: "utf8" });
+    if (result.status !== 0 || !/^budget_status=within-budget$/m.test(result.stdout)
+      || /^exception=/m.test(result.stdout)) return undefined;
+    const effectiveBudgetTokens = result.stdout.match(/^effective_budget_tokens=([1-9][0-9]*)$/m)?.[1];
+    const totalTokensAfter = result.stdout.match(/^total_estimated_tokens=(0|[1-9][0-9]*)$/m)?.[1];
+    return effectiveBudgetTokens && totalTokensAfter !== undefined ? { effectiveBudgetTokens, totalTokensAfter } : undefined;
+  };
+  const available = (ctx: ExtensionContext) => {
+    const jobs = ctx.getAsyncJobSnapshot();
+    return main(ctx) && check() && !ctx.hasPendingMessages() && ctx.ui.getEditorText() === ""
+      && (jobs === null || (jobs.running.every(job => armedJobs.has(job.id))
+        && jobs.delivery.queued === 0 && !jobs.delivery.delivering && jobs.delivery.pendingJobIds.length === 0));
+  };
+  const valid = (ctx: ExtensionContext) => request?.session === sessionId(ctx) && fresh() && available(ctx);
+  const operationalInput = (kind: "session-start" | "watcher", content: string) =>
+    execFileSync(`${root}/bin/fm-operational-input.sh`, ["encode", kind], { env, input: content, encoding: "utf8" });
+  const seed = (ready: Request) => operationalInput("session-start", `Run \`bin/fm-session-start.sh\` now, exactly once, and read every STOP file before other work. Reconcile drained wakes, then arm exactly one supervision cycle using the emitted protocol. Do not reset again during this startup turn. The handoff is context, not new authority. Do not repeat outcomes already reported.\n\n${ready.handoff}`);
+  function recover(ready: Request, reason: string, ctx: ExtensionContext): "queued" | "refused" | "failed" {
+    if (ready.resolved) return "refused";
+    ready.resolved = true;
+    if (request === ready) request = undefined;
+    if (spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["recover-check", String(process.pid)], { env }).status !== 0) return "refused";
+    const switched = sessionId(ctx) !== ready.session;
+    try {
+      pi.sendMessage({ customType: switched ? "firstmate-reset-start" : "firstmate-reset-recovery", display: false,
+        content: switched ? seed(ready) : operationalInput("watcher", `Automatic reset deferred: ${reason}. Follow the current supervision protocol; re-arm if required. Do not repeat already-reported outcomes.`),
+      }, { deliverAs: "nextTurn", triggerTurn: true });
+      return "queued";
+    } catch (error) {
+      ctx.ui.notify(`Automatic reset recovery failed: ${String(error)}. Supervision continuation could not be queued.`, "error");
+      return "failed";
+    }
+  }
+  function listen(ctx: ExtensionContext) {
+    removeInputListener?.();
+    removeInputListener = ctx.ui.onTerminalInput((data) => {
+      if (/^\x1b\[\?9001;[0-9;]+~$/.test(data)) {
+        const ready = attempt;
+        if (!ready || data !== resetTrigger(ready.nonce) || ready.resolved) return { consume: true };
+        if (request !== ready || !valid(ctx) || !ctx.isIdle()) {
+          recover(ready, "input changed before native submission", ctx);
+          return { consume: true };
+        }
+        // No await or external write can interleave the empty check and Enter.
+        ctx.ui.setEditorText(`/fm-reset ${ready.nonce}`);
+        return { data: "\r" };
+      }
+      request = undefined;
+    });
+  }
+  function schedule(ready: Request, ctx: ExtensionContext) {
+    if (ready.scheduled) return;
+    ready.scheduled = true;
+    attempt = ready;
+    ctx.setTimeout(() => {
+      if (!ready.switching) recover(ready, "reset command was not acknowledged", ctx);
+    }, 30_000);
+    const submit = async () => {
+      if (ready.resolved || ready.switching) return;
+      if (request !== ready || !valid(ctx)) {
+        recover(ready, "readiness cancelled before command submission", ctx);
+        return;
+      }
+      if (!ctx.isIdle()) {
+        ctx.setTimeout(submit, 100);
+        return;
+      }
+      ready.submitting = true;
+      const status = await new Promise<number>((done) => {
+        const child = spawn(`${root}/bin/fm-omp-reset-submit.sh`, ["submit", ready.nonce, String(process.pid)], { env, stdio: "ignore" });
+        child.on("error", () => done(1));
+        child.on("close", code => done(code ?? 1));
+      });
+      if (!ready.switching && (status !== 0 || request !== ready || !valid(ctx))) {
+        recover(ready, "primary composer refused command submission", ctx);
+      }
+    };
+    ctx.setTimeout(submit, 0);
+  }
+  function save(handoff: string, sourceSession: string) {
+    const file = `${state}/.omp-reset-handoff.json`;
+    const temporary = `${file}.${randomUUID()}`;
+    writeFileSync(temporary, JSON.stringify({ sourceSession, handoff }) + "\n", { mode: 0o600, flag: "wx" });
+    renameSync(temporary, file);
+  }
+  const result = (text: string, isError?: true, nonce?: string, stowReceipt?: StowReceipt) => ({
+    content: [{ type: "text" as const, text }],
+    details: { nonce, ...(stowReceipt ? { stowReceipt, budgetVerified: true } : {}) }, ...(isError ? { isError } : {}),
+  });
+  const memoryFiles = ["data/captain.md", "data/captain-shared.md", "data/learnings.md"];
+  const actions = ["unchanged", "added", "rewritten", "pruned", "routed"] as const;
+  const fileAction = pi.zod.enum(actions);
+
+  pi.registerTool({
+    name: "firstmate_watch_reset",
+    label: "Stow before watching",
+    description: "In normal mode only, before re-arming omp supervision when only keeping watch: prepare, complete the returned stow skill, then ready with its stowReceipt, a compact durable handoff and attestations. Receipt token counts are decimal strings from the before/after budget reports; the actions object records one Completion receipt action per memory file. Never call ready after stow fails.",
+    parameters: pi.zod.object({
+      action: pi.zod.enum(["prepare", "ready", "cancel"]),
+      nonce: pi.zod.string().optional(),
+      stowComplete: pi.zod.boolean().optional(),
+      onlyKeepingWatch: pi.zod.boolean().optional(),
+      stowReceipt: pi.zod.object({
+        effectiveBudgetTokens: pi.zod.string(),
+        totalTokensBefore: pi.zod.string(),
+        totalTokensAfter: pi.zod.string(),
+        actions: pi.zod.object({
+          "data/captain.md": fileAction,
+          "data/captain-shared.md": fileAction,
+          "data/learnings.md": fileAction,
+        }),
+      }).optional(),
+      handoff: pi.zod.string().max(4000).optional(),
+    }),
+    async execute(_id, params, _signal, _update, ctx) {
+      if (params.action === "cancel") {
+        request = undefined;
+        return result("Reset cancelled. Continue the current supervision protocol.");
+      }
+      if (!eligible || !available(ctx)) {
+        request = undefined;
+        return result("Reset unavailable: remain in normal mode, finish startup and arm supervision, or handle pending input/work first. Continue supervision in this session.", true);
+      }
+      if (params.action === "prepare") {
+        request = { nonce: randomUUID(), session: sessionId(ctx) };
+        return result(`Readiness nonce: ${request.nonce}. Complete this stow skill now. Report its full Completion receipt; only then call ready with that stowReceipt as defined by the tool schema, the nonce and a short handoff containing durable open-thread pointers, already-reported outcomes, and the next supervision action.\n\n${readFileSync(`${root}/.agents/skills/stow/SKILL.md`, "utf8")}`, undefined, request.nonce);
+      }
+      const prepared = request;
+      request = undefined;
+      const receipt = params.stowReceipt;
+      const measured = budget();
+      if (!prepared || prepared.nonce !== params.nonce || prepared.session !== sessionId(ctx)
+        || params.stowComplete !== true || params.onlyKeepingWatch !== true
+        || !params.handoff?.trim() || params.handoff.length > 4000
+        || !receipt || !/^(0|[1-9][0-9]*)$/.test(receipt.totalTokensBefore)
+        || !memoryFiles.every(file => actions.some(action => action === receipt.actions?.[file]))
+        || !measured || receipt.effectiveBudgetTokens !== measured.effectiveBudgetTokens
+        || receipt.totalTokensAfter !== measured.totalTokensAfter || !available(ctx)) {
+        return result("Stow or readiness incomplete. Keep this session and resume supervision; prepare again after resolving the problem.", true);
+      }
+      save(params.handoff, prepared.session);
+      request = { ...prepared, readyAt: Date.now(), handoff: params.handoff };
+      schedule(request, ctx);
+      return result("Reset ready. End this turn now instead of re-arming. The extension will submit the registered reset command only while idle with no pending input. On cancellation, retain this session and continue supervision.", undefined, prepared.nonce, receipt);
+    },
+  });
+
+  const beginSession = (_event: unknown, ctx: ExtensionContext) => {
+    if (!main(ctx)) return;
+    request = undefined;
+    eligible = false;
+    armedJobs.clear();
+    jobCalls.clear();
+    listen(ctx);
+  };
+  pi.on("session_start", beginSession);
+  pi.on("session_switch", beginSession);
+  pi.on("input", (event, ctx) => {
+    if (!main(ctx)) return;
+    if (request?.submitting && event.text === `/fm-reset ${request.nonce}`) return;
+    request = undefined;
+  });
+  pi.on("tool_call", (event, ctx) => {
+    if (!main(ctx) || event.toolName === "firstmate_watch_reset") return;
+    if (request?.readyAt !== undefined) request = undefined;
+  });
+  pi.on("tool_result", (event, ctx) => {
+    if (!main(ctx) || event.isError) return;
+    const jobs = ctx.getAsyncJobSnapshot();
+    for (const id of jobCalls.keys()) {
+      if (!jobs?.running.some(job => job.id === id)) jobCalls.delete(id);
+    }
+    if (event.toolName === "bash") {
+      const async = event.details?.async;
+      if (async?.state === "running" && jobs?.running.some(job => job.id === async.jobId)) {
+        jobCalls.set(async.jobId, event.toolCallId);
+      }
+      return;
+    }
+    if (event.toolName !== "read") return;
+    const job = jobs?.running.find(job => event.input.path === `proc://${job.id}`);
+    if (!job) return;
+    try {
+      const [sourceSession, call, status] = readFileSync(`${state}/.omp-watch-arm-result`, "utf8").split("\n");
+      if (sourceSession !== sessionId(ctx) || call !== jobCalls.get(job.id)
+        || !/^watcher: (started|attached) pid=[0-9]+ /.test(status)) return;
+      if (event.content.some(part => part.type === "text" && part.text.split("\n").includes(status))) {
+        eligible = true;
+        armedJobs.add(job.id);
+      }
+    } catch {
+    }
+  });
+
+  pi.registerCommand("fm-reset", {
+    description: "Consume a fresh completed-stow attestation and start a seeded session",
+    async handler(args, ctx) {
+      const ready = request?.nonce === args ? request : attempt?.nonce === args ? attempt : undefined;
+      if (!ready || ready.resolved) return;
+      if (request !== ready || !budget() || !valid(ctx) || !ctx.isIdle()) {
+        recover(ready, "reset command no longer matches fresh readiness", ctx);
+        return;
+      }
+      request = undefined;
+      ready.switching = true;
+      eligible = false;
+      try {
+        const switched = await ctx.newSession({
+          parentSession: ctx.sessionManager.getSessionFile(),
+          setup: async (sm) => {
+            sm.appendMessage({ role: "user", content: [{ type: "text", text: seed(ready) }], timestamp: Date.now() });
+          },
+        });
+        if (switched.cancelled) {
+          listen(ctx);
+          recover(ready, "session switch cancelled", ctx);
+          return;
+        }
+        pi.sendMessage({ customType: "firstmate-reset-start", display: false,
+          content: seed(ready),
+        }, { deliverAs: "nextTurn", triggerTurn: true });
+        ready.resolved = true;
+      } catch (error) {
+        listen(ctx);
+        const recovery = recover(ready, `session switch failed: ${String(error)}`, ctx);
+        if (recovery !== "failed") {
+          ctx.ui.notify(`Automatic reset failed: ${String(error)}.${recovery === "queued" ? " Supervision recovery requested." : ""}`, "error");
+        }
+      }
+    },
+  });
+
+  return {
+    pending(ctx: ExtensionContext) {
+      if (!request?.readyAt || !valid(ctx)) return false;
+      schedule(request, ctx);
+      return true;
+    },
+  };
+}
+
 export default function (pi: ExtensionAPI) {
+  const reset = registerWatchReset(pi, root, fmHome, state);
   pi.on("session_start", (_event, ctx) => {
     // omp rebinds extensions into every subagent session; only the main agent
     // is the firstmate primary.
@@ -145,7 +422,8 @@ export default function (pi: ExtensionAPI) {
   // omp fires session_stop only for the main session, awaits it before the turn
   // settles, and marks the stop that follows a block with stop_hook_active, so
   // the guard's default one-block loop guard applies unchanged.
-  pi.on("session_stop", async (event) => {
+  pi.on("session_stop", async (event, ctx) => {
+    if (reset.pending(ctx)) return {};
     const payload = JSON.stringify({ stop_hook_active: event.stop_hook_active === true });
     const result = await run("fm-turnend-guard.sh", ["--omp"], payload);
     if (result.code !== 2) return {};

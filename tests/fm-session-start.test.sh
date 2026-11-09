@@ -2135,7 +2135,8 @@ EOF
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 const handlers = new Map();
-const pi = { on(event, handler) { handlers.set(event, handler); }, sendMessage() {} };
+const schema = new Proxy(() => schema, { get: () => schema });
+const pi = { zod: schema, registerTool() {}, registerCommand() {}, on(event, handler) { handlers.set(event, handler); }, sendMessage() {} };
 const mod = await import(pathToFileURL(process.env.PLUGIN).href);
 mod.default(pi);
 await handlers.get("session_start")({ type: "session_start" }, { agent: { kind: "main" } });
