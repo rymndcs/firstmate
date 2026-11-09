@@ -76,9 +76,9 @@ fm_axi_bounded_run() {  # <timeout-seconds-or-empty> <command> [args...]
     *[!0-9]*|0) return 1 ;;
   esac
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$timeout" "$@" 2>/dev/null </dev/null
+    timeout --kill-after=1 "$timeout" "$@" 2>/dev/null </dev/null
   elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout "$timeout" "$@" 2>/dev/null </dev/null
+    gtimeout --kill-after=1 "$timeout" "$@" 2>/dev/null </dev/null
   elif command -v perl >/dev/null 2>&1; then
     perl -e 'my $t = shift; my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { setpgrp(0, 0); exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", -$pid; select undef, undef, undef, 0.2; kill "KILL", -$pid; exit 124 }; alarm $t; waitpid $pid, 0; exit($? >> 8)' "$timeout" "$@" 2>/dev/null </dev/null
   else
