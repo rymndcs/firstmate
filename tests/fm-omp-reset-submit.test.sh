@@ -74,6 +74,7 @@ for mode in draft unknown; do
   if "$HELPER" submit 12345678-1234-1234-1234-123456789abc "$$"; then fail "transport accepted $mode composer"; fi
   [ ! -e "$LAB/sent" ] || fail "transport typed into $mode composer"
 done
+echo empty > "$LAB/mode"
 for signal in flag owner; do
   echo "$signal" > "$LAB/takeover"
   if "$HELPER" submit 12345678-1234-1234-1234-123456789abc "$$"; then fail "$signal takeover during composer inspection permitted transport"; fi
@@ -99,10 +100,10 @@ for bad in 'bad nonce' abc123 12345678123412341234123456789abc ''; do
   "$HELPER" submit "$bad" "$$" || rc=$?
   [ "$rc" -eq 2 ] || fail 'malformed nonce must be rejected as a usage error before encoding'
 done
+if env -u FM_SUPERVISOR_TARGET -u FM_SUPERVISOR_BACKEND -u TMUX_PANE -u HERDR_ENV -u HERDR_PANE_ID \
+  "$HELPER" check "$$"; then fail 'transport guessed a pane'; fi
 touch "$LAB/home/state/.captain-hold"
 if "$HELPER" submit 12345678-1234-1234-1234-123456789abc "$$"; then fail 'transport ignored global hold'; fi
 if "$HELPER" check "$$"; then fail 'readiness check ignored global hold'; fi
 if "$HELPER" recover-check "$$"; then fail 'recovery ignored global hold'; fi
-if env -u FM_SUPERVISOR_TARGET -u FM_SUPERVISOR_BACKEND -u TMUX_PANE -u HERDR_ENV -u HERDR_PANE_ID \
-  "$HELPER" check "$$"; then fail 'transport guessed a pane'; fi
 pass 'omp reset transport: one literal trigger, no external Enter, no guessed pane or global hold bypass'
