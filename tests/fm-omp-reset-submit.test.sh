@@ -26,6 +26,7 @@ case "$1" in
       case "$(cat "$PROBE/takeover")" in
         flag) touch "$FM_STATE_OVERRIDE/.afk" ;;
         owner) printf 'none\t-\tomp\n' > "$FM_STATE_OVERRIDE/.afk-daemon-terminal" ;;
+        hold) touch "$FM_STATE_OVERRIDE/.captain-hold" ;;
       esac
     fi
     mode=$(cat "$PROBE/mode")
@@ -75,12 +76,12 @@ for mode in draft unknown; do
   [ ! -e "$LAB/sent" ] || fail "transport typed into $mode composer"
 done
 echo empty > "$LAB/mode"
-for signal in flag owner; do
+for signal in flag owner hold; do
   echo "$signal" > "$LAB/takeover"
   if "$HELPER" submit 12345678-1234-1234-1234-123456789abc "$$"; then fail "$signal takeover during composer inspection permitted transport"; fi
   [ ! -e "$LAB/sent" ] || fail "$signal takeover typed a trigger"
-  "$HELPER" recover-check "$$" || fail 'takeover suppressed continuation'
-  rm -f "${LAB:?}/takeover" "${LAB:?}/home/state/.afk" "${LAB:?}/home/state/.afk-daemon-terminal"
+  [ "$signal" = hold ] || "$HELPER" recover-check "$$" || fail 'takeover suppressed continuation'
+  rm -f "${LAB:?}/takeover" "${LAB:?}/home/state/.afk" "${LAB:?}/home/state/.afk-daemon-terminal" "${LAB:?}/home/state/.captain-hold"
 done
 echo background > "$LAB/mode"
 "$HELPER" submit 12345678-1234-1234-1234-123456789abc "$$" || fail 'background-job display blocked the native idle-checked reset trigger'
