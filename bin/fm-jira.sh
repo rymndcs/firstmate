@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Move only the Jira status for registered Thanos PRs.
+# Move Jira status and queue merge follow-ups for registered Thanos PRs.
 # Usage: fm-jira.sh transition <task-id> in-review|done
 #        fm-jira.sh merged <github-pr-url>
 # fm-pr-check.sh owns Ready for Review; fm-pr-merge.sh and fm-pr-poll.sh own Done.
@@ -10,6 +10,7 @@
 # Failed attempts are receipted too: the diagnostic hands the move off by hand.
 # FM_JIRA_TIMEOUT bounds each attempt, including lookup and lock waits (default
 # 5 seconds, plus the deadline helper's kill grace); timeouts remain retryable.
+# Merge follow-ups have their own per-PR lock and receipt before Jira work.
 # No comments or other Jira fields are written; other projects stay silent.
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,6 +77,16 @@ transition_attempt() {
     [ -z "$tmp" ] || rm -f -- "${tmp:?}"
   ' EXIT
   trap 'exit 1' HUP INT TERM
+  if [ "$step" = 'done' ]; then
+    lock="$dir/followups.lock"
+    fm_lock_acquire_wait "$lock"
+    if [ ! -f "$dir/followups" ]; then
+      fm_wake_append check "merge-followups:$url" "check: MERGE FOLLOW-UPS: $url - (1) check MCP covers what changed unless explicitly skipped; put any MCP gap in a separate follow-up PR; (2) update /help-center with the change" || exit 1
+      printf '%s\n' "$url" > "$dir/followups"
+    fi
+    fm_lock_release "$lock"
+    lock="$dir/transition.lock"
+  fi
   if [ -z "$ticket" ]; then
     tmp=$(mktemp "$dir/.transition.XXXXXX")
     gh-axi api "/repos/$FM_PR_PATH/pulls/$FM_PR_NUMBER" --jq '.title + " " + .head.ref' > "$tmp" 2>/dev/null &
