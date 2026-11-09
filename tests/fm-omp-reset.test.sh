@@ -11,17 +11,28 @@ cp "${FM_RESET_EXTENSION:-$ROOT/.omp/extensions/fm-primary-omp.ts}" "$LAB/.omp/e
 cat > "$LAB/bin/fm-omp-reset-submit.sh" <<'SH'
 #!/usr/bin/env bash
 [ ! -f "$FM_HOME/state/refuse" ] || exit 1
-if [ "$1" = check ]; then exit 0; fi
+if [ "$1" = recover-check ]; then exit 0; fi
+if [ "$1" = check ]; then
+  [ ! -e "$FM_HOME/state/.afk" ] && [ ! -e "$FM_HOME/state/.afk-daemon-terminal" ]
+  exit $?
+fi
 if [ -f "$FM_HOME/state/submit-pauses" ]; then
   touch "$FM_HOME/state/submit-started"
   read -r _ < "$FM_HOME/state/submit-resume"
-  exit 1
+  [ -f "$FM_HOME/state/submit-succeeds" ]
+  exit $?
 fi
 printf '%s\n' "$2" >> "$FM_HOME/state/submissions"
 [ ! -f "$FM_HOME/state/submit-fails" ]
 SH
 cat > "$LAB/bin/fm-startup-memory-budget.sh" <<'SH'
 #!/usr/bin/env bash
+if [ -f "$FM_HOME/state/budget-takeover" ]; then
+  case "$(cat "$FM_HOME/state/budget-takeover")" in
+    flag) touch "$FM_HOME/state/.afk" ;;
+    owner) printf 'none\t-\tomp\n' > "$FM_HOME/state/.afk-daemon-terminal" ;;
+  esac
+fi
 if [ -f "$FM_HOME/state/budget-fails" ]; then echo budget_status=within-budget; exit 2; fi
 if [ -f "$FM_HOME/state/over-budget" ]; then
   echo budget_status=over-budget
@@ -44,7 +55,7 @@ if [ -n "${FM_RESET_REGRESSION:-}" ]; then
   FM_HOME="$LAB" FM_STATE_OVERRIDE="$LAB/state" node --experimental-strip-types "$ROOT/tests/fixtures/omp-reset/regressions.mjs" "$FM_RESET_REGRESSION"
   exit
 fi
-for scenario in arm-gate draft-race in-flight cancelled-switch thrown-switch partial-switch running-watcher veto-draft veto-busy veto-queued veto-forged veto-foreign-job; do
+for scenario in normal-seed unquoted-arm away-flag-prepare away-flag-ready away-flag-ready-budget away-flag-command-budget away-flag-scheduled away-flag-input away-flag-command away-flag-in-flight away-flag-in-flight-clean away-owner-prepare away-owner-ready away-owner-ready-budget away-owner-command-budget away-owner-scheduled away-owner-input away-owner-command away-owner-in-flight away-owner-in-flight-clean arm-gate draft-race in-flight cancelled-switch thrown-switch partial-switch running-watcher veto-draft veto-busy veto-queued veto-forged veto-foreign-job; do
   FM_HOME="$LAB" FM_STATE_OVERRIDE="$LAB/state" node --experimental-strip-types "$ROOT/tests/fixtures/omp-reset/regressions.mjs" "$scenario"
 done
 FM_HOME="$LAB" FM_STATE_OVERRIDE="$LAB/state" node --experimental-strip-types "$ROOT/tests/fixtures/omp-reset/transitions.mjs"

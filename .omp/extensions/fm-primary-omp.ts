@@ -11,7 +11,7 @@
 // firstmate hooks an omp primary gets.
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -128,6 +128,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   let attempt: Request | undefined;
   let eligible = false;
   const armedJobs = new Set<string>();
+  const jobCalls = new Map<string, string>();
   let removeInputListener: (() => void) | undefined;
   const fresh = () => request?.readyAt !== undefined && Date.now() - request.readyAt < 30_000;
   const sessionId = (ctx: ExtensionContext) => ctx.sessionManager.getSessionId();
@@ -138,11 +139,10 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     return result.status === 0 && /^budget_status=within-budget$/m.test(result.stdout)
       && !/^exception=/m.test(result.stdout);
   };
-  const armCommand = (command: string) => /^(?:\[ -f ('[^'\n]+'|"[^"\n]+") \] && \. \1; )?(?:exec )?bin\/fm-watch-arm\.sh\s*$/.test(command);
   const available = (ctx: ExtensionContext) => {
     const jobs = ctx.getAsyncJobSnapshot();
     return main(ctx) && check() && !ctx.hasPendingMessages() && ctx.ui.getEditorText() === ""
-      && (jobs === null || (jobs.running.every(job => armedJobs.has(job.id) && armCommand(job.command ?? ""))
+      && (jobs === null || (jobs.running.every(job => armedJobs.has(job.id))
         && jobs.delivery.queued === 0 && !jobs.delivery.delivering && jobs.delivery.pendingJobIds.length === 0));
   };
   const valid = (ctx: ExtensionContext) => request?.session === sessionId(ctx) && fresh() && available(ctx);
@@ -151,7 +151,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     if (ready.resolved) return;
     ready.resolved = true;
     if (request === ready) request = undefined;
-    if (!check() || existsSync(`${state}/.captain-hold`)) return;
+    if (spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["recover-check", String(process.pid)], { env }).status !== 0) return;
     const switched = sessionId(ctx) !== ready.session;
     pi.sendMessage({ customType: switched ? "firstmate-reset-start" : "firstmate-reset-recovery", display: false,
       content: switched ? seed(ready) : `Automatic reset deferred: ${reason}. Follow the current supervision protocol; re-arm if required. Do not repeat already-reported outcomes.`,
@@ -197,7 +197,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
         child.on("error", () => done(1));
         child.on("close", code => done(code ?? 1));
       });
-      if (!ready.switching && (status !== 0 || request !== ready)) {
+      if (!ready.switching && (status !== 0 || request !== ready || !valid(ctx))) {
         recover(ready, "primary composer refused command submission", ctx);
       }
     };
@@ -216,7 +216,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   pi.registerTool({
     name: "firstmate_watch_reset",
     label: "Stow before watching",
-    description: "Before re-arming omp supervision when only keeping watch: prepare, complete the returned stow skill, then ready with a compact durable handoff and attestations. Never call ready after stow fails.",
+    description: "In normal mode only, before re-arming omp supervision when only keeping watch: prepare, complete the returned stow skill, then ready with a compact durable handoff and attestations. Never call ready after stow fails.",
     parameters: pi.zod.object({
       action: pi.zod.enum(["prepare", "ready", "cancel"]),
       nonce: pi.zod.string().optional(),
@@ -231,17 +231,17 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
       }
       if (!eligible || !available(ctx)) {
         request = undefined;
-        return result("Reset unavailable: finish startup and arm supervision, or handle pending input/work first. Continue supervision in this session.", true);
+        return result("Reset unavailable: remain in normal mode, finish startup and arm supervision, or handle pending input/work first. Continue supervision in this session.", true);
       }
       if (params.action === "prepare") {
         request = { nonce: randomUUID(), session: sessionId(ctx) };
-        return result(`Readiness nonce: ${request.nonce}. Complete this stow skill now. Preserve its full receipt; only then call ready with the nonce and a short handoff containing durable open-thread pointers, already-reported outcomes, and the next supervision action.\n\n${readFileSync(`${root}/.agents/skills/stow/SKILL.md`, "utf8")}`, undefined, request.nonce);
+        return result(`Readiness nonce: ${request.nonce}. Complete this stow skill now. Report its full Completion receipt; only then call ready with the nonce and a short handoff containing durable open-thread pointers, already-reported outcomes, and the next supervision action.\n\n${readFileSync(`${root}/.agents/skills/stow/SKILL.md`, "utf8")}`, undefined, request.nonce);
       }
       const prepared = request;
       request = undefined;
       if (!prepared || prepared.nonce !== params.nonce || prepared.session !== sessionId(ctx)
         || params.stowComplete !== true || params.onlyKeepingWatch !== true
-        || !params.handoff?.trim() || params.handoff.length > 4000 || !budget()) {
+        || !params.handoff?.trim() || params.handoff.length > 4000 || !budget() || !available(ctx)) {
         return result("Stow or readiness incomplete. Keep this session and resume supervision; prepare again after resolving the problem.", true);
       }
       save(params.handoff, prepared.session);
@@ -256,6 +256,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     request = undefined;
     eligible = false;
     armedJobs.clear();
+    jobCalls.clear();
     listen(ctx);
   };
   pi.on("session_start", beginSession);
@@ -270,14 +271,30 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     if (request?.readyAt !== undefined) request = undefined;
   });
   pi.on("tool_result", (event, ctx) => {
-    if (!main(ctx) || event.isError || event.toolName !== "read") return;
-    const path = typeof event.input.path === "string" ? event.input.path : "";
+    if (!main(ctx) || event.isError) return;
     const jobs = ctx.getAsyncJobSnapshot();
-    const job = jobs?.running.find(job => path === `proc://${job.id}`);
-    if (!job || !armCommand(job.command ?? "")) return;
-    if (event.content.some(part => part.type === "text" && /^watcher: (started|attached) pid=[0-9]+ /m.test(part.text))) {
-      eligible = true;
-      armedJobs.add(job.id);
+    for (const id of jobCalls.keys()) {
+      if (!jobs?.running.some(job => job.id === id)) jobCalls.delete(id);
+    }
+    if (event.toolName === "bash") {
+      const async = event.details?.async;
+      if (async?.state === "running" && jobs?.running.some(job => job.id === async.jobId)) {
+        jobCalls.set(async.jobId, event.toolCallId);
+      }
+      return;
+    }
+    if (event.toolName !== "read") return;
+    const job = jobs?.running.find(job => event.input.path === `proc://${job.id}`);
+    if (!job) return;
+    try {
+      const [sourceSession, call, status] = readFileSync(`${state}/.omp-watch-arm-result`, "utf8").split("\n");
+      if (sourceSession !== sessionId(ctx) || call !== jobCalls.get(job.id)
+        || !/^watcher: (started|attached) pid=[0-9]+ /.test(status)) return;
+      if (event.content.some(part => part.type === "text" && part.text.split("\n").includes(status))) {
+        eligible = true;
+        armedJobs.add(job.id);
+      }
+    } catch {
     }
   });
 
@@ -286,7 +303,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     async handler(args, ctx) {
       const ready = request?.nonce === args ? request : attempt?.nonce === args ? attempt : undefined;
       if (!ready || ready.resolved) return;
-      if (request !== ready || !valid(ctx) || !ctx.isIdle() || !budget()) {
+      if (request !== ready || !budget() || !valid(ctx) || !ctx.isIdle()) {
         recover(ready, "reset command no longer matches fresh readiness", ctx);
         return;
       }

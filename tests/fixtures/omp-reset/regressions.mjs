@@ -49,11 +49,13 @@ function input(data) {
   if (value === '\r') { submitted.push(editor); editor = ''; }
   else editor += value;
 }
-async function arm({ command = 'exec bin/fm-watch-arm.sh', status = 'watcher: started pid=42 (beacon fresh)' } = {}) {
+async function arm({ command = 'exec bin/fm-watch-arm.sh', status = 'watcher: started pid=42 (beacon fresh)', receipt = true, receiptSession = session, receiptCall = 'arm-call', outputStatus = status, nativeState = 'running', nativeError = false } = {}) {
   jobs = { running: [{id:'watcher', type:'bash', command}], recent: [], delivery: { queued:0, delivering:false, pendingJobIds:[] } };
   await emit('tool_call', {toolName:'bash', input:{command,async:true,timeout:0}});
-  await emit('tool_result', {toolName:'bash',input:{command,async:true,timeout:0},content:[{type:'text',text:'Async job running: watcher'}],isError:false});
-  await emit('tool_result', {toolName:'read',input:{path:'proc://watcher'},content:[{type:'text',text:status}],isError:false});
+  await emit('tool_result', {toolName:'bash',toolCallId:'arm-call',input:{command,async:true,timeout:0},details:{async:{state:nativeState,jobId:'watcher',type:'bash'}},content:[{type:'text',text:'Async job running: watcher'}],isError:nativeError});
+  if (receipt) writeFileSync(`${home}/state/.omp-watch-arm-result`, `${receiptSession}\n${receiptCall}\n${status}\n`);
+  else if (existsSync(`${home}/state/.omp-watch-arm-result`)) unlinkSync(`${home}/state/.omp-watch-arm-result`);
+  await emit('tool_result', {toolName:'read',input:{path:'proc://watcher'},content:[{type:'text',text:outputStatus}],isError:false});
   jobs = null;
 }
 async function ready() {
@@ -78,7 +80,72 @@ function waitFile(path) {
 }
 extension(pi);
 await emit('session_start');
-if (scenario === 'arm-gate') {
+if (scenario.startsWith('away-')) {
+  const [, signal, ...parts] = scenario.split('-');
+  const phase = parts.join('-');
+  const presence = `${home}/state/${signal === 'flag' ? '.afk' : '.afk-daemon-terminal'}`;
+  const enterAway = () => writeFileSync(presence, signal === 'flag' ? '' : 'none\t-\tomp\n');
+  const beforeSubmissions = existsSync(`${home}/state/submissions`) ? readFileSync(`${home}/state/submissions`,'utf8') : '';
+  await arm();
+  if (phase === 'prepare') {
+    enterAway();
+    const result = await call({action:'prepare'});
+    assert.equal(result.isError,true,`${signal} must veto reset preparation`);
+    assert.equal(result.details.nonce,undefined,'away preparation must not create a nonce');
+  } else if (phase === 'ready' || phase === 'ready-budget') {
+    const n = (await call({action:'prepare'})).details.nonce;
+    if (phase === 'ready-budget') writeFileSync(`${home}/state/budget-takeover`, signal);
+    else enterAway();
+    assert.equal((await call({action:'ready',nonce:n,stowComplete:true,onlyKeepingWatch:true,handoff:'Stowed in normal mode.'})).isError,true,`${signal} takeover must veto readiness`);
+    assert.equal(timers.length,0,'away readiness must not schedule transport');
+  } else {
+    if (phase.startsWith('in-flight')) writeFileSync(`${home}/state/submit-pauses`, '');
+    const n = await ready();
+    if (phase.startsWith('in-flight')) {
+      if (phase === 'in-flight-clean') writeFileSync(`${home}/state/submit-succeeds`,'');
+      const submitting = runSubmit();
+      await waitFile(`${home}/state/submit-started`);
+      enterAway();
+      if (phase === 'in-flight') input('Wai');
+      writeFileSync(`${home}/state/submit-resume`, 'continue\n');
+      await submitting;
+      unlinkSync(`${home}/state/submit-pauses`);
+      unlinkSync(`${home}/state/submit-started`);
+      if (existsSync(`${home}/state/submit-succeeds`)) unlinkSync(`${home}/state/submit-succeeds`);
+    } else {
+      if (phase === 'input') await runSubmit();
+      if (phase === 'command-budget') writeFileSync(`${home}/state/budget-takeover`, signal);
+      else enterAway();
+      if (phase === 'scheduled') await runSubmit();
+      if (phase === 'input') input(frame(n));
+      if (phase === 'command' || phase === 'command-budget') await commands.get('fm-reset').handler(n,ctx);
+    }
+    assert.equal(switches,0,`${signal} takeover at ${phase} must not switch`);
+    assert.deepEqual(submitted,[],`${signal} takeover must not submit a registered command`);
+    if (phase === 'scheduled') assert.equal(existsSync(`${home}/state/submissions`) ? readFileSync(`${home}/state/submissions`,'utf8') : '',beforeSubmissions,'away scheduler must not start transport');
+    if (phase === 'in-flight') assert.equal(editor,'Wai','away cancellation must preserve the draft');
+    assert.equal(recoveries().length,1,`${signal} cancellation must trigger one supervision continuation`);
+    assert.equal(recoveries()[0].session,'old','away continuation must stay in the original session');
+    for (const t of timers.filter(x=>x.ms===30000)) await t.fn();
+    await commands.get('fm-reset').handler(n,ctx);
+    assert.equal(recoveries().length,1,'late deadline and command must not duplicate away continuation');
+  }
+  unlinkSync(presence);
+  if (existsSync(`${home}/state/budget-takeover`)) unlinkSync(`${home}/state/budget-takeover`);
+} else if (scenario === 'normal-seed') {
+  await arm();
+  const n = await ready();
+  await commands.get('fm-reset').handler(n,ctx);
+  const starts = messages.filter(x=>x.message.customType==='firstmate-reset-start' && x.options.triggerTurn);
+  assert.equal(starts.length,1,'reset must send one replacement startup');
+  const seed = starts[0].message.content;
+  assert.match(seed,/^\u2063FIRSTMATE_OP: v1 session-start:/,'replacement startup must remain internal operational input');
+  assert.match(seed,/bin\/fm-session-start\.sh/,'startup must run the complete startup procedure');
+} else if (scenario === 'unquoted-arm') {
+  await arm({command:'[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh'});
+  jobs = {running:[{id:'watcher',type:'bash',command:'[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh'}],recent:[],delivery:{queued:0,delivering:false,pendingJobIds:[]}};
+  await ready();
+} else if (scenario === 'arm-gate') {
   jobs = {running:[],recent:[{id:'old-watcher',status:'cancelled',command:'exec bin/fm-watch-arm.sh'}],delivery:{queued:0,delivering:false,pendingJobIds:[]}};
   await emit('tool_result',{toolName:'read',input:{path:'proc://old-watcher'},isError:false,content:[{type:'text',text:'watcher: started pid=42 (beacon fresh)'}]});
   jobs = null;
@@ -92,8 +159,13 @@ if (scenario === 'arm-gate') {
   assert.equal((await call({action:'prepare'})).isError, true, 'seatbelt-denied arm must not unlock reset');
   await arm({status:'watcher: FAILED - no live watcher'});
   assert.equal((await call({action:'prepare'})).isError, true, 'failed arm must not unlock reset');
-  await arm({command:'printf fake-status'});
+  await arm({command:'printf fake-status',receipt:false});
   assert.equal((await call({action:'prepare'})).isError, true, 'status from a different command must not unlock reset');
+  for (const provenance of [{receipt:false},{receiptSession:'previous-session'},{receiptCall:'other-call'},{outputStatus:'unrelated result'},{nativeState:'completed'},{nativeError:true}]) {
+    await emit('session_start');
+    await arm(provenance);
+    assert.equal((await call({action:'prepare'})).isError,true,'unrelated or historical arm result must not unlock reset');
+  }
   for (const status of ['watcher: started pid=42 (beacon fresh)','watcher: attached pid=42 (beacon 0s)']) {
     await arm({status});
     assert.equal((await call({action:'prepare'})).isError, undefined, 'successful arm must unlock reset');
@@ -118,7 +190,7 @@ if (scenario === 'arm-gate') {
     if (scenario === 'veto-draft') editor = 'Wai';
     if (scenario === 'veto-busy') idle = false;
     if (scenario === 'veto-queued') queued = true;
-    if (scenario === 'veto-foreign-job') jobs = {running:[{id:'watcher',command:'sleep 20'}],recent:[],delivery:{queued:0,delivering:false,pendingJobIds:[]}};
+    if (scenario === 'veto-foreign-job') jobs = {running:[{id:'unrelated-job',command:'sleep 20'}],recent:[],delivery:{queued:0,delivering:false,pendingJobIds:[]}};
     const before = editor;
     input(frame(scenario === 'veto-forged' ? (n[0] === 'a' ? 'b' : 'a') + n.slice(1) : n));
     assert.deepEqual(submitted, [], `${scenario} must veto native Enter`);

@@ -22,6 +22,12 @@ case "$1" in
     if [[ "$(cat "$PROBE/mode")" =~ ^(busy|background)$ ]]; then echo '3 2'; else echo '3 1'; fi
     ;;
   capture-pane)
+    if [ -f "$PROBE/takeover" ]; then
+      case "$(cat "$PROBE/takeover")" in
+        flag) touch "$FM_STATE_OVERRIDE/.afk" ;;
+        owner) printf 'none\t-\tomp\n' > "$FM_STATE_OVERRIDE/.afk-daemon-terminal" ;;
+      esac
+    fi
     mode=$(cat "$PROBE/mode")
     case "$mode" in
       unknown) echo '$ ' ;;
@@ -45,10 +51,35 @@ chmod +x "$LAB/fakebin/tmux"
 export PROBE="$LAB" FM_HOME="$LAB/home" FM_STATE_OVERRIDE="$LAB/home/state" FM_ROOT_OVERRIDE="$LAB/root"
 export FM_SUPERVISOR_TARGET='%42' FM_SUPERVISOR_BACKEND=tmux OMPCODE=1
 export PATH="$LAB/fakebin:$PATH"
+echo empty > "$LAB/mode"
+for signal in flag owner; do
+  if [ "$signal" = flag ]; then
+    touch "$LAB/home/state/.afk"
+  else
+    printf 'none\t-\tomp\n' > "$LAB/home/state/.afk-daemon-terminal"
+  fi
+  if "$HELPER" check "$$"; then fail "$signal permitted reset readiness while away"; fi
+  "$HELPER" recover-check "$$" || fail "$signal suppressed owned-home supervision recovery"
+  if "$HELPER" submit 12345678-1234-1234-1234-123456789abc "$$"; then fail "$signal permitted reset transport while away"; fi
+  [ ! -e "$LAB/sent" ] || fail "$signal typed a reset trigger while away"
+  rm -f "${LAB:?}/home/state/.afk" "${LAB:?}/home/state/.afk-daemon-terminal"
+done
+for record in $'none\t-\tdesktop' $'none\t-\tnative' $'none\t-\tomp-extra' $'none\t-\tomp\nextra'; do
+  printf '%s\n' "$record" > "$LAB/home/state/.afk-daemon-terminal"
+  "$HELPER" check "$$" || fail 'unrelated or malformed owner record selected omp away'
+done
+rm -f "${LAB:?}/home/state/.afk-daemon-terminal"
 for mode in draft unknown; do
   echo "$mode" > "$LAB/mode"
   if "$HELPER" submit 12345678-1234-1234-1234-123456789abc "$$"; then fail "transport accepted $mode composer"; fi
   [ ! -e "$LAB/sent" ] || fail "transport typed into $mode composer"
+done
+for signal in flag owner; do
+  echo "$signal" > "$LAB/takeover"
+  if "$HELPER" submit 12345678-1234-1234-1234-123456789abc "$$"; then fail "$signal takeover during composer inspection permitted transport"; fi
+  [ ! -e "$LAB/sent" ] || fail "$signal takeover typed a trigger"
+  "$HELPER" recover-check "$$" || fail 'takeover suppressed continuation'
+  rm -f "${LAB:?}/takeover" "${LAB:?}/home/state/.afk" "${LAB:?}/home/state/.afk-daemon-terminal"
 done
 echo background > "$LAB/mode"
 "$HELPER" submit 12345678-1234-1234-1234-123456789abc "$$" || fail 'background-job display blocked the native idle-checked reset trigger'
@@ -71,6 +102,7 @@ done
 touch "$LAB/home/state/.captain-hold"
 if "$HELPER" submit 12345678-1234-1234-1234-123456789abc "$$"; then fail 'transport ignored global hold'; fi
 if "$HELPER" check "$$"; then fail 'readiness check ignored global hold'; fi
+if "$HELPER" recover-check "$$"; then fail 'recovery ignored global hold'; fi
 if env -u FM_SUPERVISOR_TARGET -u FM_SUPERVISOR_BACKEND -u TMUX_PANE -u HERDR_ENV -u HERDR_PANE_ID \
   "$HELPER" check "$$"; then fail 'transport guessed a pane'; fi
 pass 'omp reset transport: one literal trigger, no external Enter, no guessed pane or global hold bypass'

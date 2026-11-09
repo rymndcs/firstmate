@@ -46,6 +46,8 @@ const call = params => tool.execute('tool-id', params, undefined, undefined, ctx
 await emit('session_start');
 async function arm() {
   jobs = {running:[{id:'watcher',command:'exec bin/fm-watch-arm.sh'}],recent:[],delivery:{queued:0,delivering:false,pendingJobIds:[]}};
+  await emit('tool_result',{toolName:'bash',toolCallId:'arm-call',input:{},details:{async:{state:'running',jobId:'watcher',type:'bash'}},isError:false,content:[]});
+  writeFileSync(`${home}/state/.omp-watch-arm-result`, `${session}\narm-call\nwatcher: started pid=42 (beacon fresh)\n`);
   await emit('tool_result',{toolName:'read',input:{path:'proc://watcher'},isError:false,content:[{type:'text',text:'watcher: started pid=42 (beacon fresh)'}]});
   jobs = null;
 }
@@ -86,7 +88,7 @@ n = await prepare(); editor = 'half typed';
 assert.equal((await ready(n)).isError, true, 'draft blocks readiness'); editor = '';
 n = await prepare(); queued = true;
 assert.equal((await ready(n)).isError, true, 'queued input blocks readiness'); queued = false;
-n = await prepare(); jobs = { running: [{ id: 'watcher' }], delivery: {queued:0,delivering:false,pendingJobIds:[]} };
+n = await prepare(); jobs = { running: [{ id: 'foreign-work' }], delivery: {queued:0,delivering:false,pendingJobIds:[]} };
 assert.equal((await ready(n)).isError, true, 'live job prevents resetting'); jobs = null;
 for (const delivery of [
   {queued:1,delivering:false,pendingJobIds:[]},

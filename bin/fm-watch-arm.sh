@@ -32,6 +32,11 @@
 #   watcher: FAILED - cycle ended without an actionable reason
 #                                                        - a clean cycle ended with no wake and no
 #                                                          verified healthy successor
+# In omp Bash calls, PI_SESSION_ID and PI_TOOL_CALL_ID come from the native
+# tool environment. Before a successful status, atomically publish those two
+# identities and the exact status (three newline-terminated lines, mode 0600)
+# to state/.omp-watch-arm-result for the primary extension's result correlation.
+# Other harnesses retain their existing output and create no such result.
 # It NEVER reports started/attached/healthy off a stale beacon or a dead/reused pid: a
 # stale-beacon or dead-pid holder either self-heals (the fresh child steals the
 # dead lock per the singleton self-eviction/steal path and is confirmed) or this
@@ -248,10 +253,18 @@ healthy_watcher() {
   HEALTHY_IDENTITY=$FM_WATCHER_HEALTHY_IDENTITY
 }
 
+report_success() {
+  local status=$1 result="$STATE/.omp-watch-arm-result" tmp="$STATE/.omp-watch-arm-result.$ARM_PID"
+  if [ "${OMPCODE:-}" = 1 ] && [ -n "${PI_SESSION_ID:-}" ] && [ -n "${PI_TOOL_CALL_ID:-}" ]; then
+    (umask 077; printf '%s\n' "$PI_SESSION_ID" "$PI_TOOL_CALL_ID" "$status" > "$tmp" && mv -f "$tmp" "$result")
+  fi
+  printf '%s\n' "$status"
+}
+
 report_attached() {
   local age
   age=$(fm_path_age "$BEAT")
-  echo "watcher: attached pid=$HEALTHY_PID (beacon ${age}s)"
+  report_success "watcher: attached pid=$HEALTHY_PID (beacon ${age}s)"
 }
 
 # Give a successor the same bounded confirmation window used for a fresh child.
@@ -516,7 +529,7 @@ while :; do
     if [ "$HEALTHY_PID" = "$child" ]; then
       cycle_refresh_lock_before
       cycle_mark_predecessor_successor "started:$child"
-      echo "watcher: started pid=$child (beacon fresh)"
+      report_success "watcher: started pid=$child (beacon fresh)"
       wait "$child"
       rc=$?
       owned_child_finished "$rc"

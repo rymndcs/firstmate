@@ -146,6 +146,49 @@ test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
   pass "watch-arm: a cycle that delivered no wake of its own still fails loudly"
 }
 
+test_omp_result_receipt() {
+  local dir
+  dir=$(make_case omp-result)
+  OMPCODE=1 PI_SESSION_ID=fixture-session PI_TOOL_CALL_ID=fixture-call \
+    FM_STATE_OVERRIDE="$dir/state" FM_POLL=0.05 FM_SIGNAL_GRACE=0 \
+    PATH="$dir/fakebin:$PATH" python3 - "$WATCH_ARM" "$dir/state" <<'PYTEST'
+import os, subprocess, sys
+from pathlib import Path
+arm,state=sys.argv[1],Path(sys.argv[2])
+p=subprocess.Popen([arm],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+try:
+    status=p.stdout.readline().rstrip('\n')
+    assert status.startswith('watcher: started'),status
+    receipt=state/'.omp-watch-arm-result'
+    assert receipt.exists(),'successful arm must publish its own session/call result before status'
+    assert receipt.read_text()==f'fixture-session\nfixture-call\n{status}\n'
+    assert receipt.stat().st_mode & 0o777 == 0o600,'arm result must be private'
+    q=subprocess.Popen([arm],env=dict(os.environ,PI_TOOL_CALL_ID='attached-call'),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    try:
+        attached=q.stdout.readline().rstrip('\n')
+        assert attached.startswith('watcher: attached'),attached
+        assert receipt.read_text()==f'fixture-session\nattached-call\n{attached}\n'
+    finally:
+        if q.poll() is None:q.terminate();q.communicate(timeout=5)
+finally:
+    if p.poll() is None:p.terminate();p.communicate(timeout=5)
+for missing in ('OMPCODE','PI_SESSION_ID','PI_TOOL_CALL_ID'):
+    receipt.unlink()
+    env=dict(os.environ)
+    env[missing]=''
+    p=subprocess.Popen([arm],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    try:
+        status=p.stdout.readline()
+        assert status.startswith('watcher: started'),status
+        assert not receipt.exists(),f'{missing} empty must not publish an omp result'
+    finally:
+        if p.poll() is None:p.terminate();p.communicate(timeout=5)
+    receipt.write_text('fixture cleanup sentinel')
+print('ok - started and attached arms publish private native session/call results before status; other environments do not')
+PYTEST
+}
+
+test_omp_result_receipt || exit 1
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver

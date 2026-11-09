@@ -12,6 +12,11 @@ export FM_HOME="$LAB" FM_STATE_OVERRIDE="$LAB/state" FM_ROOT_OVERRIDE="$ROOT"
 export FM_SUPERVISOR_BACKEND=unsupported FM_SUPERVISOR_TARGET=fixture:never
 mkdir -p "$LAB/state"
 launch() { OMPCODE=1 "$ROOT/bin/fm-afk-launch.sh" "$@"; }
+. "$ROOT/bin/fm-supervision-lib.sh"
+printf 'none\t-\tomp\n' > "$LAB/state/.afk-daemon-terminal"
+fm_afk_omp_owner_selected "$LAB/state" || fail 'record-only omp owner was not recognized'
+if fm_afk_omp_selected "$LAB/state"; then fail 'existing away selection lost its flag requirement'; fi
+rm -f "${LAB:?}/state/.afk-daemon-terminal"
 launch start-native
 [ "$(cat "$LAB/state/.afk-daemon-terminal")" = $'none\t-\tomp' ] || fail 'omp selected a pane daemon instead of async completions'
 printf 'pending evidence\n' > "$LAB/state/.subsuper-escalations"
@@ -73,7 +78,8 @@ import {writeFileSync,existsSync} from "node:fs";
 import {pathToFileURL} from "node:url";
 const handlers=new Map();
 const {default:extension}=await import(pathToFileURL(process.env.EXTENSION_FILE).href);
-extension({on(name,fn){handlers.set(name,fn);},sendMessage(){}});
+const schema=new Proxy(() => schema, {get: () => schema});
+extension({zod:schema,registerTool(){},registerCommand(){},on(name,fn){handlers.set(name,fn);},sendMessage(){}});
 await handlers.get("session_start")({}, {agent:{kind:"main"}});
 writeFileSync(process.env.FIXTURE_RECEIPT,JSON.stringify({env:process.env,
   labMarker:existsSync(process.env.FM_HOME+"/state/.omp-extension-loaded")}));

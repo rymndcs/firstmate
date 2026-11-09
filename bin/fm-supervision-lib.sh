@@ -97,7 +97,11 @@ fm_afk_desktop_selected() {  # <state-dir>
 
 # omp retains the normal tracked async watcher as its only away delivery owner.
 fm_afk_omp_selected() {  # <state-dir>
-  [ -e "$1/.afk" ] && [ "$(cat "$1/.afk-daemon-terminal" 2>/dev/null)" = $'none\t-\tomp' ]
+  [ -e "$1/.afk" ] && fm_afk_omp_owner_selected "$1"
+}
+
+fm_afk_omp_owner_selected() {  # <state-dir>, including a selection without its flag
+  [ "$(cat "$1/.afk-daemon-terminal" 2>/dev/null)" = $'none\t-\tomp' ]
 }
 
 # Shared visible-output policy for every away delivery and recovery reminder.
