@@ -155,6 +155,20 @@ fi
 jq -es --arg arm '[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh' '
   [.[]|select(.kind=="bash" and .input.command==$arm and .input.async==true and .input.timeout==0)]|length >= 1
 ' "$HOME_DIR/events.jsonl" >/dev/null || fail 'native model did not use the supported unquoted arm before reset'
+send error-ui
+wait_count error-ui 1
+n=0
+while [ "$n" -lt "${FM_OMP_RESET_LIVE_POLLS:-1200}" ]; do
+  "$TMUX_BIN" -L "$SOCKET" capture-pane -p -t reset -S -150 > "$LAB/normal-error-ui.txt"
+  if grep -F 'RESET_FAILURE_CHAT_PROOF' "$LAB/normal-error-ui.txt" >/dev/null; then break; fi
+  sleep 0.25
+  n=$((n + 1))
+done
+grep -F 'RESET_FAILURE_CHAT_PROOF' "$LAB/normal-error-ui.txt" >/dev/null || fail 'omp error notification did not render a visible chat line'
+if [ -n "${FM_OMP_RESET_EVIDENCE:-}" ]; then
+  cp "$LAB/normal-error-ui.txt" "$FM_OMP_RESET_EVIDENCE.normal.error-ui.txt"
+fi
+printf 'ok - %s normal error UI renders a visible chat line\n' "$("$OMP_BIN" --version)"
 send race
 wait_count recovery 1
 jq -es '

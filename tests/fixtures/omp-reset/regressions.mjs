@@ -7,7 +7,8 @@ const scenario = process.argv[2];
 const { default: extension } = await import(pathToFileURL(`${home}/.omp/extensions/fm-primary-omp.ts`));
 const chain = new Proxy(() => chain, { get: () => chain });
 const handlers = new Map(), tools = new Map(), commands = new Map();
-const messages = [], timers = [], submitted = [];
+const messages = [], timers = [], submitted = [], errors = [];
+let enqueueFailures = 0, enqueueCalls = 0;
 let queued = false;
 let editor = '', jobs = null, session = 'old', terminalInput, switchMode = 'success', idle = true, switches = 0;
 const pi = {
@@ -15,13 +16,18 @@ const pi = {
   on(name, fn) { const all = handlers.get(name) ?? []; all.push(fn); handlers.set(name, all); },
   registerTool(tool) { tools.set(tool.name, tool); },
   registerCommand(name, cmd) { commands.set(name, cmd); },
-  sendMessage(message, options) { messages.push({ message, options, session }); },
+  sendMessage(message, options) {
+    enqueueCalls++;
+    if (enqueueFailures-- > 0) throw new Error('injected enqueue failure');
+    messages.push({ message, options, session });
+  },
 };
 const ctx = {
   agent: { kind: 'main' }, mode: 'tui', hasUI: true,
   sessionManager: { getSessionId: () => session, getSessionFile: () => '/old.jsonl' },
   isIdle: () => idle, hasPendingMessages: () => queued, getAsyncJobSnapshot: () => jobs,
-  ui: { getEditorText: () => editor, setEditorText: value => { editor = value; }, notify() {},
+  ui: { getEditorText: () => editor, setEditorText: value => { editor = value; },
+    notify(text, type) { errors.push({ text, type, session }); },
     onTerminalInput(fn) { terminalInput = fn; return () => { terminalInput = undefined; }; } },
   setTimeout(fn, ms) { const t = { fn, ms }; timers.push(t); return t; },
   clearTimer(t) { const i = timers.indexOf(t); if (i >= 0) timers.splice(i, 1); },
@@ -108,7 +114,58 @@ mkdirSync(`${home}/state/classifier-away`, { recursive: true });
 writeFileSync(`${home}/state/classifier-away/.afk`, '');
 assert.deepEqual(classify('I am back; please show the investigation results.'), ['', '', 'yes'], 'a real human return must remain unmarked and end away mode');
 await emit('session_start');
-if (scenario.startsWith('away-')) {
+if (scenario.startsWith('startup-') || scenario.startsWith('recovery-')) {
+  const checks = () => existsSync(`${home}/state/recovery-checks`)
+    ? readFileSync(`${home}/state/recovery-checks`, 'utf8').trim().split('\n').length : 0;
+  const checksBefore = checks();
+  await arm();
+  const n = await ready();
+  const startup = scenario.startsWith('startup-');
+  const recoveryFails = !startup || scenario.startsWith('startup-recovery-');
+  if (scenario.endsWith('encoding')) {
+    writeFileSync(`${home}/state/encoding-failures`, startup ? recoveryFails ? '2,3' : '2' : '1');
+    if (existsSync(`${home}/state/encoding-count`)) unlinkSync(`${home}/state/encoding-count`);
+  }
+  enqueueFailures = scenario.endsWith('enqueue') ? startup && recoveryFails ? 2 : 1 : 0;
+  await assert.doesNotReject(async () => {
+    if (startup) await commands.get('fm-reset').handler(n, ctx);
+    else {
+      input('Wai');
+      await runSubmit();
+      assert.equal(editor, 'Wai', 'failed recovery must retain the human draft');
+    }
+  }, `${scenario}: recovery must report delivery failure rather than throw it out of the callback`);
+  assert.equal(switches, startup ? 1 : 0, 'fault must reach the intended switch boundary');
+  assert.equal(checks(), checksBefore + 1, `${scenario}: delivery failure must reach the independent recovery check`);
+  const turns = messages.filter(x => x.options?.triggerTurn);
+  assert.equal(turns.length, recoveryFails ? 0 : 1, `${scenario}: queue exactly one continuation when recovery succeeds`);
+  assert.equal(enqueueCalls, scenario.endsWith('enqueue') ? startup ? 2 : 1 : recoveryFails ? 0 : 1,
+    'delivery failure must use one recovery attempt without a send retry loop');
+  if (scenario.endsWith('encoding')) {
+    assert.equal(Number(readFileSync(`${home}/state/encoding-count`, 'utf8')), startup ? 3 : 1,
+      'encoding failure must use one recovery attempt without an encoder retry loop');
+  }
+  if (!recoveryFails) {
+    assert.equal(turns[0].session, 'new');
+    assert.match(turns[0].message.content, /bin\/fm-session-start\.sh/);
+    assert.match(turns[0].message.content, /arm exactly one supervision cycle/);
+    assert.match(turns[0].message.content, /Open: backlog\. Already reported: reply/);
+  }
+  const failure = errors.find(x => x.text.startsWith(recoveryFails ? 'Automatic reset recovery failed:' : 'Automatic reset failed:'));
+  assert.ok(failure, `${scenario}: failed delivery must leave a visible failure line through the native error UI`);
+  assert.equal(failure.type, 'error', 'only the error UI is verified to render a chat error line');
+  assert.equal(failure.session, startup ? 'new' : 'old');
+  assert.match(failure.text, /injected (encoding|enqueue) failure/);
+  if (recoveryFails) assert.match(failure.text, /could not be queued/);
+  const before = { messages: messages.length, errors: errors.length, enqueueCalls,
+    encodings: existsSync(`${home}/state/encoding-count`) ? readFileSync(`${home}/state/encoding-count`, 'utf8') : '' };
+  for (const t of timers) await t.fn();
+  await commands.get('fm-reset').handler(n, ctx);
+  assert.deepEqual({ messages: messages.length, errors: errors.length, enqueueCalls,
+    encodings: existsSync(`${home}/state/encoding-count`) ? readFileSync(`${home}/state/encoding-count`, 'utf8') : '' }, before,
+    'late deadline, submit and command must not retry or duplicate the completed recovery attempt');
+  if (existsSync(`${home}/state/encoding-failures`)) unlinkSync(`${home}/state/encoding-failures`);
+} else if (scenario.startsWith('away-')) {
   const [, signal, ...parts] = scenario.split('-');
   const phase = parts.join('-');
   const presence = `${home}/state/${signal === 'flag' ? '.afk' : '.afk-daemon-terminal'}`;
@@ -169,6 +226,10 @@ if (scenario.startsWith('away-')) {
   const seed = starts[0].message.content;
   assert.match(seed,/^\u2063FIRSTMATE_OP: v1 session-start:/,'replacement startup must remain internal operational input');
   assert.match(seed,/bin\/fm-session-start\.sh/,'startup must run the complete startup procedure');
+  for (const t of timers) await t.fn();
+  await commands.get('fm-reset').handler(n,ctx);
+  assert.equal(messages.filter(x=>x.options?.triggerTurn).length,1,'successful startup must have exactly one continuation after late callbacks');
+  assert.deepEqual(errors, [], 'successful reset must not report a failure');
 } else if (scenario === 'unquoted-arm') {
   await arm({command:'[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh'});
   jobs = {running:[{id:'watcher',type:'bash',command:'[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh'}],recent:[],delivery:{queued:0,delivering:false,pendingJobIds:[]}};

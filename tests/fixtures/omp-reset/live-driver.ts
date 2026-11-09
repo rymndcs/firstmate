@@ -25,6 +25,11 @@ export default function (pi: any) {
   }}));
   pi.registerCommand('fm-probe', {
     handler: async (action: string, ctx: any) => {
+      if (action === 'error-ui') {
+        ctx.ui.notify('RESET_FAILURE_CHAT_PROOF', 'error');
+        log({kind:'error-ui',session:ctx.sessionManager.getSessionId()});
+        return;
+      }
       if (action === 'inspect') {
         log({kind:'inspect',session:ctx.sessionManager.getSessionId(),jobs:ctx.getAsyncJobSnapshot(),editor:ctx.ui.getEditorText()});
         return;

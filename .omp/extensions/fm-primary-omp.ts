@@ -155,9 +155,13 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     if (request === ready) request = undefined;
     if (spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["recover-check", String(process.pid)], { env }).status !== 0) return;
     const switched = sessionId(ctx) !== ready.session;
-    pi.sendMessage({ customType: switched ? "firstmate-reset-start" : "firstmate-reset-recovery", display: false,
-      content: switched ? seed(ready) : operationalInput("watcher", `Automatic reset deferred: ${reason}. Follow the current supervision protocol; re-arm if required. Do not repeat already-reported outcomes.`),
-    }, { deliverAs: "nextTurn", triggerTurn: true });
+    try {
+      pi.sendMessage({ customType: switched ? "firstmate-reset-start" : "firstmate-reset-recovery", display: false,
+        content: switched ? seed(ready) : operationalInput("watcher", `Automatic reset deferred: ${reason}. Follow the current supervision protocol; re-arm if required. Do not repeat already-reported outcomes.`),
+      }, { deliverAs: "nextTurn", triggerTurn: true });
+    } catch (error) {
+      ctx.ui.notify(`Automatic reset recovery failed: ${String(error)}. Supervision continuation could not be queued.`, "error");
+    }
   }
   function listen(ctx: ExtensionContext) {
     removeInputListener?.();
@@ -324,13 +328,14 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
           recover(ready, "session switch cancelled", ctx);
           return;
         }
-        ready.resolved = true;
         pi.sendMessage({ customType: "firstmate-reset-start", display: false,
           content: seed(ready),
         }, { deliverAs: "nextTurn", triggerTurn: true });
+        ready.resolved = true;
       } catch (error) {
         listen(ctx);
         recover(ready, `session switch failed: ${String(error)}`, ctx);
+        ctx.ui.notify(`Automatic reset failed: ${String(error)}. Supervision recovery requested.`, "error");
       }
     },
   });
