@@ -6,6 +6,8 @@
 # pass to fm-pr-activity.sh, which publishes comments and conflicts
 # independently of CI availability; GitHub CLOSED returns exactly closed for
 # authenticated retirement, while MERGED retains its exact merged result.
+# MERGED prints merged before handing the URL to fm-jira.sh, so a slow or
+# failed Jira move can never delay or replace that result.
 # Missing, pending, malformed or failed check lookups stay silent.
 # Usage: fm-pr-poll.sh [--validated <provider> <url> <host> <path> <number>]
 # A PR with required checks uses only those (gh pr checks --required --json
@@ -87,6 +89,8 @@ $view
 EOF
     if [ "$state" = MERGED ]; then
       printf '%s\n' merged
+      root=${FM_ROOT_OVERRIDE:-$(cd "$(dirname "$0")/.." && pwd)}
+      "$root/bin/fm-jira.sh" merged "$url" || true
       exit 0
     fi
     if [ "$state" = CLOSED ]; then
