@@ -140,5 +140,6 @@ fi
 # owns the In Review transition.
 if [ "$MERGE_STATUS" -eq 0 ] && ! caller_defers_merge "$@"; then
   "$SCRIPT_DIR/fm-linear.sh" transition "$ID" 'done' || true
+  "$SCRIPT_DIR/fm-jira.sh" transition "$ID" 'done' || true
 fi
 exit "$MERGE_STATUS"

@@ -86,6 +86,8 @@ case "$provider" in
 $view
 EOF
     if [ "$state" = MERGED ]; then
+      root=${FM_ROOT_OVERRIDE:-$(cd "$(dirname "$0")/.." && pwd)}
+      "$root/bin/fm-jira.sh" merged "$url" || true
       printf '%s\n' merged
       exit 0
     fi

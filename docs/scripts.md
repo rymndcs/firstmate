@@ -105,6 +105,7 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-pr-auto-register.sh` | Discover a ship task's own GitHub PR from its status log and register it through `fm-pr-check.sh` |
 | `fm-pr-ci.sh`            | Publish a GitHub PR's CI outcome once per head to each task registered for that URL |
 | `fm-pr-merge.sh`         | Apply the configured ship-review gate, then record PR metadata and merge a task's canonical full GitHub URL |
+| `fm-jira.sh`             | Own Thanos Jira status moves when a PR is recorded or its merge is learned |
 | `fm-linear.sh`           | Own Linear API mechanics: move a Linear-tracked task's issue as part of the dispatch, PR-record, and merge steps |
 | `fm-promote.sh`          | Promote a scout task in place to a protected ship task with an explicit delivery mode and its configured ship-review step |
 | `fm-teardown.sh`         | Fail-closed teardown: prune and return landed ship worktrees, require completed scout deliverables, retire secondmate homes, and clear the landed task's attributable no-mistakes gate backup refs; `--clean-free-slot` prunes one available pool slot |
