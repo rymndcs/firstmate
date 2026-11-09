@@ -92,7 +92,10 @@ echo empty > "$LAB/mode"
 [ ! -e "$LAB/submitted" ] || fail 'transport submitted the interleaved Wai draft'
 [ "$(wc -l < "$LAB/sent" | tr -d ' ')" = 1 ] || fail 'expected one literal trigger and no external Enter'
 assert_contains "$(cat "$LAB/sent")" $'\033[?9001;4660;22136;4660;4660;4660;4660;22136;39612~' 'native trigger nonce was not encoded exactly'
-if env FM_ROOT_OVERRIDE="$ROOT" "$HELPER" check "$$"; then fail 'task directory was accepted as a primary'; fi
+fm_git_worktree "$LAB/task-repo" "$LAB/task" fm-task
+touch "$LAB/task/AGENTS.md"
+mkdir -p "$LAB/task/bin"
+if env FM_ROOT_OVERRIDE="$LAB/task" "$HELPER" check "$$"; then fail 'task directory was accepted as a primary'; fi
 printf '1\n' > "$LAB/home/state/.lock"
 if "$HELPER" check "$$"; then fail 'another lock holder was accepted'; fi
 printf '%s\n' "$$" > "$LAB/home/state/.lock"
