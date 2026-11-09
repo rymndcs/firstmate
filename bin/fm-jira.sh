@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # Move Jira status and queue merge follow-ups for registered Thanos PRs.
 # Usage: fm-jira.sh transition <task-id> in-review|done
-#        fm-jira.sh merged <github-pr-url>
+#        fm-jira.sh merged|followups <github-pr-url>
 # fm-pr-check.sh owns Ready for Review; fm-pr-merge.sh and fm-pr-poll.sh own Done.
 # Resolve SWVL keys from the recorded branch, falling back to the PR title/branch.
 # Each PR has a serialized, forward-only receipt shared across task registrations.
 # Missing or failed jira prints one manual-move line on stderr and exits 0.
 # A durable check wake retains that line when the polling caller discards stderr.
 # Failed attempts are receipted too: the diagnostic hands the move off by hand.
-# FM_JIRA_TIMEOUT bounds each attempt, including lookup and lock waits (default
-# 5 seconds, plus the deadline helper's kill grace); timeouts remain retryable.
+# FM_JIRA_TIMEOUT separately bounds reminder publication and Jira attempts
+# (default 5 seconds, plus the deadline helper's kill grace); Jira timeouts retry.
+# followups publishes without Jira work and returns nonzero on failure;
+# fm-watch.sh requires that success before retiring a merged poll.
 # Merge follow-ups have their own per-PR lock and receipt before Jira work.
 # No comments or other Jira fields are written; other projects stay silent.
 set -eu
@@ -45,6 +47,10 @@ transition_one() (
   fm_pr_metadata_identity_parse "$meta" && [ "$FM_PR_META_PROVIDER" = github ] || exit 1
   url=$FM_PR_META_URL
   [ -z "${MERGED_URL:-}" ] || [ "$url" = "$MERGED_URL" ] || exit 1
+  if [ "$step" = followups ]; then
+    publish_followups_bounded "$url" || exit 2
+    exit 0
+  fi
   branch=$(sed -n 's/^branch=//p' "$meta")
   ticket=$(identifier "$branch")
   case "$step" in
@@ -52,6 +58,9 @@ transition_one() (
     done) label=Done ;;
     *) exit 1 ;;
   esac
+  if [ "$step" = 'done' ]; then
+    publish_followups_bounded "$url" || true
+  fi
   if ! resolved=$(fm_axi_bounded_run "${FM_JIRA_TIMEOUT:-5}" bash "$SCRIPT_DIR/fm-jira.sh" --attempt "$url" "$step" "$ticket" "$label"); then
     manual="JIRA: move ${resolved:-${ticket:-$url}} to $label yourself - jira CLI unavailable or move failed"
     printf '%s\n' "$manual" >&2
@@ -59,6 +68,29 @@ transition_one() (
   fi
   exit 0
 )
+
+publish_followups_bounded() {
+  if fm_axi_bounded_run "${FM_JIRA_TIMEOUT:-5}" bash "$SCRIPT_DIR/fm-jira.sh" --followups "$1"; then
+    return 0
+  fi
+  printf 'MERGE FOLLOW-UPS: %s - publication failed; retry on the next merge observation\n' "$1" >&2
+  return 1
+}
+
+publish_followups() {
+  url=$1
+  fm_pr_url_parse "$url" || exit 1
+  dir="$STATE/jira/$FM_PR_HOST/$FM_PR_PATH/$FM_PR_NUMBER"
+  mkdir -p "$dir"
+  lock="$dir/followups.lock"
+  trap 'fm_lock_release "$lock"' EXIT
+  trap 'exit 1' HUP INT TERM
+  fm_lock_acquire_wait "$lock"
+  if [ ! -f "$dir/followups" ]; then
+    fm_wake_append check "merge-followups:$url" "check: MERGE FOLLOW-UPS: $url - (1) check MCP covers what changed unless explicitly skipped; put any MCP gap in a separate follow-up PR; (2) update /help-center with the change" || exit 1
+    printf '%s\n' "$url" > "$dir/followups"
+  fi
+}
 
 transition_attempt() {
   url=$1 step=$2 ticket=$3 label=$4
@@ -77,16 +109,6 @@ transition_attempt() {
     [ -z "$tmp" ] || rm -f -- "${tmp:?}"
   ' EXIT
   trap 'exit 1' HUP INT TERM
-  if [ "$step" = 'done' ]; then
-    lock="$dir/followups.lock"
-    fm_lock_acquire_wait "$lock"
-    if [ ! -f "$dir/followups" ]; then
-      fm_wake_append check "merge-followups:$url" "check: MERGE FOLLOW-UPS: $url - (1) check MCP covers what changed unless explicitly skipped; put any MCP gap in a separate follow-up PR; (2) update /help-center with the change" || exit 1
-      printf '%s\n' "$url" > "$dir/followups"
-    fi
-    fm_lock_release "$lock"
-    lock="$dir/transition.lock"
-  fi
   if [ -z "$ticket" ]; then
     tmp=$(mktemp "$dir/.transition.XXXXXX")
     gh-axi api "/repos/$FM_PR_PATH/pulls/$FM_PR_NUMBER" --jq '.title + " " + .head.ref' > "$tmp" 2>/dev/null &
@@ -124,14 +146,24 @@ case "${1:-}" in
     [ "$#" -eq 3 ] || exit 0
     transition_one "$2" "$3" || true
     ;;
-  merged)
+  merged|followups)
     [ "$#" -eq 2 ] || exit 0
+    step='done'
+    [ "$1" != followups ] || step=followups
     MERGED_URL=$2
     fm_pr_url_parse "$MERGED_URL" && [ "$FM_PR_PROVIDER" = github ] || exit 0
     for meta in "$STATE"/*.meta; do
       [ -f "$meta" ] && [ ! -L "$meta" ] || continue
-      if transition_one "$(basename "$meta" .meta)" 'done'; then break; fi
+      result=0
+      transition_one "$(basename "$meta" .meta)" "$step" || result=$?
+      case "$result" in
+        0) exit 0 ;;
+        2) exit 1 ;;
+      esac
     done
+    ;;
+  --followups)
+    publish_followups "$2"
     ;;
   --attempt)
     [ "$#" -eq 5 ] || exit 1

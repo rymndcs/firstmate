@@ -331,8 +331,131 @@ FAKE
   done
 }
 
+jira_publication_write_regression() {
+  local FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_JIRA_TIMEOUT FM_TEST_GH_STATE
+  export FM_HOME="$PR_TMP/write-home" FM_JIRA_TIMEOUT=1 FM_TEST_GH_STATE=MERGED
+  export FM_STATE_OVERRIDE="$FM_HOME/state" FM_DATA_OVERRIDE="$FM_HOME/data"
+  mkdir -p "$FM_HOME/state" "$FM_HOME/data"
+  printf '%s\n' '- thanos [no-mistakes]' > "$FM_HOME/data/projects.md"
+  cat > "$PR_TMP/fakebin/jira" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s|%s|%s|%s\n' "$@" >> "$JIRA_LOG"
+FAKE
+  chmod +x "$PR_TMP/fakebin/jira"
+  write_pr_task task-write 'project=/projects/thanos' 'branch=rcs/swvl-9990-write'
+  printf 'pr=%s\n' https://github.com/owner/repo/pull/70 >> "$FM_HOME/state/task-write.meta"
+  mkdir "$FM_HOME/state/.wake-queue.seq"
+  poll_pr 70 > "$PR_TMP/write.out" 2> "$PR_TMP/write.err"
+  assert_grep 'issue|move|SWVL-9990|Done' "$JIRA_LOG" 'reminder write failure must not prevent the healthy Jira Done update'
+  [ "$(cat "$PR_TMP/write.out")" = merged ] || fail 'reminder failure must preserve the exact merged observation'
+  assert_grep 'publication failed; retry on the next merge observation' "$PR_TMP/write.err" 'reminder failure must identify its own retry'
+  assert_no_grep 'JIRA:' "$PR_TMP/write.err" 'healthy Jira must not be reported as failed when only reminder publication fails'
+  assert_absent "$FM_HOME/state/jira/github.com/owner/repo/70/followups" 'failed publication must not write its receipt'
+  if "$PR_CODE/bin/fm-jira.sh" followups https://github.com/owner/repo/pull/70 > /dev/null 2> "$PR_TMP/write-readiness.err"; then
+    fail 'terminal publication must report failure while the queue remains unwritable'
+  fi
+  rmdir "$FM_HOME/state/.wake-queue.seq"
+  [ "$(poll_pr 70)" = merged ] || fail 'repaired publication must restore exact merged output'
+  drain_pr > "$PR_TMP/write-wake"
+  assert_grep 'MERGE FOLLOW-UPS: https://github.com/owner/repo/pull/70' "$PR_TMP/write-wake" 'repaired publication must deliver the missing reminder'
+  poll_pr 70 > /dev/null
+  drain_pr > "$PR_TMP/write-repeat"
+  assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/write-repeat" 'recovered publication must remain once per PR'
+  [ "$(grep -c 'issue|move|SWVL-9990|Done' "$JIRA_LOG")" = 1 ] || fail 'publication retry must not repeat healthy Jira work'
+  write_pr_task task-readiness 'project=/projects/thanos' 'branch=rcs/swvl-9992-readiness'
+  printf 'pr=%s\n' https://github.com/owner/repo/pull/72 >> "$FM_HOME/state/task-readiness.meta"
+  "$PR_CODE/bin/fm-jira.sh" followups https://github.com/owner/repo/pull/72
+  assert_no_grep 'issue|move|SWVL-9992' "$JIRA_LOG" 'terminal publication must never perform a Jira status move'
+  pass 'reminder write failure preserves Jira Done and retries reminder delivery once'
+}
+
+jira_publication_lock_regression() {
+  local FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_JIRA_TIMEOUT FM_TEST_GH_STATE
+  export FM_HOME="$PR_TMP/lock-home" FM_JIRA_TIMEOUT=1 FM_TEST_GH_STATE=MERGED
+  export FM_STATE_OVERRIDE="$FM_HOME/state" FM_DATA_OVERRIDE="$FM_HOME/data"
+  unset FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
+  mkdir -p "$FM_HOME/state" "$FM_HOME/data"
+  printf '%s\n' '- thanos [no-mistakes]' > "$FM_HOME/data/projects.md"
+  cat > "$PR_TMP/fakebin/jira" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s|%s|%s|%s\n' "$@" >> "$JIRA_LOG"
+FAKE
+  chmod +x "$PR_TMP/fakebin/jira"
+  write_pr_task task-lock 'project=/projects/thanos' 'branch=rcs/swvl-9991-lock'
+  "$PR_CODE/bin/fm-pr-check.sh" task-lock https://github.com/owner/repo/pull/71 > /dev/null 2>&1
+  printf '#!/usr/bin/env bash\nprintf "stop-cycle\\n"\n' > "$FM_HOME/state/z-stop.check.sh"
+  chmod 0700 "$FM_HOME/state/z-stop.check.sh"
+  "$PR_CODE/bin/fm-check-register.sh" z-stop > /dev/null
+  export JIRA_TIMEOUT_NOTICE="$PR_TMP/timeout-notice" JIRA_TIMEOUT_RESUME="$PR_TMP/timeout-resume"
+  mkfifo "$JIRA_TIMEOUT_NOTICE" "$JIRA_TIMEOUT_RESUME"
+  cat > "$PR_TMP/fakebin/timeout" <<'FAKE'
+#!/usr/bin/env bash
+[ "${1:-}" != --kill-after=1 ] || shift
+budget=$1
+shift
+rc=0
+perl -e 'my $t=shift; my $pid=fork; die unless defined $pid; if (!$pid) { setpgrp(0,0); exec @ARGV } local $SIG{ALRM}=sub { kill "TERM", -$pid; select undef,undef,undef,0.2; kill "KILL", -$pid; waitpid $pid,0; exit 124 }; alarm $t; waitpid $pid,0; exit($? >> 8)' "$budget" "$@" || rc=$?
+if [ "$rc" -eq 124 ]; then
+  printf 'timed-out\n' > "$JIRA_TIMEOUT_NOTICE"
+  read -r _ < "$JIRA_TIMEOUT_RESUME"
+fi
+exit "$rc"
+FAKE
+  chmod +x "$PR_TMP/fakebin/timeout"
+  export JIRA_REAL_SLEEP
+  JIRA_REAL_SLEEP=$(command -v sleep)
+  cat > "$PR_TMP/fakebin/sleep" <<'FAKE'
+#!/usr/bin/env bash
+case "$(ps -p "$PPID" -o command=)" in
+  */bin/fm-watch.sh*)
+    printf 'terminal-queue\n' > "$JIRA_TIMEOUT_NOTICE"
+    read -r _ < "$JIRA_TIMEOUT_RESUME" ;;
+esac
+exec "$JIRA_REAL_SLEEP" "$@"
+FAKE
+  chmod +x "$PR_TMP/fakebin/sleep"
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$PR_CODE/bin/fm-wake-lib.sh"
+  fm_lock_try_acquire "$FM_WAKE_QUEUE_LOCK" || fail 'fixture must hold the real shared queue lock'
+  queue_owner=$FM_LOCK_OWNER_DIR
+  FM_CHECK_INTERVAL=0 FM_CHECK_TIMEOUT=8 FM_POLL=0.02 FM_HEARTBEAT=999999 FM_SIGNAL_GRACE=0 \
+    "$PR_CODE/bin/fm-watch.sh" > "$PR_TMP/lock-watch.out" 2> "$PR_TMP/lock-watch.err" &
+  watcher=$!
+  read -r notice < "$JIRA_TIMEOUT_NOTICE"
+  [ "$notice" = timed-out ] || fail 'fixture must observe a real bounded publication timeout'
+  printf 'resume\n' > "$JIRA_TIMEOUT_RESUME"
+  read -r notice < "$JIRA_TIMEOUT_NOTICE"
+  case "$notice" in
+    timed-out|terminal-queue) ;;
+    *) fail 'fixture must hold contention through the terminal publication boundary' ;;
+  esac
+  fm_lock_points_to_owner "$FM_WAKE_QUEUE_LOCK" "$queue_owner" || fail 'timeout must preserve the live queue owner'
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  printf 'resume\n' > "$JIRA_TIMEOUT_RESUME"
+  wait "$watcher" || fail 'watcher must finish its sweep after queue contention clears'
+  receipt="$FM_HOME/state/jira/github.com/owner/repo/71/followups"
+  if [ ! -f "$receipt" ]; then
+    [ -f "$FM_HOME/state/task-lock.check.sh" ] && [ -f "$FM_HOME/state/task-lock.pr-poll-registration" ] \
+      || fail 'terminal poll must remain registered when its reminder was not durably published'
+    assert_no_grep 'task-lock.check.sh: merged' "$PR_TMP/lock-watch.out" 'an unpublished reminder must not acknowledge terminal merge'
+  fi
+  assert_grep 'issue|move|SWVL-9991|Done' "$JIRA_LOG" 'queue contention must not block independent Jira Done'
+  FM_CHECK_INTERVAL=0 FM_CHECK_TIMEOUT=8 FM_POLL=0.02 FM_HEARTBEAT=999999 FM_SIGNAL_GRACE=0 \
+    "$PR_CODE/bin/fm-watch.sh" > "$PR_TMP/lock-retry.out" 2> "$PR_TMP/lock-retry.err"
+  [ -f "$receipt" ] || fail 'next watcher sweep must durably publish the reminder'
+  assert_absent "$FM_HOME/state/task-lock.check.sh" 'successful publication must allow terminal poll retirement'
+  drain_pr > "$PR_TMP/lock-wake"
+  [ "$(grep -c 'MERGE FOLLOW-UPS: https://github.com/owner/repo/pull/71' "$PR_TMP/lock-wake")" = 1 ] || fail 'contention recovery must deliver one reminder'
+  assert_grep 'check MCP covers what changed' "$PR_TMP/lock-wake" 'recovered reminder must retain MCP coverage'
+  assert_grep 'update /help-center' "$PR_TMP/lock-wake" 'recovered reminder must retain help-center work'
+  [ "$(grep -c 'issue|move|SWVL-9991|Done' "$JIRA_LOG")" = 1 ] || fail 'watcher retry must not repeat Jira Done'
+  pass 'real watcher retains a timed-out reminder poll then publishes once before retirement'
+}
+
 case "${FM_JIRA_TEST_CASE:-all}" in
-  all) jira_ordering_regression; jira_deadline_regressions; jira_installed_deadlines ;;
+  all) jira_ordering_regression; jira_deadline_regressions; jira_installed_deadlines; jira_publication_write_regression; jira_publication_lock_regression ;;
+  publication-write) jira_publication_write_regression ;;
+  publication-lock) jira_publication_lock_regression ;;
   ordering) jira_ordering_regression ;;
   deadline) jira_deadline_regressions ;;
   installed) jira_installed_deadlines ;;
