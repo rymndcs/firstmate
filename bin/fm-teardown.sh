@@ -670,7 +670,7 @@ validate_pr_poll_cleanup() {
 remove_pr_poll_artifacts() {
   local state_dir=$1 id=$2 quarantine artifact
   validate_pr_poll_cleanup "$state_dir" "$id" || return 1
-  if ! FM_STATE_OVERRIDE="$state_dir" "$SCRIPT_DIR/fm-jira.sh" cleanup "$id"; then
+  if [ -d "$state_dir" ] && ! FM_STATE_OVERRIDE="$state_dir" "$SCRIPT_DIR/fm-jira.sh" cleanup "$id"; then
     echo "REFUSED: could not establish merged PR follow-ups; preserving task metadata and poll for retry." >&2
     return 1
   fi

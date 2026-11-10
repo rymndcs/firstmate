@@ -4,7 +4,7 @@
 #        fm-jira.sh merged|followups <github-pr-url>
 #        fm-jira.sh owe <task-id>
 #        fm-jira.sh cleanup <task-id>|--home
-#        fm-jira.sh retry-followups [github-pr-url]
+#        fm-jira.sh retry-followups
 # fm-pr-check.sh owns Ready for Review; fm-pr-merge.sh and fm-pr-poll.sh own Done.
 # Resolve SWVL keys from the recorded branch, falling back to the PR title/branch.
 # Each PR has a serialized, forward-only receipt shared across task registrations.
@@ -76,6 +76,10 @@ transition_one() (
       } ;;
   esac
   [ "$step" != owe ] || exit 0
+  if [ "$operation" = cleanup ] && grep -qxF 'done' "$STATE/jira/$FM_PR_META_HOST/$FM_PR_META_PATH/$FM_PR_META_NUMBER/transitions" 2>/dev/null; then
+    publish_followups_bounded "$url" || true
+    exit 0
+  fi
   if [ "$step" = followups ]; then
     publish_followups_bounded "$url" || exit 2
     exit 0
@@ -162,12 +166,10 @@ publish_followups() {
 }
 
 retry_followups() (
-  requested=${1:-}
   result=0
   for owed in "$STATE"/jira/*/*/*/*/followups.owed; do
     [ -f "$owed" ] || continue
     url=$(cat "$owed")
-    [ -z "$requested" ] || [ "$url" = "$requested" ] || continue
     publish_followups_bounded "$url" || result=1
   done
   exit "$result"
@@ -245,7 +247,7 @@ case "${1:-}" in
     guard_removal home || exit 1
     ;;
   retry-followups)
-    retry_followups "${2:-}"
+    retry_followups
     ;;
   merged|followups)
     [ "$#" -eq 2 ] || exit 0

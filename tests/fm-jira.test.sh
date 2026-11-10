@@ -436,11 +436,12 @@ FAKE
     assert_grep 'fake merge succeeded' "$PR_TMP/cleanup-$mode.merge" 'direct merge must retain successful output'
     assert_grep 'issue|move|SWVL-9993|Done' "$JIRA_LOG" 'queue failure must preserve healthy Jira Done'
     assert_absent "$dir/followups" 'failed direct publication must not write its receipt'
-    if "$PR_CODE/bin/fm-jira.sh" retry-followups "$task_url" > "$PR_TMP/cleanup-$mode.retry-failed" 2>&1; then
+    if "$PR_CODE/bin/fm-jira.sh" retry-followups > "$PR_TMP/cleanup-$mode.retry-failed" 2>&1; then
       fail 'owed retry must report publication failure while the queue remains unwritable'
     fi
     if [ "$mode" = recovered ]; then rmdir "$FM_HOME/state/.wake-queue.seq"; fi
-    "$PR_CODE/bin/fm-teardown.sh" task-cleanup > "$PR_TMP/cleanup-$mode.out" 2> "$PR_TMP/cleanup-$mode.teardown.err"
+    "$PR_CODE/bin/fm-teardown.sh" task-cleanup > "$PR_TMP/cleanup-$mode.out" 2> "$PR_TMP/cleanup-$mode.teardown.err" \
+      || fail 'cleanup must preserve unpaid reminders outside disposable task records'
     assert_absent "$FM_HOME/state/task-cleanup.meta" 'normal cleanup must remove ephemeral task metadata'
     assert_absent "$FM_HOME/state/task-cleanup.check.sh" 'normal cleanup must remove the ephemeral poll'
     if [ "$mode" != recovered ]; then
@@ -491,7 +492,7 @@ FAKE
           fi
           rmdir "$FM_HOME/state/.wake-queue.seq"
           printf '%s\n' '- wms [no-mistakes]' > "$FM_HOME/data/projects.md"
-          "$PR_CODE/bin/fm-jira.sh" retry-followups "$task_url"
+          "$PR_CODE/bin/fm-jira.sh" retry-followups
           assert_absent "$dir/followups.owed" 'publication must clear the unpaid reminder'
           assert_grep "$task_url" "$dir/followups" 'publication must establish the URL receipt'
           cp "$FM_HOME/state/.wake-queue" "$PR_TMP/$mode.queue-before"
@@ -507,7 +508,7 @@ FAKE
           [ "$(grep -c 'MERGE FOLLOW-UPS:' "$PR_TMP/$mode.delivered")" = 1 ] || fail 'retained home must deliver its reminder exactly once'
           assert_grep 'check MCP covers what changed unless explicitly skipped; put any MCP gap in a separate follow-up PR' "$PR_TMP/$mode.delivered" 'home recovery must deliver the MCP follow-up'
           assert_grep 'update /help-center with the change' "$PR_TMP/$mode.delivered" 'home recovery must deliver the help-center follow-up'
-          "$PR_CODE/bin/fm-jira.sh" retry-followups "$task_url"
+          "$PR_CODE/bin/fm-jira.sh" retry-followups
           drain_pr > "$PR_TMP/$mode.repeat"
           assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/$mode.repeat" 'home retry must not duplicate delivery'
           bash -c '
@@ -535,11 +536,8 @@ FAKE
       esac
       rmdir "$FM_HOME/state/.wake-queue.seq"
       printf '%s\n' '- wms [no-mistakes]' > "$FM_HOME/data/projects.md"
-      "$PR_CODE/bin/fm-jira.sh" retry-followups https://github.com/owner/repo/pull/999
-      assert_absent "$dir/followups" 'a URL-scoped retry must not publish a different owed PR'
-      [ -f "$dir/followups.owed" ] || fail 'a URL-scoped retry must preserve other obligations'
       if [ "$mode" = pending ]; then
-        "$PR_CODE/bin/fm-jira.sh" followups "$task_url"
+        "$PR_CODE/bin/fm-jira.sh" retry-followups
       else
         drain_pr > "$PR_TMP/cleanup-$mode.retry"
       fi
@@ -558,6 +556,109 @@ FAKE
     assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/cleanup-$mode.repeat" 'cleanup retry must share the original success receipt'
   done
   pass 'direct merge failure survives ordinary cleanup and publishes once after ephemeral state disappears'
+}
+
+jira_cleanup_completed_status_regression() {
+  local FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_JIRA_TIMEOUT FM_TEST_GH_STATE
+  local scenario task_url dir tool
+  export FM_JIRA_TIMEOUT=1 FM_TEST_GH_STATE=MERGED
+  for scenario in ${FM_JIRA_COMPLETED_SCENARIO:-external title direct pending}; do
+    export FM_HOME="$PR_TMP/completed-$scenario"
+    export FM_STATE_OVERRIDE="$FM_HOME/state" FM_DATA_OVERRIDE="$FM_HOME/data" FM_CONFIG_OVERRIDE="$FM_HOME/config"
+    mkdir -p "$FM_HOME/state" "$FM_HOME/data" "$FM_HOME/config"
+    printf '%s\n' '- thanos [no-mistakes]' > "$FM_HOME/data/projects.md"
+    fm_git_init_commit "$FM_HOME/thanos"
+    git -C "$FM_HOME/thanos" update-ref refs/remotes/origin/main HEAD
+    git -C "$FM_HOME/thanos" worktree add --detach -q "$FM_HOME/task-tree" HEAD
+    fm_write_meta "$FM_HOME/state/task-completed.meta" 'window=firstmate:fm-task-completed' \
+      'endpoint_task_id=task-completed' 'backend=tmux' "worktree=$FM_HOME/task-tree" \
+      "project=$FM_HOME/thanos" 'branch=rcs/swvl-9996-completed' 'kind=ship' 'mode=no-mistakes'
+    if [ "$scenario" = title ]; then
+      sed 's@branch=.*@branch=generic@' "$FM_HOME/state/task-completed.meta" > "$PR_TMP/completed.meta"
+      cp "$PR_TMP/completed.meta" "$FM_HOME/state/task-completed.meta"
+    fi
+    task_url=https://github.com/owner/repo/pull/76
+    dir="$FM_HOME/state/jira/github.com/owner/repo/76"
+    export JIRA_COMPLETED_CALLS="$PR_TMP/completed-$scenario.calls"
+    : > "$JIRA_COMPLETED_CALLS"
+    cat > "$PR_TMP/fakebin/gh-axi" <<'FAKE'
+#!/usr/bin/env bash
+case "$1 $2" in
+  'pr merge') printf 'fake merge succeeded\n' ;;
+  'api /repos/owner/repo/pulls/76')
+    printf 'api_response:\n  body: fix SWVL-9996 completed\n  truncated: false\n' ;;
+  *) exit 97 ;;
+esac
+FAKE
+    cat > "$PR_TMP/fakebin/jira" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s|%s|%s|%s\n' "$@" >> "$JIRA_LOG"
+FAKE
+    cp "$ROOT/bin/fm-jira.sh" "$PR_CODE/bin/fm-jira.sh"
+    fm_fake_exit0 "$PR_CODE/bin" fm-linear.sh fm-protected-paths.sh fm-fleet-sync.sh
+    for tool in tmux treehouse; do fm_fake_exit0 "$PR_TMP/fakebin" "$tool"; done
+    chmod +x "$PR_TMP/fakebin/gh-axi" "$PR_TMP/fakebin/jira"
+    for tool in gh gh-axi jira tmux treehouse; do
+      [ -x "$PR_TMP/fakebin/$tool" ] && [ "$(command -v "$tool")" = "$PR_TMP/fakebin/$tool" ] \
+        || fail "completed cleanup fixture must resolve executable fake $tool"
+    done
+    : > "$JIRA_LOG"
+    if [ "$scenario" = pending ]; then mkdir "$FM_HOME/state/.wake-queue.seq"; fi
+    if [ "$scenario" = direct ]; then
+      "$PR_CODE/bin/fm-pr-merge.sh" task-completed "$task_url" > "$PR_TMP/completed-$scenario.merge" 2>&1
+    else
+      printf 'pr=%s\n' "$task_url" >> "$FM_HOME/state/task-completed.meta"
+      [ "$(poll_pr 76 2> "$PR_TMP/completed-$scenario.merge.err")" = merged ] || fail 'completed status fixture must observe an external merge'
+    fi
+    assert_grep 'issue|move|SWVL-9996|Done' "$JIRA_LOG" 'completed status fixture must really move Jira before cleanup'
+    assert_grep 'done' "$dir/transitions" 'completed status fixture must hold the existing Done receipt'
+    if [ "$scenario" = pending ]; then
+      assert_present "$dir/followups.owed" 'failed reminder publication must retain its obligation despite completed status'
+      "$PR_CODE/bin/fm-jira.sh" transition task-completed in-review > "$PR_TMP/completed-review.out" 2> "$PR_TMP/completed-review.err"
+      assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/completed-review.err" 'ordinary status events must not acquire cleanup reminder recovery'
+      rmdir "$FM_HOME/state/.wake-queue.seq"
+    fi
+    cp "$PR_CODE/bin/fm-jira.sh" "$PR_CODE/bin/fm-jira-real.sh"
+    cat > "$PR_CODE/bin/fm-jira.sh" <<'FAKE'
+#!/usr/bin/env bash
+[ "${1:-}" != --attempt ] || printf 'jira-attempt\n' >> "$JIRA_COMPLETED_CALLS"
+exec "$(dirname "$0")/fm-jira-real.sh" "$@"
+FAKE
+    cat > "$PR_CODE/bin/fm-linear.sh" <<'FAKE'
+#!/usr/bin/env bash
+printf 'linear\n' >> "$JIRA_COMPLETED_CALLS"
+printf 'LINEAR: unexpected completed status replay\n' >&2
+FAKE
+    cat > "$PR_TMP/fakebin/gh-axi" <<'FAKE'
+#!/usr/bin/env bash
+printf 'title-lookup\n' >> "$JIRA_COMPLETED_CALLS"
+exit 1
+FAKE
+    chmod +x "$PR_CODE/bin/fm-jira.sh" "$PR_CODE/bin/fm-linear.sh" "$PR_TMP/fakebin/gh-axi"
+    : > "$JIRA_LOG"
+    "$PR_CODE/bin/fm-teardown.sh" task-completed > "$PR_TMP/completed-$scenario.cleanup" 2> "$PR_TMP/completed-$scenario.cleanup.err" \
+      || fail 'completed status cleanup must succeed'
+    assert_absent "$FM_HOME/state/task-completed.meta" 'completed status cleanup must remove task metadata'
+    [ ! -s "$JIRA_COMPLETED_CALLS" ] || fail 'completed status cleanup must call neither Linear nor the Jira attempt or title lookup'
+    [ ! -s "$JIRA_LOG" ] || fail 'completed status cleanup must not invoke Jira'
+    assert_no_grep 'LINEAR:' "$PR_TMP/completed-$scenario.cleanup.err" 'completed status cleanup must not emit a Linear diagnostic'
+    assert_no_grep 'JIRA: move' "$PR_TMP/completed-$scenario.cleanup.err" 'completed status cleanup must not emit a manual Jira diagnostic'
+    assert_no_grep 'jira:' "$FM_HOME/state/.wake-queue" 'completed status cleanup must not queue a manual status wake'
+    assert_grep "$task_url" "$dir/followups" 'completed status cleanup must publish its reminder before later retry'
+    assert_absent "$dir/followups.owed" 'completed status cleanup must clear owed work after successful publication'
+    "$PR_CODE/bin/fm-jira.sh" retry-followups
+    drain_pr > "$PR_TMP/completed-$scenario.wake"
+    [ "$(grep -c 'MERGE FOLLOW-UPS:' "$PR_TMP/completed-$scenario.wake")" = 1 ] || fail 'completed status cleanup must preserve exactly one reminder'
+    assert_grep 'check MCP covers what changed' "$PR_TMP/completed-$scenario.wake" 'completed status cleanup must preserve MCP work'
+    assert_grep 'update /help-center' "$PR_TMP/completed-$scenario.wake" 'completed status cleanup must preserve help-center work'
+    assert_no_grep 'JIRA: move' "$PR_TMP/completed-$scenario.wake" 'completed status cleanup must not deliver a manual Jira wake'
+    "$PR_CODE/bin/fm-jira.sh" retry-followups
+    drain_pr > "$PR_TMP/completed-$scenario.repeat"
+    assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/completed-$scenario.repeat" 'completed status retry must remain once per PR'
+    cp "$ROOT/bin/fm-jira.sh" "$PR_CODE/bin/fm-jira.sh"
+    pass "completed status cleanup replays no status work: $scenario"
+  done
+  fm_fake_exit0 "$PR_CODE/bin" fm-linear.sh
 }
 
 jira_cleanup_record_failure_regression() {
@@ -675,7 +776,7 @@ FAKE
     fi
     assert_absent "$FM_HOME/state/task-record.meta" 'successful cleanup must remove task metadata'
     assert_absent "$FM_HOME/state/task-record.check.sh" 'successful cleanup must remove the poll'
-    "$PR_CODE/bin/fm-jira.sh" retry-followups "$task_url"
+    "$PR_CODE/bin/fm-jira.sh" retry-followups
     drain_pr > "$PR_TMP/record-$scenario.wake"
     case "$scenario" in
       open|other)
@@ -685,7 +786,9 @@ FAKE
         assert_no_grep 'issue|move|SWVL-9995|Done' "$JIRA_LOG" 'unmerged or other-project cleanup must not move Jira Done'
         assert_no_grep 'to Done yourself' "$PR_TMP/record-$scenario.recovery.err" 'unmerged or other-project cleanup must not move Linear Done' ;;
       *)
-        assert_grep 'LINEAR: no API key configured - move SWVL-9995 to Done yourself' "$PR_TMP/record-$scenario.recovery.err" 'cleanup recovery must replay deferred status through the existing Linear owner'
+        if [ "$scenario" = record ]; then
+          assert_grep 'LINEAR: no API key configured - move SWVL-9995 to Done yourself' "$PR_TMP/record-$scenario.recovery.err" 'failed owe recovery must replay deferred status through the existing Linear owner'
+        fi
         [ "$(grep -c 'issue|move|SWVL-9995|Done' "$JIRA_LOG")" = 1 ] || fail 'cleanup recovery must perform deferred Jira Done once'
         assert_grep "$task_url" "$dir/followups" 'recovery must leave a successful URL-bearing publication receipt'
         assert_absent "$dir/followups.owed" 'successful publication must clear owed state'
@@ -870,9 +973,10 @@ FAKE
 }
 
 case "${FM_JIRA_TEST_CASE:-all}" in
-  all) jira_cleanup_record_failure_regression; jira_cleanup_regression; jira_owed_contract_regression; jira_ordering_regression; jira_deadline_regressions; jira_installed_deadlines; jira_publication_write_regression; jira_publication_lock_regression ;;
+  all) jira_cleanup_completed_status_regression; jira_cleanup_record_failure_regression; jira_cleanup_regression; jira_owed_contract_regression; jira_ordering_regression; jira_deadline_regressions; jira_installed_deadlines; jira_publication_write_regression; jira_publication_lock_regression ;;
   contract) jira_owed_contract_regression ;;
   cleanup) jira_cleanup_regression ;;
+  completed-cleanup) jira_cleanup_completed_status_regression ;;
   record-cleanup) jira_cleanup_record_failure_regression ;;
   publication-write) jira_publication_write_regression ;;
   publication-lock) jira_publication_lock_regression ;;
