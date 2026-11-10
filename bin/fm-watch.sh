@@ -912,6 +912,10 @@ while :; do
         fi
       fi
       if [ -n "$out" ]; then
+        if [ "$is_pr_poll" -eq 1 ] && [ "$out" = merged ] \
+          && ! "$SCRIPT_DIR/fm-jira.sh" followups "$url"; then
+          continue
+        fi
         reason="check: $c: $out"
         # Nonterminal canonical PR observations are already durably queued by
         # their publishers, with activity keyed per batch rather than per poll.

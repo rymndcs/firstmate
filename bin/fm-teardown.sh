@@ -85,7 +85,8 @@
 # matching quarantine entries as ordinary single-link files on the state
 # device. It refuses and preserves task state when that proof fails; otherwise
 # it removes the task's check, trust record, PR sidecar, publication record, and
-# quarantine entries with the rest of the volatile state.
+# quarantine entries with the rest of the volatile state. Owed merge reminders
+# remain under state/jira/ until fm-jira.sh publishes them successfully.
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
 # an Orca target from ambient CLI state.
@@ -669,6 +670,10 @@ validate_pr_poll_cleanup() {
 remove_pr_poll_artifacts() {
   local state_dir=$1 id=$2 quarantine artifact
   validate_pr_poll_cleanup "$state_dir" "$id" || return 1
+  if [ -d "$state_dir" ] && ! FM_STATE_OVERRIDE="$state_dir" "$SCRIPT_DIR/fm-jira.sh" cleanup "$id"; then
+    echo "REFUSED: could not establish merged PR follow-ups; preserving task metadata and poll for retry." >&2
+    return 1
+  fi
   fm_pr_poll_retirement_recover_one "$state_dir" "$id" "$SCRIPT_DIR/fm-pr-poll.sh" || return 1
   rm -f "$state_dir/$id.check.sh" "$state_dir/$id.pr-poll" \
     "$state_dir/$id.pr-poll-registration" "$state_dir/$id.pr-poll-retirement" \
@@ -1642,6 +1647,13 @@ remove_firstmate_home() {
   [ -e "$home" ] || return 0
   abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
   [ -n "$abs_home_path" ] || return 0
+  if ! FM_HOME="$abs_home_path" FM_STATE_OVERRIDE="$abs_home_path/state" \
+      FM_DATA_OVERRIDE="$abs_home_path/data" FM_CONFIG_OVERRIDE="$abs_home_path/config" \
+      FM_WAKE_QUEUE="$abs_home_path/state/.wake-queue" FM_WAKE_QUEUE_LOCK="$abs_home_path/state/.wake-queue.lock" \
+      "$SCRIPT_DIR/fm-jira.sh" cleanup --home; then
+    echo "REFUSED: $label $home still holds unpaid or queued merge follow-ups; deliver them before removing the home." >&2
+    return 1
+  fi
   process_event_backup=$(snapshot_firstmate_home_process_events "$abs_home_path" "$label") || return 1
   if ! cleanup_firstmate_home_process_events "$abs_home_path" "$label"; then
     restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?
@@ -2070,7 +2082,8 @@ cleanup_firstmate_home_children() {
     fi
     remove_grok_turnend_auth "$sub_state" "$child_id"
     remove_kimi_turnend_auth "$sub_state" "$child_id"
-    remove_pr_poll_artifacts "$sub_state" "$child_id" || return 1
+    FM_HOME="$home" FM_DATA_OVERRIDE="$home/data" FM_CONFIG_OVERRIDE="$home/config" \
+      remove_pr_poll_artifacts "$sub_state" "$child_id" || return 1
     child_busy_gen=$(meta_value "$child_meta" busy_gen)
     if [ -z "$child_busy_gen" ]; then
       child_busy_gen=$(cat "$sub_state/$child_id.busy-gen" 2>/dev/null || true)

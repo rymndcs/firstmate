@@ -4,6 +4,8 @@
 # Usage: fm-wake-drain.sh [--help]
 # PR discovery is best-effort through fm-pr-auto-register.sh --all, including
 # empty drains, and always runs outside the durable wake queue lock.
+# fm-jira.sh retries owed merge reminders before taking that lock, including
+# obligations whose task metadata and poll have already been cleaned up.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -50,6 +52,7 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+"$SCRIPT_DIR/fm-jira.sh" retry-followups || true
 fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
 DRAIN_LOCK_HELD=true
 
