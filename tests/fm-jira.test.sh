@@ -390,11 +390,16 @@ FAKE
 
 jira_cleanup_regression() {
   local FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_JIRA_TIMEOUT FM_TEST_GH_STATE
-  local mode task_url dir tool
+  local mode task_url dir tool parent_home retirement_home retirement_id pool_home
+  local -a retirement_args
   export FM_JIRA_TIMEOUT=1 FM_TEST_GH_STATE=MERGED
-  for mode in pending recovered pending-drain; do
+  for mode in ${FM_JIRA_CLEANUP_SCENARIO:-pending recovered pending-drain home-ordinary home-queued home-force home-nested home-pool}; do
     export FM_HOME="$PR_TMP/cleanup-$mode"
     export FM_STATE_OVERRIDE="$FM_HOME/state" FM_DATA_OVERRIDE="$FM_HOME/data" FM_CONFIG_OVERRIDE="$FM_HOME/config"
+    if [ "$mode" = home-pool ]; then
+      fm_git_init_commit "$PR_CODE"
+      git -C "$PR_CODE" worktree add --detach -q "$FM_HOME" HEAD
+    fi
     mkdir -p "$FM_HOME/state" "$FM_HOME/data" "$FM_HOME/config"
     "$PR_CODE/bin/fm-jira.sh" retry-followups > "$PR_TMP/cleanup-$mode.empty" 2>&1 \
       || fail 'retry with no owed work must succeed silently'
@@ -441,6 +446,93 @@ FAKE
     if [ "$mode" != recovered ]; then
       [ -f "$dir/followups.owed" ] || fail 'failed publication then normal cleanup must retain the owed reminder'
       [ "$(cat "$dir/followups.owed")" = "$task_url" ] || fail 'retained obligation must contain its own retry identity'
+      case "$mode" in
+        home-*)
+          parent_home="$PR_TMP/parent-$mode"
+          mkdir -p "$parent_home/state" "$parent_home/data" "$parent_home/config"
+          printf '%s\n' '- wms [no-mistakes]' > "$parent_home/data/projects.md"
+          printf '%s\n' home-sm > "$FM_HOME/.fm-secondmate-home"
+          fm_write_meta "$parent_home/state/home-sm.meta" 'window=firstmate:fm-home-sm' \
+            'endpoint_task_id=home-sm' 'backend=tmux' "worktree=$FM_HOME" "home=$FM_HOME" \
+            "project=$PR_CODE" 'kind=secondmate' 'mode=secondmate'
+          retirement_home=$parent_home retirement_id=home-sm
+          retirement_args=(home-sm)
+          case "$mode" in
+            home-force) retirement_args+=(--force) ;;
+            home-nested)
+              retirement_home="$PR_TMP/grandparent-$mode" retirement_id=outer-sm
+              mkdir -p "$retirement_home/state" "$retirement_home/data" "$retirement_home/config"
+              printf '%s\n' outer-sm > "$parent_home/.fm-secondmate-home"
+              fm_write_meta "$retirement_home/state/outer-sm.meta" 'window=firstmate:fm-outer-sm' \
+                'endpoint_task_id=outer-sm' 'backend=tmux' "worktree=$parent_home" "home=$parent_home" \
+                "project=$PR_CODE" 'kind=secondmate' 'mode=secondmate'
+              retirement_args=(outer-sm --force) ;;
+            home-pool)
+              pool_home=$(cd "$FM_HOME" && pwd -P)
+              export JIRA_HOME_RETURN_LOG="$PR_TMP/home-return.log"
+              : > "$JIRA_HOME_RETURN_LOG"
+              cat > "$PR_TMP/fakebin/treehouse" <<'FAKE'
+#!/usr/bin/env bash
+[ "$1 $2" = 'return --force' ] || exit 97
+printf '%s\n' "$3" >> "$JIRA_HOME_RETURN_LOG"
+git -C "$FM_ROOT_OVERRIDE" worktree remove --force "$3"
+FAKE
+              chmod +x "$PR_TMP/fakebin/treehouse" ;;
+          esac
+          if [ "$mode" != home-queued ]; then
+            if FM_HOME="$retirement_home" FM_STATE_OVERRIDE="$retirement_home/state" \
+                FM_DATA_OVERRIDE="$retirement_home/data" FM_CONFIG_OVERRIDE="$retirement_home/config" \
+                "$PR_CODE/bin/fm-teardown.sh" "${retirement_args[@]}" > "$PR_TMP/$mode.unpaid" 2>&1; then
+              fail 'home retirement must refuse while the reminder is unpaid'
+            fi
+            assert_grep 'merge follow-ups' "$PR_TMP/$mode.unpaid" 'unpaid retirement must reach the shared reminder guard'
+            assert_grep "$task_url" "$dir/followups.owed" 'unpaid retirement must preserve the retry identity'
+            assert_present "$retirement_home/state/$retirement_id.meta" 'unpaid retirement must preserve the parent record'
+          fi
+          rmdir "$FM_HOME/state/.wake-queue.seq"
+          printf '%s\n' '- wms [no-mistakes]' > "$FM_HOME/data/projects.md"
+          "$PR_CODE/bin/fm-jira.sh" retry-followups "$task_url"
+          assert_absent "$dir/followups.owed" 'publication must clear the unpaid reminder'
+          assert_grep "$task_url" "$dir/followups" 'publication must establish the URL receipt'
+          cp "$FM_HOME/state/.wake-queue" "$PR_TMP/$mode.queue-before"
+          if FM_HOME="$retirement_home" FM_STATE_OVERRIDE="$retirement_home/state" \
+              FM_DATA_OVERRIDE="$retirement_home/data" FM_CONFIG_OVERRIDE="$retirement_home/config" \
+              "$PR_CODE/bin/fm-teardown.sh" "${retirement_args[@]}" > "$PR_TMP/$mode.queued" 2>&1; then
+            fail 'home retirement must refuse while the reminder is queued and undelivered'
+          fi
+          assert_grep 'merge follow-ups' "$PR_TMP/$mode.queued" 'queued retirement must reach the shared reminder guard'
+          cmp "$FM_HOME/state/.wake-queue" "$PR_TMP/$mode.queue-before" || fail 'refused retirement must preserve the queued reminder bytes'
+          assert_grep "$task_url" "$dir/followups" 'queued retirement must preserve the publication receipt'
+          drain_pr > "$PR_TMP/$mode.delivered"
+          [ "$(grep -c 'MERGE FOLLOW-UPS:' "$PR_TMP/$mode.delivered")" = 1 ] || fail 'retained home must deliver its reminder exactly once'
+          assert_grep 'check MCP covers what changed unless explicitly skipped; put any MCP gap in a separate follow-up PR' "$PR_TMP/$mode.delivered" 'home recovery must deliver the MCP follow-up'
+          assert_grep 'update /help-center with the change' "$PR_TMP/$mode.delivered" 'home recovery must deliver the help-center follow-up'
+          "$PR_CODE/bin/fm-jira.sh" retry-followups "$task_url"
+          drain_pr > "$PR_TMP/$mode.repeat"
+          assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/$mode.repeat" 'home retry must not duplicate delivery'
+          bash -c '
+            . "$FM_ROOT_OVERRIDE/bin/fm-wake-lib.sh"
+            fm_wake_append check unrelated-key "check: MERGE FOLLOW-UPS: $1"
+            fm_wake_append check "$1" "unrelated URL key"
+            fm_wake_append check merge-followups:unrelated "unrelated invalid URL key"
+            fm_wake_append signal "merge-followups:$1" "unrelated signal"
+          ' _ "$task_url"
+          FM_HOME="$retirement_home" FM_STATE_OVERRIDE="$retirement_home/state" \
+            FM_WAKE_QUEUE="$retirement_home/state/.wake-queue" FM_WAKE_QUEUE_LOCK="$retirement_home/state/.wake-queue.lock" \
+            bash -c '. "$FM_ROOT_OVERRIDE/bin/fm-wake-lib.sh"; fm_wake_append check "merge-followups:$1" "parent-owned reminder"' _ "$task_url"
+          FM_HOME="$retirement_home" FM_STATE_OVERRIDE="$retirement_home/state" \
+            FM_DATA_OVERRIDE="$retirement_home/data" FM_CONFIG_OVERRIDE="$retirement_home/config" \
+            "$PR_CODE/bin/fm-teardown.sh" "${retirement_args[@]}" > "$PR_TMP/$mode.retired" 2>&1 \
+            || { cat "$PR_TMP/$mode.retired" >&2; fail 'delivered reminder and unrelated queue work must allow home retirement'; }
+          assert_absent "$FM_HOME" 'delivered reminder must permit removal of its home'
+          assert_absent "$retirement_home/state/$retirement_id.meta" 'successful retirement must remove the parent record'
+          assert_grep 'parent-owned reminder' "$retirement_home/state/.wake-queue" 'retirement must not erase the parent queue'
+          if [ "$mode" = home-pool ]; then
+            [ "$(cat "$JIRA_HOME_RETURN_LOG")" = "$pool_home" ] || fail 'native pool return must run exactly once after delivery'
+          fi
+          pass "unpaid and queued home refusal, delivery and retirement: $mode"
+          continue ;;
+      esac
       rmdir "$FM_HOME/state/.wake-queue.seq"
       printf '%s\n' '- wms [no-mistakes]' > "$FM_HOME/data/projects.md"
       "$PR_CODE/bin/fm-jira.sh" retry-followups https://github.com/owner/repo/pull/999
@@ -562,13 +654,25 @@ FAKE
       *) rmdir "${dir:?}/followups.owed" ;;
     esac
     case "$scenario" in
-      receipt) "$PR_CODE/bin/fm-jira.sh" followups "$task_url" ;;
+      receipt)
+        "$PR_CODE/bin/fm-jira.sh" followups "$task_url"
+        cp "$PR_TMP/fakebin/gh" "$PR_TMP/receipt-gh.saved"
+        cat > "$PR_TMP/fakebin/gh" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$FM_HOME/offline-gh.calls"
+exit 1
+FAKE
+        chmod +x "$PR_TMP/fakebin/gh" ;;
       open) export FM_TEST_GH_STATE=OPEN ;;
       other) ln -s "$FM_HOME/thanos" "$FM_HOME/wms"; sed 's@/thanos$@/wms@' "$FM_HOME/state/task-record.meta" > "$PR_TMP/record-other.meta"; cp "$PR_TMP/record-other.meta" "$FM_HOME/state/task-record.meta" ;;
       lookup-failure) cp "$PR_TMP/record-gh.saved" "$PR_TMP/fakebin/gh" ;;
     esac
     "$PR_CODE/bin/fm-teardown.sh" task-record > "$PR_TMP/record-$scenario.recovery" 2> "$PR_TMP/record-$scenario.recovery.err" \
       || { cat "$PR_TMP/record-$scenario.recovery.err" >&2; fail 'repaired recording or existing successful receipt must permit normal cleanup'; }
+    if [ "$scenario" = receipt ]; then
+      assert_absent "$FM_HOME/offline-gh.calls" 'successful publication receipt must bypass every GitHub merge lookup'
+      cp "$PR_TMP/receipt-gh.saved" "$PR_TMP/fakebin/gh"
+    fi
     assert_absent "$FM_HOME/state/task-record.meta" 'successful cleanup must remove task metadata'
     assert_absent "$FM_HOME/state/task-record.check.sh" 'successful cleanup must remove the poll'
     "$PR_CODE/bin/fm-jira.sh" retry-followups "$task_url"
@@ -592,6 +696,26 @@ FAKE
         drain_pr > "$PR_TMP/record-$scenario.repeat"
         assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/record-$scenario.repeat" 'recovered recording must share the once-per-PR receipt' ;;
     esac
+    if [ "$scenario" = open ] || [ "$scenario" = other ]; then
+      cleanup_home="$PR_TMP/excluded-parent-$scenario"
+      mkdir -p "$cleanup_home/state" "$cleanup_home/data" "$cleanup_home/config"
+      printf '%s\n' excluded-sm > "$FM_HOME/.fm-secondmate-home"
+      fm_write_meta "$cleanup_home/state/excluded-sm.meta" 'window=firstmate:fm-excluded-sm' \
+        'endpoint_task_id=excluded-sm' 'backend=tmux' "worktree=$FM_HOME" "home=$FM_HOME" \
+        "project=$PR_CODE" 'kind=secondmate' 'mode=secondmate'
+      FM_HOME="$cleanup_home" FM_STATE_OVERRIDE="$cleanup_home/state" \
+        FM_DATA_OVERRIDE="$cleanup_home/data" FM_CONFIG_OVERRIDE="$cleanup_home/config" \
+        "$PR_CODE/bin/fm-teardown.sh" excluded-sm > "$PR_TMP/record-$scenario.parent-recovery" 2>&1 \
+        || { cat "$PR_TMP/record-$scenario.parent-recovery" >&2; fail 'unmerged and other-project homes must retire without reminders'; }
+      assert_absent "$FM_HOME" 'unmerged and other-project homes must remain removable'
+    fi
+    if [ "$scenario" = child ]; then
+      FM_HOME="$cleanup_home" FM_STATE_OVERRIDE="$cleanup_home/state" \
+        FM_DATA_OVERRIDE="$cleanup_home/data" FM_CONFIG_OVERRIDE="$cleanup_home/config" \
+        "$PR_CODE/bin/fm-teardown.sh" "${cleanup_args[@]}" > "$PR_TMP/record-child.parent-recovery" 2>&1 \
+        || { cat "$PR_TMP/record-child.parent-recovery" >&2; fail 'forced home removal must succeed after child reminder delivery'; }
+      assert_absent "$FM_HOME" 'forced parent recovery must remove the delivered child home'
+    fi
     pass "failed obligation establishment, normal cleanup and retry: $scenario"
   done
   fm_fake_exit0 "$PR_CODE/bin" fm-linear.sh

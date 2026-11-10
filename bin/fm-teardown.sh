@@ -1647,6 +1647,13 @@ remove_firstmate_home() {
   [ -e "$home" ] || return 0
   abs_home_path=$(validate_firstmate_home_for_removal "$home" "$label" "$expected_id") || return 1
   [ -n "$abs_home_path" ] || return 0
+  if ! FM_HOME="$abs_home_path" FM_STATE_OVERRIDE="$abs_home_path/state" \
+      FM_DATA_OVERRIDE="$abs_home_path/data" FM_CONFIG_OVERRIDE="$abs_home_path/config" \
+      FM_WAKE_QUEUE="$abs_home_path/state/.wake-queue" FM_WAKE_QUEUE_LOCK="$abs_home_path/state/.wake-queue.lock" \
+      "$SCRIPT_DIR/fm-jira.sh" cleanup --home; then
+    echo "REFUSED: $label $home still holds unpaid or queued merge follow-ups; deliver them before removing the home." >&2
+    return 1
+  fi
   process_event_backup=$(snapshot_firstmate_home_process_events "$abs_home_path" "$label") || return 1
   if ! cleanup_firstmate_home_process_events "$abs_home_path" "$label"; then
     restore_firstmate_home_process_events "$abs_home_path" "$label" "$process_event_backup" || return $?

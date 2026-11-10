@@ -2,7 +2,8 @@
 # Move Jira status and queue merge follow-ups for registered Thanos PRs.
 # Usage: fm-jira.sh transition <task-id> in-review|done
 #        fm-jira.sh merged|followups <github-pr-url>
-#        fm-jira.sh owe|cleanup <task-id>
+#        fm-jira.sh owe <task-id>
+#        fm-jira.sh cleanup <task-id>|--home
 #        fm-jira.sh retry-followups [github-pr-url]
 # fm-pr-check.sh owns Ready for Review; fm-pr-merge.sh and fm-pr-poll.sh own Done.
 # Resolve SWVL keys from the recorded branch, falling back to the PR title/branch.
@@ -17,11 +18,14 @@
 # Merge follow-ups use state/jira/<host>/<path>/<number>/followups.lock.
 # Under that lock, followups.owed records the merged URL before Done work;
 # only a successful queue append and followups receipt clear the obligation.
-# Task cleanup confirms merge state, establishes owed work or refuses deletion,
+# Task cleanup honors a URL-bearing success receipt before querying merge state,
+# establishes owed work or refuses deletion,
 # retries deferred status work, and attempts publication while preserving this directory;
 # retry-followups and wake drain can replay it without task metadata/registry.
 # owe establishes that obligation without status work or publication.
-# cleanup uses the same eligibility and returns nonzero if establishment fails.
+# cleanup guards task and whole-home removal through the same owner; a home
+# cannot be removed while it holds unpaid or queued-undelivered merge reminders.
+# Task removal may proceed once owed work is safely held outside task records.
 # No comments or other Jira fields are written; other projects stay silent.
 set -eu
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -58,8 +62,10 @@ transition_one() (
   url=$FM_PR_META_URL
   [ -z "${MERGED_URL:-}" ] || [ "$url" = "$MERGED_URL" ] || exit 1
   if [ "$step" = cleanup ]; then
-    merged_state=$(fm_axi_bounded_run "${FM_JIRA_TIMEOUT:-5}" gh pr view "$url" --json state -q .state) || exit 2
-    [ "$merged_state" = MERGED ] || exit 0
+    if ! followups_published "$url"; then
+      merged_state=$(fm_axi_bounded_run "${FM_JIRA_TIMEOUT:-5}" gh pr view "$url" --json state -q .state) || exit 2
+      [ "$merged_state" = MERGED ] || exit 0
+    fi
     step='done'
   fi
   case "$step" in
@@ -95,6 +101,36 @@ transition_one() (
   exit 0
 )
 
+followups_published() {
+  local url=$1
+  fm_pr_url_parse "$url" || return 1
+  grep -qxF "$url" "$STATE/jira/$FM_PR_HOST/$FM_PR_PATH/$FM_PR_NUMBER/followups" 2>/dev/null
+}
+
+guard_removal() {
+  local container=$1 result=0 owed key keys
+  if [ "$container" = task ]; then
+    transition_one "$2" cleanup || result=$?
+    [ "$result" -ne 2 ]
+    return
+  fi
+  for owed in "$STATE"/jira/*/*/*/*/followups.owed; do
+    [ ! -f "$owed" ] || return 1
+  done
+  keys=$(fm_wake_queued_keys check) || return 1
+  while IFS= read -r key; do
+    case "$key" in
+      merge-followups:*)
+        if fm_pr_url_parse "${key#merge-followups:}"; then
+          return 1
+        fi ;;
+    esac
+  done <<EOF
+$keys
+EOF
+  return 0
+}
+
 publish_followups_bounded() {
   if fm_axi_bounded_run "${FM_JIRA_TIMEOUT:-5}" bash "$SCRIPT_DIR/fm-jira.sh" --followups "$1"; then
     return 0
@@ -113,12 +149,12 @@ publish_followups() {
   trap 'exit 1' HUP INT TERM
   fm_lock_acquire_wait "$lock"
   if [ "$action" = owe ]; then
-    if ! grep -qxF "$url" "$dir/followups" 2>/dev/null; then
+    if ! followups_published "$url"; then
       printf '%s\n' "$url" > "$dir/followups.owed" || exit 1
     fi
     exit 0
   fi
-  if ! grep -qxF "$url" "$dir/followups" 2>/dev/null; then
+  if ! followups_published "$url"; then
     fm_wake_append check "merge-followups:$url" "check: MERGE FOLLOW-UPS: $url - (1) check MCP covers what changed unless explicitly skipped; put any MCP gap in a separate follow-up PR; (2) update /help-center with the change" || exit 1
     printf '%s\n' "$url" > "$dir/followups" || exit 1
   fi
@@ -191,11 +227,22 @@ case "${1:-}" in
     [ "$#" -eq 3 ] || exit 0
     transition_one "$2" "$3" || true
     ;;
-  owe|cleanup)
+  owe)
     [ "$#" -eq 2 ] || exit 1
     result=0
-    transition_one "$2" "$1" || result=$?
+    transition_one "$2" owe || result=$?
     [ "$result" -ne 2 ] || exit 1
+    ;;
+  cleanup)
+    [ "$#" -eq 2 ] || exit 1
+    if [ "$2" = --home ]; then
+      fm_axi_bounded_run "${FM_JIRA_TIMEOUT:-5}" bash "$SCRIPT_DIR/fm-jira.sh" --guard-home || exit 1
+    else
+      guard_removal task "$2" || exit 1
+    fi
+    ;;
+  --guard-home)
+    guard_removal home || exit 1
     ;;
   retry-followups)
     retry_followups "${2:-}"
