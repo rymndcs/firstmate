@@ -8,6 +8,12 @@
 # otherwise, so an unexplained stop without a current working signal surfaces.
 # Verified-live parked/done workers and declared external-wait pauses instead
 # use the bounded idle cadence described in docs/architecture.md.
+# Idle recheck receipts state/.quiet-resurfaced-<window-key> and
+# state/.paused-resurfaced-<window-key> contain "<epoch> <identity-hash> <liveness>".
+# The key maps :/. to _, and the identity binds the task, window, status, spawn,
+# turn-end and steer signatures. Only queued wakes advance receipts, atomically.
+# They survive restarts, pane churn and uncertain liveness reads; busy activity
+# invalidates them. Missing, unreadable, malformed or future receipts are due.
 # Initial status signals still surface in normal mode.
 # While state/.afk exists, the selected away owner triages; this watcher queues and exits
 # on every wake. Printed reason lines:
@@ -329,6 +335,55 @@ busy_turn_over_age() {  # <task>
   [ "$(age_of "$f")" -ge "$BUSY_TURN_MAX_SECS" ]
 }
 
+idle_recheck_identity() {  # <window> <task>
+  local task=$2 suffix f sig identity="$1 $2"
+  for suffix in status meta turn-ended steered; do
+    f="$STATE/$task.$suffix"
+    if [ -e "$f" ]; then
+      sig=$(stat_sig "$f") || return 1
+    else
+      sig=missing
+    fi
+    identity="$identity $suffix=$sig"
+  done
+  printf '%s' "$identity" | hash_pane
+}
+
+idle_recheck_load() {  # <receipt> <window> <task>
+  local receipt=$1 identity saved
+  identity=$(idle_recheck_identity "$2" "$3") || return 1
+  saved=$(cat "$receipt" 2>/dev/null) || return 1
+  IDLE_RECHECK_EPOCH=${saved%% *}
+  IDLE_RECHECK_LIVENESS=${saved##* }
+  case "$IDLE_RECHECK_EPOCH" in ''|*[!0-9]*|0?*) return 1 ;; esac
+  case "$IDLE_RECHECK_LIVENESS" in alive|dead|unknown) ;; *) return 1 ;; esac
+  [ "$saved" = "$IDLE_RECHECK_EPOCH $identity $IDLE_RECHECK_LIVENESS" ]
+}
+
+idle_recheck_recent() {  # <receipt> <window> <task>
+  local now
+  idle_recheck_load "$@" || return 1
+  now=$(date +%s)
+  [ "$IDLE_RECHECK_EPOCH" -le "$now" ] 2>/dev/null && [ "$((now - IDLE_RECHECK_EPOCH))" -lt "$PAUSE_RESURFACE_SECS" ]
+}
+
+paused_agent_changed() {  # <window> <task> <window-key>
+  local receipt="$STATE/.paused-resurfaced-$3"
+  [ -e "$receipt" ] || return 1
+  idle_recheck_load "$receipt" "$1" "$2" || return 0
+  [ "$IDLE_RECHECK_LIVENESS" != dead ]
+}
+
+idle_recheck_record() {  # <receipt> <window> <task>
+  local receipt=$1 identity tmp
+  identity=$(idle_recheck_identity "$2" "$3") || return 0
+  tmp=$(umask 077; mktemp "$STATE/.idle-recheck.XXXXXX") || return 0
+  if [ ! -d "$receipt" ]; then
+    printf '%s %s %s\n' "$(date +%s)" "$identity" "${liveness:-unknown}" > "$tmp" && mv -f "$tmp" "$receipt"
+  fi
+  rm -f "$tmp"
+}
+
 # Bounded idle rechecks share status-age anchoring and per-window throttling.
 # Death surfaces immediately once; subsequent rechecks use the long cadence.
 handle_bounded_stale() {  # <window> <task> <hash> <paused|parked|done|dead>
@@ -348,7 +403,13 @@ handle_bounded_stale() {  # <window> <task> <hash> <paused|parked|done|dead>
   case "$mtime" in ''|*[!0-9]*) mtime=$(date +%s) ;; esac
   age=$(( $(date +%s) - mtime ))
   rf="$STATE/.$group-resurfaced-$key"
-  rf_age=$(age_of "$rf")   # 999999 when no prior re-surface
+  if [ "$group" = dead ]; then
+    rf_age=$(age_of "$rf")
+  elif idle_recheck_recent "$rf" "$win" "$task"; then
+    rf_age=0
+  else
+    rf_age=$PAUSE_RESURFACE_SECS
+  fi
   if { [ "$class" = dead ] || [ "$age" -ge "$PAUSE_RESURFACE_SECS" ]; } && [ "$rf_age" -ge "$PAUSE_RESURFACE_SECS" ]; then
     case "$class" in
       paused) reason="stale: $win (paused ${age}s, awaiting external - declared pause, rechecked on a long cadence not a wedge; confirm the wait still holds)" ;;
@@ -356,7 +417,8 @@ handle_bounded_stale() {  # <window> <task> <hash> <paused|parked|done|dead>
       *) reason="stale: $win ($class ${age}s; healthy idle agent, rechecked on a long cadence)" ;;
     esac
     fm_wake_append stale "$win" "$reason" || exit 1
-    date +%s > "$rf"
+    if [ "$group" = dead ]; then date +%s > "$rf"
+    else idle_recheck_record "$rf" "$win" "$task"; fi
     wake "$reason"
   fi
   triage_log "absorbed stale ($class, age ${age}s): $win"
@@ -408,7 +470,7 @@ clear_pause_state() {  # <window>
   key=${win//:/_}
   key=${key//\//_}
   key=${key//./_}
-  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+  rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key"
 }
 
 clear_pause_tracking() {  # <window>
@@ -472,17 +534,21 @@ pause_state_class() {  # <window> <task>
 surface_nonterminal_stale() {  # <window> <hash>
   local win=$1 h=$2 key task last
   key=$(printf '%s' "$win" | tr ':/.' '___')
+  task=$(window_to_task "$win" "$STATE")
+  last=$(last_status_line "$STATE/$task.status")
+  if status_is_paused_or_captain_held "$last" && idle_recheck_recent "$STATE/.paused-resurfaced-$key" "$win" "$task"; then
+    handle_paused_stale "$win" "$task" "$h"
+    return
+  fi
   fm_wake_append stale "$win" "stale: $win" || exit 1
   printf '%s' "$h" > "$STATE/.stale-$key"
   rm -f "$STATE/.stale-since-$key"
-  task=$(window_to_task "$win" "$STATE")
-  last=$(last_status_line "$STATE/$task.status")
   if status_is_paused_or_captain_held "$last"; then
     : > "$STATE/.paused-$key"
     date +%s > "$STATE/.paused-rechecked-$key"
-    date +%s > "$STATE/.paused-resurfaced-$key"
+    idle_recheck_record "$STATE/.paused-resurfaced-$key" "$win" "$task"
   else
-    rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key" "$STATE/.paused-resurfaced-$key"
+    rm -f "$STATE/.paused-$key" "$STATE/.paused-rechecked-$key"
   fi
   wake "stale: $win"
 }
@@ -1029,7 +1095,8 @@ EOF
           # mode, a pause or a captain hold owns this worker's alerts.
           liveness=$(fm_backend_agent_alive "$backend" "$w" 2>/dev/null) || liveness=unknown
           [ "$liveness" = dead ] || rm -f "${STATE:?}/.dead-since-$key"
-          if ! afk_present && ! status_is_paused_or_captain_held "$last"; then
+          if ! afk_present && { ! status_is_paused_or_captain_held "$last" \
+            || { status_is_paused "$last" && paused_agent_changed "$w" "$task" "$key"; }; }; then
             agent_alive=$liveness
             if [ "$agent_alive" = dead ]; then
               # A newer spawn record or firstmate input (fm-send.sh records
@@ -1075,7 +1142,9 @@ EOF
     else
       forget_quiet_state "$key" "$liveness" "$busy_now"
     fi
-    rm -f "${STATE:?}/.quiet-resurfaced-$key"
+    if [ "$busy_now" -eq 0 ]; then
+      rm -f "${STATE:?}/.quiet-resurfaced-$key" "${STATE:?}/.paused-resurfaced-$key"
+    fi
     if [ "$h" = "$prev" ]; then
       n=$(( $(cat "$cf" 2>/dev/null || echo 0) + 1 ))
       echo "$n" > "$cf"
