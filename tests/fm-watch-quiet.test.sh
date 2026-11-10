@@ -280,6 +280,49 @@ test_restart_idle_cadence() {
   pass "$verb: restart and idle display/liveness churn preserve the bounded recheck cadence"
 }
 
+test_paused_authoritative_restart() {
+  local state=$1 d
+  d=$(quiet_case "paused-run-$state" tmux)
+  printf 'paused: awaiting review\n' > "$d/state/quiet.status"
+  backdate "$d/state/quiet.status"
+  : > "$d/static"
+  restart_clock "$d"
+  FM_CREW_STATE_BIN="$d/fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE="state: $state · source: run-step · awaiting approval" quiet_run "$d"
+  [ "$(cat "$d/out")" = 'stale: test:fm-quiet' ] || fail "$state paused first stale did not surface"
+  FM_CREW_STATE_BIN="$d/fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE="state: $state · source: run-step · awaiting approval" quiet_run "$d"
+  [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "$state run result repeated a paused stale after restart: $(cat "$d/out")"
+  [ "$(grep -c 'stale: test:fm-quiet' "$d/state/.wake-queue")" -eq 1 ] || fail "$state run result queued a duplicate paused wake"
+  advance_recheck_clock "$d"
+  FM_CREW_STATE_BIN="$d/fakebin/fm-crew-state.sh" \
+    FM_FAKE_CREW_STATE="state: $state · source: run-step · awaiting approval" quiet_run "$d"
+  grep -F '(paused ' "$d/out" >/dev/null || fail "$state run result lost the paused cadence: $(cat "$d/out")"
+  pass "paused with authoritative $state: consecutive restarts retain the paused cadence"
+}
+
+test_paused_unknown_death() {
+  local d
+  d=$(quiet_case paused-unknown-death tmux)
+  printf 'paused: waiting on upstream\n' > "$d/state/quiet.status"
+  backdate "$d/state/quiet.status"
+  : > "$d/static"
+  restart_clock "$d"
+  quiet_run "$d"
+  [ "$(cat "$d/out")" = 'stale: test:fm-quiet' ] || fail 'paused alive fixture did not surface its first stale'
+  printf 'ambiguous\n' > "$d/liveness"
+  quiet_run "$d"
+  [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail 'paused unknown liveness repeated a stale wake'
+  printf '%s\n' $(( $(date +%s) + 60 )) > "$d/clock"
+  printf 'dead\n' > "$d/liveness"
+  quiet_run "$d"
+  grep -F 'agent exited or endpoint gone' "$d/out" >/dev/null || fail 'paused alive-to-unknown-to-dead hid the death'
+  quiet_run "$d"
+  [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail 'paused alive-to-unknown-to-dead repeated its death wake'
+  [ "$(grep -c 'agent exited or endpoint gone' "$d/state/.wake-queue")" -eq 1 ] || fail 'paused alive-to-unknown-to-dead did not queue exactly one death alert'
+  pass 'paused alive-to-unknown-to-dead surfaces one death alert then stays silent'
+}
+
 test_restart_working_escalations() {
   local d n
   d=$(quiet_case restart-working tmux)
@@ -347,7 +390,49 @@ test_recheck_new_signal() {
   esac
   QUIET_KEEP_SIGNALS=1 quiet_run "$d"
   grep -F 'signal:' "$d/out" >/dev/null || fail "$verb receipt hid a new $event signal: $(cat "$d/out")"
-  pass "$verb: new $event signal wakes immediately within the idle cadence"
+  quiet_run "$d"
+  [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "$verb repeated stale after its surfaced $event signal: $(cat "$d/out")"
+  if [ "$event" = turn ]; then
+    printf '%s\n' $(( $(cat "$d/clock") + 1800 )) > "$d/clock"
+    printf 'another turn\n' > "$d/state/quiet.turn-ended"
+    QUIET_KEEP_SIGNALS=1 quiet_run "$d"
+    grep -F 'signal:' "$d/out" >/dev/null || fail "$verb receipt hid a subsequent turn signal"
+    printf '%s\n' $(( $(cat "$d/clock") + 1800 )) > "$d/clock"
+    quiet_run "$d"
+    [ -e "$d/completed" ] && [ ! -s "$d/out" ] || fail "$verb turn signal did not renew the idle cadence: $(cat "$d/out")"
+    printf '%s\n' $(( $(cat "$d/clock") + 1800 )) > "$d/clock"
+    quiet_run "$d"
+    grep -F 'stale: test:fm-quiet' "$d/out" >/dev/null || fail "$verb turn signal suppressed the elapsed cadence"
+    printf '%s\n' $(( $(date +%s) + 7200 )) > "$d/clock"
+    printf 'dead\n' > "$d/liveness"
+    quiet_run "$d"
+    grep -F 'agent exited or endpoint gone' "$d/out" >/dev/null || fail "$verb turn signal hid a subsequent death"
+  fi
+  pass "$verb: new $event signal wakes immediately and the following cycle stays silent"
+}
+
+test_turn_receipt_preservation() {
+  local fault=$1 d
+  d=$(quiet_case "turn-preserve-$fault" tmux)
+  printf 'paused: awaiting upstream\n' > "$d/state/quiet.status"
+  if [ "$fault" = held ]; then
+    printf 'captain-held [key=choice]: awaiting review\n' > "$d/state/quiet.status"
+  fi
+  backdate "$d/state/quiet.status"
+  : > "$d/static"
+  restart_clock "$d"
+  quiet_run "$d"
+  case "$fault" in
+    meta) printf 'pr=123\n' >> "$d/state/quiet.meta" ;;
+    malformed) printf 'broken receipt\n' > "$d/state/.paused-resurfaced-test_fm-quiet" ;;
+    missing) rm -f "${d:?}/state/.paused-resurfaced-test_fm-quiet" ;;
+  esac
+  : > "$d/state/quiet.turn-ended"
+  QUIET_KEEP_SIGNALS=1 quiet_run "$d"
+  grep -F 'signal:' "$d/out" >/dev/null || fail "$fault turn signal did not surface"
+  quiet_run "$d"
+  grep -F 'stale: test:fm-quiet' "$d/out" >/dev/null || fail "$fault turn signal changed existing receipt invalidation or held policy"
+  pass "$fault: surfaced turn preserves existing receipt invalidation and held policy"
 }
 
 test_recheck_new_death() {
@@ -388,6 +473,10 @@ test_restart_cases() {
   for verb in 'done' paused; do
     (test_restart_idle_cadence "$verb") || failures=$((failures + 1))
   done
+  for verb in parked 'done'; do
+    (test_paused_authoritative_restart "$verb") || failures=$((failures + 1))
+  done
+  (test_paused_unknown_death) || failures=$((failures + 1))
   (test_restart_working_escalations) || failures=$((failures + 1))
   [ "$failures" -eq 0 ]
 }
@@ -824,6 +913,10 @@ case "${FM_QUIET_TEST:-all}" in
   cadence) test_long_cadence; exit ;;
   restart) test_restart_cases; exit ;;
   recheck-safety) test_recheck_safety; exit ;;
+  signals) for v in 'done' paused; do for e in status turn; do (test_recheck_new_signal "$v" "$e") || exit 1; done; done; exit ;;
+  paused-run) for v in parked 'done'; do (test_paused_authoritative_restart "$v") || exit 1; done; exit ;;
+  paused-unknown-death) test_paused_unknown_death; exit ;;
+  turn-preservation) for f in held meta malformed missing; do (test_turn_receipt_preservation "$f") || exit 1; done; exit ;;
   resume) test_quiet_resume; exit ;;
   expiry) test_quiet_cache_expiry; exit ;;
   classifier) test_quiet_class_opt_in; exit ;;
@@ -867,5 +960,8 @@ for backend in tmux herdr; do
   for verb in 'done' resolved; do
     if ! (test_inconclusive_flaps "$backend" "$verb"); then failures=$((failures + 1)); fi
   done
+done
+for fault in held meta malformed missing; do
+  if ! (test_turn_receipt_preservation "$fault"); then failures=$((failures + 1)); fi
 done
 [ "$failures" -eq 0 ]

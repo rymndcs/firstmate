@@ -11,7 +11,8 @@
 # Idle recheck receipts state/.quiet-resurfaced-<window-key> and
 # state/.paused-resurfaced-<window-key> contain "<epoch> <identity-hash> <liveness>".
 # The key maps :/. to _, and the identity binds the task, window, status, spawn,
-# turn-end and steer signatures. Only queued wakes advance receipts, atomically.
+# turn-end and steer signatures. Queued stale wakes and surfaced turn-end signals
+# advance matching receipts atomically, retaining their liveness provenance.
 # They survive restarts, pane churn and uncertain liveness reads; busy activity
 # invalidates them. Missing, unreadable, malformed or future receipts are due.
 # Initial status signals still surface in normal mode.
@@ -335,11 +336,13 @@ busy_turn_over_age() {  # <task>
   [ "$(age_of "$f")" -ge "$BUSY_TURN_MAX_SECS" ]
 }
 
-idle_recheck_identity() {  # <window> <task>
+idle_recheck_identity() {  # <window> <task> [previous-turn-signature]
   local task=$2 suffix f sig identity="$1 $2"
   for suffix in status meta turn-ended steered; do
     f="$STATE/$task.$suffix"
-    if [ -e "$f" ]; then
+    if [ "$suffix" = turn-ended ] && [ -n "${3:-}" ]; then
+      sig=$3
+    elif [ -e "$f" ]; then
       sig=$(stat_sig "$f") || return 1
     else
       sig=missing
@@ -349,9 +352,9 @@ idle_recheck_identity() {  # <window> <task>
   printf '%s' "$identity" | hash_pane
 }
 
-idle_recheck_load() {  # <receipt> <window> <task>
+idle_recheck_load() {  # <receipt> <window> <task> [previous-turn-signature]
   local receipt=$1 identity saved
-  identity=$(idle_recheck_identity "$2" "$3") || return 1
+  identity=$(idle_recheck_identity "$2" "$3" "${4:-}") || return 1
   saved=$(cat "$receipt" 2>/dev/null) || return 1
   IDLE_RECHECK_EPOCH=${saved%% *}
   IDLE_RECHECK_LIVENESS=${saved##* }
@@ -382,6 +385,22 @@ idle_recheck_record() {  # <receipt> <window> <task>
     printf '%s %s %s\n' "$(date +%s)" "$identity" "${liveness:-unknown}" > "$tmp" && mv -f "$tmp" "$receipt"
   fi
   rm -f "$tmp"
+}
+
+idle_recheck_turn_surfaced() {  # <signal-file> <seen-file>
+  local task win key group previous liveness
+  case "$1" in *.turn-ended) ;; *) return ;; esac
+  task=$(basename "$1" .turn-ended)
+  win=$(fm_backend_target_of_meta "$STATE/$task.meta")
+  key=$(printf '%s' "$win" | tr ':/.' '___')
+  previous=$(cat "$2" 2>/dev/null || printf missing)
+  for group in quiet paused; do
+    [ "$group" != paused ] || status_is_paused "$(last_status_line "$STATE/$task.status")" || continue
+    if idle_recheck_load "$STATE/.$group-resurfaced-$key" "$win" "$task" "$previous"; then
+      liveness=$IDLE_RECHECK_LIVENESS
+      idle_recheck_record "$STATE/.$group-resurfaced-$key" "$win" "$task"
+    fi
+  done
 }
 
 # Bounded idle rechecks share status-age anchoring and per-window throttling.
@@ -1051,6 +1070,7 @@ $pending
 EOF
       while IFS=$(printf '\t') read -r sf sig f; do
         [ -n "$sf" ] || continue
+        idle_recheck_turn_surfaced "$f" "$sf"
         printf '%s' "$sig" > "$sf"
         mark_surfaced "$f"
       done <<EOF
@@ -1096,7 +1116,7 @@ EOF
           liveness=$(fm_backend_agent_alive "$backend" "$w" 2>/dev/null) || liveness=unknown
           [ "$liveness" = dead ] || rm -f "${STATE:?}/.dead-since-$key"
           if ! afk_present && { ! status_is_paused_or_captain_held "$last" \
-            || { status_is_paused "$last" && paused_agent_changed "$w" "$task" "$key"; }; }; then
+            || { [ "$liveness" = dead ] && status_is_paused "$last" && paused_agent_changed "$w" "$task" "$key"; }; }; then
             agent_alive=$liveness
             if [ "$agent_alive" = dead ]; then
               # A newer spawn record or firstmate input (fm-send.sh records
