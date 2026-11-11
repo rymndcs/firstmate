@@ -309,6 +309,17 @@ work_landed_verdict() {
   LANDED_UNCERTAIN_REASONS=
   LANDED_REMAINING=
 
+  if [ "${2:-}" = default-only ]; then
+    if content_in_default; then
+      LANDED_VERDICT=landed
+    elif [ "$LANDED_UNCERTAIN" -eq 0 ]; then
+      LANDED_VERDICT=unlanded
+    else
+      LANDED_VERDICT=unknown
+    fi
+    return 0
+  fi
+
   refresh_remote_branch_refs "$branch"
 
   if remaining=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null); then

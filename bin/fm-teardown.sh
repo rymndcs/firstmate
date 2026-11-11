@@ -123,6 +123,11 @@
 # and the return proceeds, leaving what remained.
 # bin/fm-worktree-cleanup.sh owns writer stopping, selection, retention, the
 # task's temporary-target record (state/<task-id>.temp-targets) and reporting.
+# Ship tasks returning to Treehouse first remove registered nested worktrees,
+# deepest first, only after every nested tree is clean and its content is proven
+# in the refreshed default branch. Unknown or unlanded nested work refuses
+# teardown, including with --force; that flag only discards the task tree itself.
+# Scouts, secondmates and Orca tasks keep their existing cleanup paths.
 # Usage: fm-teardown.sh <task-id> [--force]
 #   fm-teardown.sh --check-default-content <project> <worktree> [--fetched]
 #   The inspection form returns 0 only for content contained in the refreshed
@@ -1034,6 +1039,7 @@ teardown_treehouse_return() {
 
 validate_worktree_teardown_safety() {
   local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch
+  local scope=${1:-task}
   [ -d "$WT" ] || return 0
   [ "$FORCE" != "--force" ] || return 0
   case "$KIND" in
@@ -1048,7 +1054,28 @@ validate_worktree_teardown_safety() {
     echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
     return 1
   fi
-  dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
+  if [ "$scope" = default-only ]; then
+    dirty=$dirty_raw
+  else
+    dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
+  fi
+
+  if [ "$scope" = default-only ]; then
+    if [ -n "$dirty" ]; then
+      echo "REFUSED: nested worktree $WT has uncommitted changes." >&2
+      return 1
+    fi
+    work_landed_verdict "$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)" default-only
+    case "$LANDED_VERDICT" in
+      landed) return 0 ;;
+      unlanded) echo "REFUSED: nested worktree $WT has work not in the default branch." >&2 ;;
+      *)
+        echo "REFUSED: cannot establish whether nested worktree $WT has landed in the default branch." >&2
+        printf 'what could not be checked:\n%s\n' "$LANDED_UNCERTAIN_REASONS" >&2
+        ;;
+    esac
+    return 1
+  fi
 
   if ! unpushed_raw=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null); then
     if worktree_safety_blocked_by_lock "commits not on a remote"; then
@@ -1113,6 +1140,53 @@ validate_worktree_teardown_safety() {
         ;;
     esac
   fi
+}
+
+remove_nested_ship_worktrees() {
+  local WT=$WT FORCE=$FORCE
+  local slot field path top complete=0 i j swap
+  local nested=()
+  [ "$KIND" = ship ] && [ "$BACKEND" != orca ] && [ -d "$WT" ] || return 0
+  slot=$(canonical_existing_dir "$WT") || return 1
+  while IFS= read -r -d '' field; do
+    case "$field" in
+      fm-worktree-list-complete) complete=1 ;;
+      'worktree '*)
+        path=${field#worktree }
+        case "$path" in "$slot"/*) nested+=("$path") ;; esac
+        ;;
+    esac
+  done < <(git -C "$PROJ" worktree list --porcelain -z && printf 'fm-worktree-list-complete\0')
+  if [ "$complete" != 1 ]; then
+    echo "REFUSED: cannot list nested worktrees inside $slot." >&2
+    return 1
+  fi
+  [ "${#nested[@]}" -gt 0 ] || return 0
+  for path in "${nested[@]}"; do
+    top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || top=
+    if [ "$top" != "$path" ] || [ "$(canonical_existing_dir "$path" || true)" != "$path" ]; then
+      echo "REFUSED: cannot inspect nested worktree $path." >&2
+      return 1
+    fi
+    WT=$path
+    FORCE=
+    validate_worktree_teardown_safety default-only || return 1
+  done
+  for ((i=0; i<${#nested[@]}; i++)); do
+    for ((j=i+1; j<${#nested[@]}; j++)); do
+      if [ "${#nested[j]}" -gt "${#nested[i]}" ]; then
+        swap=${nested[i]}
+        nested[i]=${nested[j]}
+        nested[j]=$swap
+      fi
+    done
+    path=${nested[i]}
+    if ! git -C "$PROJ" worktree remove -- "$path"; then
+      echo "REFUSED: could not remove nested worktree $path; keeping the slot." >&2
+      return 1
+    fi
+    echo "teardown: removed landed nested worktree $path"
+  done
 }
 
 require_orca_worktree_path_match() {
@@ -1906,6 +1980,8 @@ if [ "$BACKEND" = herdr ]; then
   TEARDOWN_HERDR_SESSION=$FM_BACKEND_HERDR_SESSION
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
 fi
+
+remove_nested_ship_worktrees || exit 1
 
 if [ -d "$WT" ] && [ "$KIND" = ship ]; then
   "$SCRIPT_DIR/fm-protected-paths.sh" remove "$WT" "$ID" || exit 1

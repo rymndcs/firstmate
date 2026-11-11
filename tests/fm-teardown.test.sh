@@ -3938,6 +3938,149 @@ test_cleanup_deps_contexts() {
   pass 'deps goes only below target or build/cargo'
 }
 
+nested_fixture() {
+  local c
+  c=$(make_case "nested-$1")
+  c=$(cd "$c" && pwd -P)
+  write_meta "$c" no-mistakes ship
+  printf '%s\n' '.claude/worktrees/' 'tmp/' >> "$(git -C "$c/wt" rev-parse --git-path info/exclude)"
+  git -C "$c/project" worktree add -q -b nested "$c/wt/.claude/worktrees/inner copy" main
+  cat > "$c/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${NESTED_CASE:?}/returns"
+if [ -e "$NESTED_CASE/wt/.claude/worktrees/inner copy/.git" ]; then
+  echo 'nested worktree still present at return' >&2
+  exit 1
+fi
+SH
+  chmod +x "$c/fakebin/treehouse"
+  printf '%s\n' "$c"
+}
+
+test_nested_landed() {
+  local c inner deep sibling
+  c=$(nested_fixture landed)
+  inner="$c/wt/.claude/worktrees/inner copy"
+  deep="$inner/tmp/deeper"
+  sibling="$c/wt-other"
+  git -C "$inner" worktree add -q --detach "$deep" main
+  git -C "$c/project" worktree add -q --detach "$sibling" main
+  cat > "$c/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+if [ "${3:-} ${4:-}" = 'worktree remove' ]; then
+  printf '%s\n' "$6" >> "${NESTED_CASE:?}/removals"
+fi
+exec "$REAL_GIT_FOR_TEST" "$@"
+SH
+  chmod +x "$c/fakebin/git"
+  NESTED_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'landed nested worktrees prevented return'
+  [ ! -e "$inner" ] && [ ! -e "$deep" ] || fail 'landed nested paths survived'
+  [ -f "$sibling/.git" ] || fail 'prefix sibling was removed'
+  git -C "$c/project" worktree list --porcelain > "$c/list"
+  if grep -F "$inner" "$c/list"; then fail 'nested registration survived'; fi
+  [ -s "$c/returns" ] || fail 'slot was not returned'
+  printf '%s\n%s\n' "$deep" "$inner" > "$c/expected-removals"
+  cmp -s "$c/expected-removals" "$c/removals" || {
+    diff -u "$c/expected-removals" "$c/removals"
+    fail 'nested copies were not removed deepest first'
+  }
+  pass 'landed nested copies are removed deepest first before return; sibling stays'
+}
+
+test_nested_squash() {
+  local c inner
+  c=$(nested_fixture squash)
+  inner="$c/wt/.claude/worktrees/inner copy"
+  printf 'landed\n' > "$inner/feature"
+  git -C "$inner" add feature
+  git -C "$inner" commit -qm 'nested feature'
+  land_on_origin_main "$c" feature landed
+  NESTED_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'squash-landed nested worktree refused'
+  [ ! -e "$inner" ] || fail 'squash-landed nested path survived'
+  pass 'nested squash-landed content uses refreshed default branch'
+}
+
+test_nested_refusal() {
+  local variant=$1 c inner rc=0
+  c=$(nested_fixture "$variant")
+  inner="$c/wt/.claude/worktrees/inner copy"
+  case "$variant" in
+    unlanded|pushed|forced)
+      printf 'unique\n' > "$inner/feature"
+      git -C "$inner" add feature
+      git -C "$inner" commit -qm 'nested only'
+      if [ "$variant" = pushed ]; then git -C "$inner" push -q origin nested; fi
+      ;;
+    dirty) printf 'notes\n' > "$inner/notes" ;;
+    agent-dirty) mkdir -p "$inner/.claude"; printf 'notes\n' > "$inner/.claude/notes" ;;
+    unknown) git -C "$c/project" remote set-url origin "$c/unreachable.git" ;;
+    locked) git -C "$c/project" worktree lock "$inner" ;;
+    missing) mv "$inner" "$c/moved-inner" ;;
+    mixed)
+      git -C "$c/project" worktree add -q --detach "$c/wt/.claude/worktrees/a-landed" main
+      printf 'unique\n' > "$inner/feature"
+      git -C "$inner" add feature
+      git -C "$inner" commit -qm 'nested only'
+      ;;
+    inventory)
+      cat > "$c/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+case "$*" in
+  *'worktree list --porcelain -z'*) exit 1 ;;
+esac
+exec "$REAL_GIT_FOR_TEST" "$@"
+SH
+      chmod +x "$c/fakebin/git"
+      ;;
+  esac
+  if [ "$variant" = forced ]; then
+    NESTED_CASE="$c" run_teardown "$c" --force > "$c/out" 2> "$c/err" || rc=$?
+  else
+    NESTED_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || rc=$?
+  fi
+  [ "$rc" -ne 0 ] || fail "nested $variant unexpectedly allowed return"
+  [ -f "$c/state/task-x1.meta" ] || fail "nested $variant erased task identity"
+  [ ! -e "$c/returns" ] || fail "nested $variant attempted slot return"
+  if [ "$variant" = inventory ]; then
+    grep -F 'cannot list nested worktrees' "$c/err" >/dev/null || fail 'inventory failure was not explained'
+  else
+    grep -F "$inner" "$c/err" >/dev/null || fail "nested $variant refusal did not name path"
+  fi
+  if [ "$variant" = mixed ]; then [ -f "$c/wt/.claude/worktrees/a-landed/.git" ] || fail 'removed a landed peer before all verdicts passed'; fi
+  if [ "$variant" != missing ]; then [ -f "$inner/.git" ] || fail "nested $variant was discarded"; fi
+  case "$variant" in
+    dirty|agent-dirty)
+      grep -F "REFUSED: nested worktree $inner has uncommitted changes." "$c/err" >/dev/null \
+        || fail 'nested dirty changes reached removal instead of the safety refusal'
+      ;;
+  esac
+  if [ "$variant" = unknown ]; then
+    grep -F 'could not be fetched' "$c/err" >/dev/null || fail 'unknown default did not explain failed check'
+  fi
+  pass "nested $variant refuses and preserves task before return"
+}
+
+run_nested_tests() {
+  test_nested_landed
+  test_nested_squash
+  local variant
+  for variant in unlanded pushed forced dirty agent-dirty unknown locked missing mixed inventory; do
+    test_nested_refusal "$variant"
+  done
+}
+
+if [ "${1:-}" = nested ]; then
+  if [ "$#" -gt 1 ]; then
+    case "$2" in
+      landed|squash) "test_nested_$2" ;;
+      *) test_nested_refusal "$2" ;;
+    esac
+  else
+    run_nested_tests
+  fi
+  exit 0
+fi
+
 if [ "${1:-}" = cleanup ]; then
   shift
   if [ "$#" -gt 0 ]; then
@@ -3947,6 +4090,7 @@ if [ "${1:-}" = cleanup ]; then
   fi
   exit 0
 fi
+run_nested_tests
 for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children rails_keys tracked_agent_config tracked_codex_config tracked_dependency_install tracked_nested_project deps_contexts; do "test_cleanup_$cleanup_case"; done
 
 test_shared_daemon_restored_after_a_successful_return
