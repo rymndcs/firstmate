@@ -576,6 +576,51 @@ FAKE
   pass 'direct merge failure survives ordinary cleanup and publishes once after ephemeral state disappears'
 }
 
+jira_help_center_offline_cleanup_regression() {
+  local FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_JIRA_TIMEOUT
+  local task_url tool
+  export FM_HOME="$PR_TMP/help-center-offline" FM_JIRA_TIMEOUT=1
+  export FM_STATE_OVERRIDE="$FM_HOME/state" FM_DATA_OVERRIDE="$FM_HOME/data" FM_CONFIG_OVERRIDE="$FM_HOME/config"
+  mkdir -p "$FM_HOME/state" "$FM_HOME/data" "$FM_HOME/config"
+  printf '%s\n' '- thanos [no-mistakes]' > "$FM_HOME/data/projects.md"
+  fm_git_init_commit "$FM_HOME/thanos"
+  git -C "$FM_HOME/thanos" update-ref refs/remotes/origin/main HEAD
+  git -C "$FM_HOME/thanos" worktree add --detach -q "$FM_HOME/task-tree" HEAD
+  fm_write_meta "$FM_HOME/state/task-help.meta" 'window=firstmate:fm-task-help' \
+    'endpoint_task_id=task-help' 'backend=tmux' "worktree=$FM_HOME/task-tree" \
+    "project=$FM_HOME/thanos" 'branch=rcs/swvl-1234-docs' 'kind=ship' 'mode=no-mistakes'
+  task_url=https://github.com/advisorfirst/help-center/pull/287
+  fm_fake_exit0 "$PR_CODE/bin" fm-linear.sh fm-protected-paths.sh fm-fleet-sync.sh
+  for tool in tmux treehouse; do fm_fake_exit0 "$PR_TMP/fakebin" "$tool"; done
+  "$PR_CODE/bin/fm-pr-check.sh" task-help "$task_url" > "$PR_TMP/help-offline.register" 2>&1
+  "$PR_CODE/bin/fm-jira.sh" merged "$task_url" > "$PR_TMP/help-offline.merged" 2>&1 \
+    || fail 'help-center fixture must observe the merged PR before GitHub becomes unavailable'
+  assert_grep 'issue|move|SWVL-1234|Done' "$JIRA_LOG" 'help-center fixture must complete the observed merge before cleanup'
+  for tool in gh gh-axi; do
+    cp "$PR_TMP/fakebin/$tool" "$PR_TMP/help-offline.$tool.saved"
+    cat > "$PR_TMP/fakebin/$tool" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$0 $*" >> "$FM_HOME/offline-gh.calls"
+exit 97
+FAKE
+    chmod +x "$PR_TMP/fakebin/$tool"
+    [ "$(command -v "$tool")" = "$PR_TMP/fakebin/$tool" ] \
+      || fail "offline cleanup must resolve private unavailable $tool"
+  done
+  "$PR_CODE/bin/fm-jira.sh" cleanup task-help > "$PR_TMP/help-offline.cleanup" 2>&1 \
+    || fail 'observed merged help-center cleanup must exit 0 while GitHub is unavailable'
+  "$PR_CODE/bin/fm-teardown.sh" task-help > "$PR_TMP/help-offline.teardown" 2>&1 \
+    || { cat "$PR_TMP/help-offline.teardown" >&2; fail 'observed merged help-center task removal must succeed while GitHub is unavailable'; }
+  assert_absent "$FM_HOME/state/task-help.meta" 'offline help-center cleanup must remove task metadata'
+  assert_absent "$FM_HOME/state/task-help.check.sh" 'offline help-center cleanup must remove the poll'
+  assert_absent "$FM_HOME/offline-gh.calls" 'observed merged help-center cleanup must not query GitHub again'
+  assert_absent "$FM_HOME/state/jira/github.com/advisorfirst/help-center/287/followups.owed" 'skipped help-center reminders must not acquire an obligation'
+  drain_pr > "$PR_TMP/help-offline.wake"
+  assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/help-offline.wake" 'offline help-center cleanup must keep skipped reminders silent'
+  for tool in gh gh-axi; do cp "$PR_TMP/help-offline.$tool.saved" "$PR_TMP/fakebin/$tool"; done
+  pass 'observed merged help-center task is removed offline without a reminder or another GitHub call'
+}
+
 jira_cleanup_completed_status_regression() {
   local FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_JIRA_TIMEOUT FM_TEST_GH_STATE
   local scenario task_url dir tool
@@ -991,7 +1036,7 @@ FAKE
 }
 
 case "${FM_JIRA_TEST_CASE:-all}" in
-  all) jira_cleanup_completed_status_regression; jira_cleanup_record_failure_regression; jira_cleanup_regression; jira_owed_contract_regression; jira_ordering_regression; jira_deadline_regressions; jira_installed_deadlines; jira_publication_write_regression; jira_publication_lock_regression ;;
+  all) jira_help_center_offline_cleanup_regression; jira_cleanup_completed_status_regression; jira_cleanup_record_failure_regression; jira_cleanup_regression; jira_owed_contract_regression; jira_ordering_regression; jira_deadline_regressions; jira_installed_deadlines; jira_publication_write_regression; jira_publication_lock_regression ;;
   contract) jira_owed_contract_regression ;;
   cleanup) jira_cleanup_regression ;;
   completed-cleanup) jira_cleanup_completed_status_regression ;;
