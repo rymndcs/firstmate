@@ -8,6 +8,8 @@
 # SNAPSHOT matches device/inode/SHA-256. snapshot prints that identity then bytes.
 # Locks: owner-create LOCK PID; owner-delete OWNER [PID]; lock-link LOCK OWNER PID;
 # lock-check/lock-pid/lock-unlink/lock-remove LOCK [OWNER [PID]].
+# lock-link verifies the published claim in the same pinned operation; lock-pid
+# returns a PID only after the complete owner and final link recheck.
 # lock-identity is v1, canonical home, canonical lock, device:inode, one per line.
 # Pin owned directories with no-follow opens and fchdir; regular files must have
 # one link and the current UID. Reads and truncation use the verified descriptor.
@@ -168,16 +170,23 @@ if ($op eq 'owner-create') {
     $pid =~ /\A[0-9]+\z/ or refuse('owner PID unavailable');
     !defined($args[1]) || $args[1] eq '' || $pid eq $args[1] or refuse('owner PID changed');
     my @files = ($op ne 'lock-link') ? owner_files() : ();
-    if ($op eq 'lock-pid') { print "$pid\n"; exit 0 }
     chdir($link_parent) or refuse('lock parent unavailable');
     if ($op eq 'lock-link') {
         symlink($target, $lock) or exit 1;
+        my ($claimed_leaf, $claimed_lock, $claimed_dir) = owner($target);
+        $claimed_lock eq $path or refuse('owner belongs to another lock');
+        my $claimed_pid = contents(regular('pid', 0)); chomp $claimed_pid;
+        $claimed_pid eq $args[1] or refuse('owner PID changed');
+        owner_files();
+        chdir($link_parent) or refuse('lock parent unavailable');
+        (readlink($lock) // '') eq $target or refuse('lock link changed');
     } else {
         (readlink($lock) // '') eq $target or refuse('lock link changed');
         if ($op eq 'lock-unlink' || $op eq 'lock-remove') {
             unlink($lock) or refuse('lock unlink failed');
         }
     }
+    if ($op eq 'lock-pid') { print "$pid\n"; exit 0 }
     if ($op eq 'lock-remove') {
         chdir($d) or refuse('owner unavailable');
         remove_owner_files(@files);

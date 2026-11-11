@@ -10,7 +10,11 @@
 # one shared allowance for primary, secondary recovery and replacement creates.
 # Recovery walks secondary paths iteratively, then replaces verified dead stamped
 # owners under their owned child locks, revalidating each parent before replacement.
-# Unknown/unstamped/live targets stay intact.
+# Unknown/unstamped/live targets stay intact. Verified live contention returns
+# acquisition outcome 2 and preserves the current allowance; every retry rechecks
+# identity and liveness. Unverified PIDs never grant this continuation.
+# Outcome 3 is an unverified failed-claim rollback and ends acquisition visibly.
+# link publication and post-link claim verification share one guarded operation.
 # 0.05s between retries, including unverified/legacy holders. Exhaustion warns
 # and returns failure; callers must retain input and stop before unlocked work.
 # Every new queue owner uses guarded identity regardless of the primary harness.
@@ -247,7 +251,6 @@ fm_lock_claim_blocked_by_steal() {
 fm_lock_claim() {
   local lockdir=$1 ownerdir=$2 allowed_steal_owner=${3:-} mypid=${4:-${BASHPID:-$$}} back
   if fm_queue_guarded_lock "$lockdir"; then
-    fm_state_path lock-check "$lockdir" "$ownerdir" "$mypid" || return 1
     if fm_lock_claim_blocked_by_steal "$lockdir" "$allowed_steal_owner"; then
       return 1
     fi
@@ -287,9 +290,11 @@ fm_lock_try_create() {
         FM_LOCK_OWNER_DIR=$ownerdir
         return 0
       fi
-      fm_state_path lock-remove "$lockdir" "$ownerdir" "$mypid" || true
+      fm_state_path lock-remove "$lockdir" "$ownerdir" "$mypid" || return 3
+    elif fm_lock_points_to_owner "$lockdir" "$ownerdir"; then
+      fm_state_path lock-remove "$lockdir" "$ownerdir" "$mypid" || return 3
     else
-      fm_state_path owner-delete "$ownerdir" "$mypid" || true
+      fm_state_path owner-delete "$ownerdir" "$mypid" || return 3
     fi
     return 1
   fi
@@ -356,6 +361,7 @@ fm_lock_recheck_stale_owner() {
   actual_pid=$(fm_lock_pid "$lockdir" 2>/dev/null || true)
   [ "$actual_pid" = "$expected_pid" ] || return 1
   if fm_pid_alive "$actual_pid"; then
+    if fm_queue_guarded_lock "$lockdir"; then return 2; fi
     return 1
   fi
   if fm_lock_mid_acquire_is_fresh "$lockdir" "$actual_pid"; then
@@ -371,29 +377,43 @@ fm_lock_budget_try_create() {
 }
 
 fm_lock_try_acquire_bounded() {
-  local path=$1 pid depth=0 steal_owner
+  local path=$1 pid depth=0 steal_owner rc
   local -a parents
   parents=()
   FM_LOCK_HELD_PID=
   FM_LOCK_OWNER_DIR=
   while [ "$FM_QUEUE_LOCK_REMAINING" -gt 0 ]; do
-    if fm_lock_budget_try_create "$path"; then
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      pid=$(fm_lock_pid "$path" 2>/dev/null || true)
+      if fm_pid_alive "$pid"; then
+        FM_LOCK_HELD_PID=$pid
+        return 2
+      fi
+    fi
+    rc=0
+    fm_lock_budget_try_create "$path" || rc=$?
+    if [ "$rc" -eq 3 ]; then return 3; fi
+    if [ "$rc" -eq 0 ]; then
       while [ "$depth" -gt 0 ]; do
         depth=$((depth - 1))
         steal_owner=$FM_LOCK_OWNER_DIR
-        if ! fm_lock_replace_stale "${parents[depth]}" "$path" "$steal_owner" bounded; then
+        rc=0
+        fm_lock_replace_stale "${parents[depth]}" "$path" "$steal_owner" bounded || rc=$?
+        if [ "$rc" -ne 0 ]; then
           FM_LOCK_OWNER_DIR=
-          return 1
+          return "$rc"
         fi
         path=${parents[depth]}
       done
       return 0
     fi
     if [ -e "$path" ] || [ -L "$path" ]; then
-      fm_state_path lock-check "$path" || return 1
-      pid=$(fm_lock_pid "$path" 2>/dev/null || true)
-      if fm_pid_alive "$pid" || fm_lock_mid_acquire_is_fresh "$path" "$pid"; then
+      pid=$(fm_lock_pid "$path") || return 1
+      if fm_pid_alive "$pid"; then
         FM_LOCK_HELD_PID=$pid
+        return 2
+      fi
+      if fm_lock_mid_acquire_is_fresh "$path" "$pid"; then
         return 1
       fi
     elif [ ! -e "$path.steal" ] && [ ! -L "$path.steal" ]; then
@@ -445,17 +465,20 @@ fm_lock_try_acquire() {
 
 fm_lock_replace_stale() {
   local lockdir=$1 steal=$2 steal_owner=$3 mode=${4:-generic} cur primary_owner rc
-  if [ "$mode" = bounded ] && { [ -e "$lockdir" ] || [ -L "$lockdir" ]; } \
-    && ! fm_state_path lock-check "$lockdir"; then
-    fm_lock_release "$steal"
-    FM_LOCK_OWNER_DIR=
-    return 1
+  if [ "$mode" = bounded ] && { [ -e "$lockdir" ] || [ -L "$lockdir" ]; }; then
+    if ! cur=$(fm_lock_pid "$lockdir"); then
+      fm_lock_release "$steal"
+      FM_LOCK_OWNER_DIR=
+      return 1
+    fi
+  else
+    cur=$(fm_lock_pid "$lockdir" 2>/dev/null || true)
   fi
-  cur=$(fm_lock_pid "$lockdir" 2>/dev/null || true)
   if fm_pid_alive "$cur"; then
     fm_lock_release "$steal"
     FM_LOCK_HELD_PID=$cur
     FM_LOCK_OWNER_DIR=
+    [ "$mode" != bounded ] || return 2
     return 1
   fi
   if fm_lock_mid_acquire_is_fresh "$lockdir" "$cur"; then
@@ -476,20 +499,23 @@ fm_lock_replace_stale() {
     primary_owner=$(fm_lock_link_owner "$lockdir" 2>/dev/null || true)
   fi
   cur=$(fm_lock_pid "$lockdir" 2>/dev/null || true)
-  if ! fm_lock_recheck_stale_owner "$lockdir" "$primary_owner" "$cur"; then
+  rc=0
+  fm_lock_recheck_stale_owner "$lockdir" "$primary_owner" "$cur" || rc=$?
+  if [ "$rc" -ne 0 ]; then
     fm_lock_release "$steal"
     FM_LOCK_HELD_PID=$(fm_lock_pid "$lockdir" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
-    return 1
+    return "$rc"
   fi
 
   if [ -e "$lockdir" ] || [ -L "$lockdir" ]; then
     fm_lock_remove_path "$lockdir" "$primary_owner" "$cur" || true
   fi
-  rc=1
-  if { [ "$mode" = bounded ] && fm_lock_budget_try_create "$lockdir" "$steal_owner"; } \
-    || { [ "$mode" != bounded ] && fm_lock_try_create "$lockdir" "$steal_owner"; }; then
-    rc=0
+  rc=0
+  if [ "$mode" = bounded ]; then
+    fm_lock_budget_try_create "$lockdir" "$steal_owner" || rc=$?
+  else
+    fm_lock_try_create "$lockdir" "$steal_owner" || rc=$?
   fi
   if [ "$rc" -ne 0 ]; then
     # shellcheck disable=SC2034 # Read by callers after fm_lock_try_acquire returns.
@@ -513,9 +539,16 @@ fm_lock_acquire_wait() {
 }
 
 fm_queue_lock_bounded() {
-  local lockdir=$1 FM_QUEUE_LOCK_REMAINING=${FM_OMP_TRANSITION_LOCK_ATTEMPTS:-20}
+  local lockdir=$1 FM_QUEUE_LOCK_REMAINING=${FM_OMP_TRANSITION_LOCK_ATTEMPTS:-20} remaining rc
   while [ "$FM_QUEUE_LOCK_REMAINING" -gt 0 ]; do
-    fm_lock_try_acquire "$lockdir" bounded && return 0
+    remaining=$FM_QUEUE_LOCK_REMAINING
+    rc=0
+    fm_lock_try_acquire "$lockdir" bounded || rc=$?
+    case "$rc" in
+      0) return 0 ;;
+      2) FM_QUEUE_LOCK_REMAINING=$remaining ;;
+      3) break ;;
+    esac
     [ "$FM_QUEUE_LOCK_REMAINING" -le 0 ] || sleep 0.05
   done
   printf 'watcher: WARNING - queue lock unavailable; retaining wakes and refusing unlocked work.\n' >&2
