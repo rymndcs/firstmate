@@ -19,9 +19,8 @@ const root = process.env.PROCESS_GUARD_ROOT;
 const tmp = process.env.PROCESS_GUARD_TMP;
 const check = `${root}/bin/fm-process-pretool-check.sh`;
 let checks = 0;
-function run(command, {cwd = `${tmp}/task`, stdin = false, claude = true, input, env = {}} = {}) {
+function run(command, {cwd = `${tmp}/task`, stdin = false, input, env = {}} = {}) {
   const args = ['--home', `${tmp}/home`];
-  if (claude) args.push('--claude');
   if (!stdin) args.push('--command', command);
   const result = spawnSync('bash', [check, ...args], {
     cwd, encoding: 'utf8', input: input ?? JSON.stringify({cwd, tool_name: 'Bash', tool_input: {command}}),
@@ -60,6 +59,15 @@ const denied = [
   'find . -exec killall agent \\;', '! pkill agent',
   "printf pkill | sh", "xargs sh -c 'pkill agent'",
   "for x in a; do p$'\\x6b'ill agent; done",
+  'cat > notes.md <<EOF\nUse `pkill -f agent` to stop it\nEOF\n', 'cat <<EOF\n$(pkill -f agent)\nEOF\n',
+  'git commit -F - <<EOF\nfix: `killall agent`\nEOF\n', 'cat <<-EOF\n\t$(killall agent)\n\tEOF\n',
+  'cat <<EOF\n$(echo unterminated\nEOF\n',
+  'nice pkill -f agent', 'setsid pkill agent', '/usr/bin/time pkill -f agent', 'stdbuf -o0 killall agent',
+  'doas pkill agent', "watch -n1 'pkill agent'", 'pgrep agent | parallel kill', 'nice -n 5 sudo pkill agent',
+  'K=pkill; nice $K agent', 'command -p pkill agent', 'pgrep agent | xargs kill',
+  "pgrep agent | xargs sh -c 'kill \"$@\"' _", 'echo pkill | xargs -I CMD CMD agent', 'echo pkill | xargs sh',
+  'find . -name x -exec pkill agent \\;', 'find . -execdir /usr/bin/killall agent \\;', 'find . -ok kill {} \\;',
+  'K=pkill; find . -exec $K \\;',
 ];
 const allowed = [
   'git status', 'kill 123', '/bin/kill -TERM 123 456', 'command kill -9 -- 123',
@@ -67,6 +75,11 @@ const allowed = [
   'pgrep -fl agent', 'pgrep agent | cat', "echo 'pkill -f agent'",
   "printf '%s\\n' 'killall agent'", 'rg pkill file', '# pkill agent\ngit status',
   "cat <<'EOF'\npkill agent\nEOF\n", "bash -c 'echo pkill'",
+  'cat <<"EOF"\n$(pkill agent)\nEOF\n', 'cat <<\\EOF\n`killall agent`\nEOF\n', 'cat <<EOF\n\\$(pkill agent)\nEOF\n',
+  'cat > notes.md <<EOF\nUse pkill carefully; see `git status`\nEOF\n',
+  "find . -name '*pkill*'", "find . -name '*killall*' -exec wc -l {} +", 'rg -l killall | xargs wc -l',
+  'grep -rn pkill bin', 'command -v pkill', 'command -V killall', 'type pkill', 'which killall',
+  'cat bin/pkill-notes.md', 'nice git status', 'time git status',
 ];
 denied.push('('.repeat(14) + 'true' + ')'.repeat(14));
 for (const stdin of [false, true]) {

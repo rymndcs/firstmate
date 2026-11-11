@@ -21,12 +21,13 @@ Existing primary watcher policy and its transport remain independent and retain 
 
 I use explicit positive PID arguments as the permitted termination form.
 For example, `kill -TERM 12345` passes, while `kill "$(pgrep -f agent)"`, `pkill -f agent -n -P 12345`, and `pgrep agent | xargs kill` are refused.
-Read-only `pgrep` and quoted documentation text pass.
+Read-only `pgrep`, quoted documentation text, searches such as `find . -name '*pkill*'` or `rg -l killall | xargs wc -l`, and lookups such as `command -v pkill` pass.
 Signal selection and multiple explicit PIDs are supported; dynamic PID expansions, zero, negative groups, and implicit targets are refused.
 Pattern-based `pkill` and `killall` are refused even with parent or process-group selectors: the hook cannot establish that a shared group belongs exclusively to the caller, and options after a pattern do not provide portable containment.
 Inspect first in a separate read-only call, then terminate the specific observed PID.
 
-The shared lexer distinguishes executed commands from data and recursively exposes literal shell payloads, groups, substitutions, heredocs and here-strings.
+The shared lexer distinguishes executed commands from data and recursively exposes literal shell payloads, groups, substitutions, here-strings, heredocs fed to a shell, and substitutions inside unquoted-delimiter heredoc bodies.
+A termination command reaching an execution sink is refused: `xargs`, `parallel`, `find -exec`/`-execdir`/`-ok`/`-okdir`, and wrappers that run their arguments such as `nice`, `setsid`, `stdbuf`, `time`, `doas` and `watch`.
 Unsupported compound grammar that mentions a termination command is refused.
 Opaque dynamic shell payloads and malformed syntax are refused rather than guessed safe.
 This is a guard against visible shell-command mistakes, not a sandbox against deliberately hiding a kill inside an arbitrary executable, script file, interpreter program, alias, or prior-session variable.
@@ -48,16 +49,16 @@ It does not inspect the body of every executable a worker launches, intercept op
 
 The hook registration must be merged into each harness’s existing user-level Bash PreToolUse hook array, preserving its other entries, after the guard is installed at a stable path.
 The worker launcher does not edit user-level settings.
-For Claude, the additive hook object at an installation in `/path/to/firstmate` is:
+For Claude and Codex, the additive hook object at an installation in `/path/to/firstmate` is:
 
 ```json
 {
   "type": "command",
-  "command": "bash '/path/to/firstmate/bin/fm-process-pretool-check.sh' --claude"
+  "command": "bash '/path/to/firstmate/bin/fm-process-pretool-check.sh'"
 }
 ```
 
-For Codex, add the same command object without `--claude` inside a `PreToolUse` entry with matcher `Bash` in the user’s `hooks.json`.
+For Claude, add it inside a `PreToolUse` entry with matcher `Bash` in the user’s `settings.json`; for Codex, add the same object to such an entry in the user’s `hooks.json`.
 Approve only this hook’s current definition through Codex’s normal hook trust flow; merely writing the JSON does not enable an untrusted hook.
 No hook-trust bypass flag is used.
 

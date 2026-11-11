@@ -180,6 +180,22 @@ function decodeAnsiCQuoted(source, start) {
   return null;
 }
 
+function heredocSubstitutions(body) {
+  const subs = [];
+  for (let i = 0; i < body.length; i += 1) {
+    if (body[i] === "\\") {
+      i += 1;
+      continue;
+    }
+    const found = body.startsWith("$(", i) ? extractBalanced(body, i + 2, "(", ")") : body[i] === "`" ? extractBackticks(body, i + 1) : undefined;
+    if (found === undefined) continue;
+    if (!found) return null;
+    subs.push({ kind: "command", content: found.content });
+    i = found.next - 1;
+  }
+  return subs;
+}
+
 export class Lexer {
   constructor(source) {
     this.source = source;
@@ -230,6 +246,7 @@ export class Lexer {
         this.index = balanced.next;
         continue;
       }
+      const start = this.index;
       const word = this.readWord();
       if (!word) {
         this.error = `unsupported token at byte ${this.index}`;
@@ -237,7 +254,7 @@ export class Lexer {
       }
       this.tokens.push(word);
       if (this.expectHeredoc) {
-        this.pendingHeredocs.push({ delimiter: word.value, stripTabs: this.expectHeredoc.stripTabs, token: this.expectHeredoc.token });
+        this.pendingHeredocs.push({ delimiter: word.value, quoted: /['"\\]/.test(this.source.slice(start, this.index)), stripTabs: this.expectHeredoc.stripTabs, token: this.expectHeredoc.token });
         this.expectHeredoc = null;
       }
     }
@@ -271,6 +288,12 @@ export class Lexer {
         break;
       }
       heredoc.token.heredoc = body;
+      if (heredoc.quoted) continue;
+      heredoc.token.heredocSubs = heredocSubstitutions(body);
+      if (!heredoc.token.heredocSubs) {
+        this.error = "unclosed substitution in heredoc";
+        break;
+      }
     }
     this.pendingHeredocs = [];
   }

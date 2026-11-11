@@ -24,9 +24,9 @@ printf '%s\n' "$payload" >> "$FM_GUARD_LAB/attempts.jsonl"
 command=$(printf '%s' "$payload" | jq -r '.tool_input.command // ""')
 case "$command" in
   *denied.marker*)
-    exec bash "$FM_GUARD_CHECK" --home "$FM_GUARD_LAB/home" --claude --command 'pkill -f fake-agent -n -P 123'
+    exec bash "$FM_GUARD_CHECK" --home "$FM_GUARD_LAB/home" --command 'pkill -f fake-agent -n -P 123'
     ;;
-  *) printf '%s' "$payload" | bash "$FM_GUARD_CHECK" --home "$FM_GUARD_LAB/home" --claude ;;
+  *) printf '%s' "$payload" | bash "$FM_GUARD_CHECK" --home "$FM_GUARD_LAB/home" ;;
 esac
 SH
 chmod +x "$LAB/hook.sh"

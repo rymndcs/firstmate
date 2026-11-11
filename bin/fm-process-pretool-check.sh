@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Scoped process-kill PreToolUse transport for Claude and Codex.
-# Usage: fm-process-pretool-check.sh [--home <firstmate-home>] [--claude]
+# Usage: fm-process-pretool-check.sh [--home <firstmate-home>]
 #        [--command <exact-shell-command>]
 # With no --command, consumes Claude/Codex tool_input.command JSON on stdin.
 # Scope is the physical hook cwd: a recorded task worktree or descendant, or
@@ -24,7 +24,6 @@ while [ "$#" -gt 0 ]; do
       GUARD_HOME=$2
       shift 2
       ;;
-    --claude) shift ;;
     --command)
       [ "$#" -ge 2 ] || exit 2
       POLICY_ARGS+=(--command "$2")

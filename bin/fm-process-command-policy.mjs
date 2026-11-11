@@ -11,6 +11,9 @@ const basename = (value) => value.split('/').at(-1);
 const literal = (word) => word?.literal && !word.unquotedExpansion && word.subs.length === 0;
 const killMention = (source) => /\b(?:pkill|killall|kill)\b/.test(source.replace(/\\\r?\n|[\\'"]/g, ''));
 const compound = new Set(['!', 'if', 'then', 'else', 'elif', 'fi', 'for', 'while', 'until', 'case', 'esac', 'do', 'done', 'function', 'time', 'coproc', 'select']);
+const execWrappers = new Set(['nice', 'setsid', 'stdbuf', 'time', 'doas', 'ionice', 'caffeinate', 'taskset', 'chrt', 'flock', 'unbuffer', 'watch', 'su', 'runuser', 'chroot', 'script', 'strace']);
+const sinks = new Set([...execWrappers, 'parallel', 'xargs', 'find', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'eval', 'env', 'sudo', 'command', 'exec', 'nohup', 'timeout', 'gtimeout', 'builtin', 'source', '.']);
+const lookup = (position) => position.words.slice(0, position.index).some((word, index, words) => basename(word.value) === 'command' && words.slice(index + 1).some((option) => /^-[pvV]*[vV]/.test(option.value)));
 
 function explicitKill(args) {
   if (args.some((word) => !literal(word))) return false;
@@ -37,16 +40,23 @@ function unsafe(command, depth = 0) {
     for (const token of tokens) {
       if (token.type === 'group' && unsafe(token.content, depth + 1)) return true;
       if (token.type === 'word' && token.subs.some((sub) => unsafe(sub.content, depth + 1))) return true;
+      if (token.type === 'redir' && token.heredocSubs?.some((sub) => unsafe(sub.content, depth + 1))) return true;
     }
     if (position.wrapperPayloads.some((payload) => unsafe(payload, depth + 1))) return true;
     while (position.command?.value === 'builtin') position = commandPosition(position.words.slice(position.index + 1));
     const name = basename(position.command?.value || '');
     if (position.unresolvedWrapperOption && killMention(command)) return true;
     if (position.command && !literal(position.command) && killMention(command)) return true;
+    if (lookup(position)) continue;
     if (name === 'pkill' || name === 'killall') return true;
     const args = position.words.slice(position.index + 1);
     if (name === 'kill' && !explicitKill(args)) return true;
-    if (['xargs', 'find'].includes(name) && mentions) return true;
+    const sinkArgument = (word) => killMention(word.value) || (mentions && !literal(word));
+    if (execWrappers.has(name) && args.some(sinkArgument)) return true;
+    if (name === 'parallel' && mentions) return true;
+    if (name === 'xargs' && args.some((word) => sinkArgument(word) || (mentions && (/^-[^-]*[IiJ]|^--replace/.test(word.value) || sinks.has(basename(word.value)))))) return true;
+    const execIndex = args.findIndex((word) => /^-(?:exec|execdir|ok|okdir)$/.test(word.value));
+    if (name === 'find' && execIndex !== -1 && args.slice(execIndex).some(sinkArgument)) return true;
     const shell = shellInvocation(position);
     if (shell?.kind === 'stdin' && program.separators.some((separator) => separator === '|' || separator === '|&') && mentions) return true;
     if (shell?.kind === 'command') {
