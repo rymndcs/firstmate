@@ -418,7 +418,7 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("tool_call", async (event) => {
+  pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "bash") return {};
     const command = bashCommand(event.input);
     if (!command) return {};
@@ -427,8 +427,12 @@ export default function (pi: ExtensionAPI) {
       return { block: true, reason: cdResult.stderr.trim() || "denied by the cd-guard PreToolUse seatbelt" };
     }
     const armResult = await run("fm-arm-pretool-check.sh", ["--command", command], null);
-    if (armResult.code !== 2) return {};
-    return { block: true, reason: armResult.stderr.trim() || "denied by the watcher-arm PreToolUse seatbelt" };
+    if (armResult.code === 2) {
+      return { block: true, reason: armResult.stderr.trim() || "denied by the watcher-arm PreToolUse seatbelt" };
+    }
+    if (ctx.agent?.kind !== "main" || ctx.mode !== "tui") return {};
+    const percent = JSON.stringify(ctx.getContextUsage()?.percent ?? null);
+    return { input: { ...event.input, command: `export FM_OMP_CONTEXT_PERCENT='${percent}';\n${command}` } };
   });
 
   // omp fires session_stop only for the main session, awaits it before the turn

@@ -118,12 +118,63 @@ function waitFile(path) {
     const w = watch(`${home}/state`, () => { if (existsSync(path)) { w.close(); resolve(); } });
   });
 }
+function admitHeartbeat() {
+  const env = { ...process.env, OMPCODE: '1', PI_SESSION_ID: session, PI_TOOL_CALL_ID: 'arm-call' };
+  for (const args of [
+    [`${home}/bin/fm-omp-watch-transition.sh`, 'cycle', 'wake', '42', 'fixture'],
+    ['bash', '-c', '. "$1"; fm_wake_append heartbeat fixture "heartbeat: fixture"', '_', `${home}/bin/fm-wake-lib.sh`],
+    [`${home}/bin/fm-wake-drain.sh`],
+  ]) {
+    const result = spawnSync(args[0], args.slice(1), { env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  }
+}
+let rearmCalls = 0;
+async function rearm(context = ctx, claim = '') {
+  const event = { toolName: 'bash', toolCallId: `after-context-refusal-${++rearmCalls}`, input: {
+    command: `[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh${claim}`,
+    async: true, timeout: 0,
+  } };
+  let input = event.input;
+  for (const handler of handlers.get('tool_call') ?? []) {
+    const result = await handler({ ...event, input }, context);
+    assert.notEqual(result?.block, true, 'plain tracked arm must pass the existing command guards');
+    input = result?.input ?? input;
+  }
+  assert.equal(input.async, true, 'context transport must retain native tracked execution');
+  assert.equal(input.timeout, 0, 'context transport must retain the unbounded arm timeout');
+  return spawnSync('bash', ['-c', input.command], { cwd: home, encoding: 'utf8', env: {
+    ...process.env, OMPCODE: '1', PI_SESSION_ID: session, PI_TOOL_CALL_ID: event.toolCallId,
+    FM_OMP_CONTEXT_PERCENT: '60',
+  } });
+}
 extension(pi);
 mkdirSync(`${home}/state/classifier-away`, { recursive: true });
 writeFileSync(`${home}/state/classifier-away/.afk`, '');
 assert.deepEqual(classify('I am back; please show the investigation results.'), ['', '', 'yes'], 'a real human return must remain unmarked and end away mode');
 await emit('session_start');
-if (scenario.startsWith('context-')) {
+if (scenario === 'context-rearm-fresh' || scenario === 'context-rearm-isolation') {
+  await arm();
+  admitHeartbeat();
+  contextUsage = { tokens: 39990, contextWindow: 100000, percent: 39.99 };
+  assert.equal((await call({ action: 'prepare' })).isError, true);
+  if (scenario === 'context-rearm-isolation') {
+    for (const context of [{ ...ctx, agent: { kind: 'sub' } }, { ...ctx, mode: 'print' }]) {
+      const result = await rearm(context);
+      assert.equal(result.status, 2, 'nonprimary context must not replace the primary measurement');
+      assert.match(result.stderr, /reset required/);
+    }
+  } else {
+    contextUsage = { tokens: 40001, contextWindow: 100000, percent: 40.001 };
+    const high = await rearm();
+    assert.equal(high.status, 2, 'a refused low preparation must not exempt a later high-context arm');
+    assert.match(high.stderr, /reset required/);
+    contextUsage = undefined;
+    const unavailable = await rearm();
+    assert.equal(unavailable.status, 0, 'unavailable usage must replace the prior high measurement');
+    assert.match(unavailable.stdout, /heartbeat: fixture/);
+  }
+} else if (scenario.startsWith('context-')) {
   await arm();
   const previousNonce = (await call({action:'prepare'})).details.nonce;
   assert.ok(previousNonce, 'high context must prepare before testing a changed measurement');
@@ -131,6 +182,19 @@ if (scenario.startsWith('context-')) {
   const percent = {zero:0,below:39.99,boundary:40,above:40.01,high:80,unknown:null,nan:NaN}[kind];
   contextUsage = kind === 'unavailable' ? undefined : {tokens:percent * 1000,contextWindow:100000,percent};
   const result = await call({action:'prepare'});
+  admitHeartbeat();
+  for (const claim of ['', ' --transition watching-only --reason "only watching remains"']) {
+    const continuation = await rearm(ctx, claim);
+    assert.equal(continuation.status, kind === 'above' || kind === 'high' ? 2 : 0,
+      `${scenario}: real plain/watching-only arm must follow the current context threshold; ${continuation.stderr}`);
+    if (kind === 'above' || kind === 'high') assert.match(continuation.stderr, /reset required/);
+    else {
+      assert.match(continuation.stdout, /heartbeat: fixture/, 'permitted arm must reach its actual watcher child');
+      const record = JSON.parse(readFileSync(`${home}/state/.omp-watch-transition`, 'utf8'));
+      assert.equal(record.decision.verdict, 'allow');
+      admitHeartbeat();
+    }
+  }
   if (kind === 'above' || kind === 'high') {
     assert.equal(result.isError, undefined, `${scenario}: context above 40% must prepare`);
     const nonce = result.details.nonce;
