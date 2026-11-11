@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 # Guarded removal of project-clone worktrees outside the task fleet.
-# Usage: fm-leftover-worktrees.sh [--arm | --help]
+# Usage: fm-leftover-worktrees.sh [--arm | --remove | --help]
 # --arm installs a content-bound periodic check via fm-check-register.sh; fleet
 # sync calls only this cheap form, so session start never waits on comparisons.
-# The default form discovers clones under FM_PROJECTS_OVERRIDE or FM_HOME/projects
-# and discovers their external worktrees through git worktree list --porcelain -z.
+# The default form is that periodic check. It discovers each repository once by
+# git rev-parse --git-common-dir among clones under FM_PROJECTS_OVERRIDE or
+# FM_HOME/projects, takes its main worktree as the primary checkout, and lists
+# the other worktrees through git worktree list --porcelain -z.
+# The watcher kills a check at FM_CHECK_TIMEOUT, so the default form never starts
+# a removal or database apply: it names each removable path and each applicable
+# database cleanup once as ready for --remove. --remove repeats the same sweep
+# outside any cap and runs those destructive steps without a command timeout.
 # It preserves primary clones, live task paths and descendants, secondmate homes,
 # Treehouse/Orca-managed paths, locked trees, stashes, dirty and uninspectable trees.
 # fm-teardown.sh --check-default-content owns proof of fully landed content,
@@ -17,11 +23,14 @@
 # database dropped, because that tool does not propagate individual DROP errors.
 # Database cleanup precedes worktree comparisons so slow comparisons cannot
 # consume its budget; newly removed Thanos paths become eligible next pass.
-# Each pass has a 20s budget and a persistent cursor; commands have a 5s cap so a
-# slow candidate cannot indefinitely starve later work. The registered check
-# therefore needs the default FM_CHECK_TIMEOUT=30 or greater.
-# state/leftover-worktrees.json owns the cursor, once-only retained-path notices
-# and database reports; an advisory flock serializes passes across restarts.
+# A default pass has a 20s budget and a persistent cursor; inspection commands
+# have a 5s cap so a slow candidate cannot indefinitely starve later work. The
+# registered check therefore needs the default FM_CHECK_TIMEOUT=30 or greater.
+# Database rows block an apply only when present or at, inside or around a live
+# task path or secondmate home; pool, legacy and Orca locations do not block.
+# state/leftover-worktrees.json owns the cursor and once-only notices; a path's
+# notices retire when it is removed, and every actual apply is reported.
+# An advisory flock serializes passes across restarts.
 # An absent/corrupt protection record or unsafe state path preserves all work.
 # Away mode skips both arming and project writes. No runtime endpoint is stopped.
 set -eu
@@ -54,14 +63,15 @@ HOME = Path(os.environ.get('FM_HOME', os.environ.get('FM_ROOT_OVERRIDE', ROOT)))
 STATE = Path(os.environ.get('FM_STATE_OVERRIDE', HOME / 'state')).resolve()
 DATA = Path(os.environ.get('FM_DATA_OVERRIDE', HOME / 'data')).resolve()
 PROJECTS = Path(os.environ.get('FM_PROJECTS_OVERRIDE', HOME / 'projects')).resolve()
-DEADLINE = time.monotonic() + 20
+CAPPED = sys.argv[1:] != ['--remove']
+DEADLINE = time.monotonic() + 20 if CAPPED else float('inf')
 ENV = dict(os.environ, GIT_TERMINAL_PROMPT='0', GIT_SSH_COMMAND='ssh -oBatchMode=yes')
 ORCA_PATHS = None
 
 
-def run(*args, cwd=None):
-    timeout = min(5, DEADLINE - time.monotonic())
-    if timeout <= 0:
+def run(*args, cwd=None, capped=True):
+    timeout = min(5, DEADLINE - time.monotonic()) if capped else None
+    if timeout is not None and timeout <= 0:
         raise TimeoutError('pass budget exhausted')
     return subprocess.check_output([str(a) for a in args], cwd=cwd, env=ENV,
                                    stderr=subprocess.STDOUT, timeout=timeout).decode()
@@ -106,15 +116,22 @@ done < "$2"
     return homes[1:], active
 
 
-def protected(path):
+def live(path):
     homes, active = protection()
     if any(inside(path, p) or inside(p, path) for p in active + homes):
         return 'recorded task or secondmate home'
+    if any((parent / '.fm-secondmate-home').exists() for parent in (path, *path.parents)):
+        return 'secondmate home'
+    return ''
+
+
+def protected(path):
+    reason = live(path)
+    if reason:
+        return reason
     if inside(path, PROJECTS / 'thanos-worktrees'):
         return 'preserved legacy worktrees'
     for parent in (path, *path.parents):
-        if (parent / '.fm-secondmate-home').exists():
-            return 'secondmate home'
         if (parent / 'treehouse-state.json').exists() or parent.name == '.treehouse':
             return 'Treehouse pool'
         if parent.name in ('.orca', 'orca', 'orca-worktrees'):
@@ -170,6 +187,10 @@ def notice(key, message):
         REPORT.append(message)
 
 
+def retire(*keys):
+    RECORD['named'] = [k for k in RECORD['named'] if k not in keys]
+
+
 def clean(project, entry):
     path = Path(entry['worktree']).resolve()
     if path == project or protected(path):
@@ -195,6 +216,9 @@ def clean(project, entry):
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, TimeoutError):
         notice(str(path), f'kept {path}: content is unlanded or cannot be proven landed')
         return
+    if CAPPED:
+        notice('ready:' + str(path), f'ready for --remove: {path}')
+        return
     latest = [r for r in worktrees(project) if Path(r['worktree']).resolve() == path]
     if away() or protected(path) or len(latest) != 1 or 'locked' in latest[0]:
         return
@@ -204,7 +228,8 @@ def clean(project, entry):
     if git(path, 'status', '--porcelain', '--untracked-files=all'):
         notice(str(path), f'kept {path}: worktree changed during inspection')
         return
-    run('git', '-C', project, 'worktree', 'remove', '--', path)
+    run('git', '-C', project, 'worktree', 'remove', '--', path, capped=False)
+    retire(str(path), 'ready:' + str(path))
     REPORT.append(f'removed {path}')
 
 
@@ -230,12 +255,15 @@ def databases(project):
     if not rows or away():
         return
     for path in rows:
-        if os.path.lexists(path) or protected(path.resolve()):
-            notice('db:' + str(path), f'kept Thanos databases for {path}: path exists or belongs to protected work')
+        if os.path.lexists(path) or live(path.resolve()):
+            notice('db:' + str(path), f'kept Thanos databases for {path}: path exists or belongs to live work')
             return
-    output = run(tool, '--apply', cwd=project)
-    key = 'db-report:' + output
-    notice(key, 'Thanos database cleanup reported: ' + output.strip().replace('\n', '; '))
+    if CAPPED:
+        notice('db-ready:' + str(project), f'Thanos databases ready for --remove: {"; ".join(map(str, rows))}')
+        return
+    output = run(tool, '--apply', cwd=project, capped=False)
+    retire('db-ready:' + str(project), *('db:' + str(path) for path in rows))
+    REPORT.append('Thanos database cleanup reported: ' + output.strip().replace('\n', '; '))
 
 
 def arm():
@@ -256,16 +284,19 @@ def arm():
 
 
 def sweep():
-    projects = []
+    repositories = {}
     if PROJECTS.is_dir():
-        for project in sorted(PROJECTS.iterdir()):
-            if not project.is_dir() or project.name == 'thanos-worktrees':
+        for clone in sorted(PROJECTS.iterdir()):
+            if not clone.is_dir() or clone.name == 'thanos-worktrees':
                 continue
             try:
-                if Path(git(project, 'rev-parse', '--show-toplevel')).resolve() == project.resolve():
-                    projects.append(project.resolve())
+                if Path(git(clone, 'rev-parse', '--show-toplevel')).resolve() != clone.resolve():
+                    continue
+                identity = git(clone, 'rev-parse', '--path-format=absolute', '--git-common-dir')
+                repositories[identity] = Path(worktrees(clone)[0]['worktree']).resolve()
             except subprocess.CalledProcessError:
                 continue
+    projects = list(repositories.values())
     for project in projects:
         if time.monotonic() + 6 >= DEADLINE or away():
             break
@@ -294,8 +325,8 @@ def sweep():
 
 REPORT = []
 try:
-    if sys.argv[1:] not in ([], ['--arm']):
-        raise ValueError('usage: fm-leftover-worktrees.sh [--arm | --help]')
+    if sys.argv[1:] not in ([], ['--arm'], ['--remove']):
+        raise ValueError('usage: fm-leftover-worktrees.sh [--arm | --remove | --help]')
     if away():
         sys.exit(0)
     STATE.mkdir(parents=True, exist_ok=True)
