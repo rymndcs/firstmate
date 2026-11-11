@@ -219,6 +219,84 @@ grant_recovery() {
 }
 if [ -n "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
   case "$FM_TRANSITION_LIFECYCLE_CASE" in
+    non-omp-primary-drain|non-omp-primary-append|non-omp-primary-watch|non-omp-steal-drain|non-omp-steal-append|non-omp-steal-watch|non-omp-deep-drain|non-omp-deep-append|non-omp-deep-watch|non-omp-owner|generic-lock)
+      arm
+      drain
+      python3 - "$LAB" "$ROOT" <<'PYROUND8'
+import json,os,subprocess,sys
+from pathlib import Path
+home,root=map(Path,sys.argv[1:]);case=os.environ['FM_TRANSITION_LIFECYCLE_CASE']
+env=dict(os.environ,OMPCODE='0');lib=str(home/'bin/fm-wake-lib.sh')
+lock=home/'state/.wake-queue.lock';queue=home/'state/.wake-queue';drain=str(home/'bin/fm-wake-drain.sh')
+def call(command,extra=None):
+    p=subprocess.run(command,env=dict(env,**(extra or {})),capture_output=True,text=True)
+    print(json.dumps(dict(command=command,rc=p.returncode,stdout=p.stdout,stderr=p.stderr)),flush=True)
+    return p
+def holder(target):
+    p=call(['bash','-ec','. "$1"; fm_lock_try_create "$2" || exit 1; printf "%s\\n" "${BASHPID:-$$}"','_',lib,str(target)])
+    assert p.returncode==0,'current non-omp holder must acquire'
+    pid=int(p.stdout.strip());assert int((target/'pid').read_text())==pid
+    try:os.kill(pid,0)
+    except ProcessLookupError:pass
+    else:raise AssertionError('holder must exit naturally')
+    owner=target.readlink();stamp=target/'lock-identity'
+    identity=stamp.read_text() if stamp.exists() else None
+    print(json.dumps(dict(target=str(target),owner=str(owner),pid=pid,identity=identity)),flush=True)
+    return owner,pid,identity
+if case=='generic-lock':
+    generic=home/'state/generic.lock'
+    for marker in ('0','1'):
+        env['OMPCODE']=marker
+        owner,pid,identity=holder(generic)
+        assert identity is None,'non-queue locks must retain their generic owner format'
+        p=call(['bash','-ec','. "$1"; fm_lock_acquire_wait "$2" || exit 1; fm_lock_release "$2"','_',lib,str(generic)])
+        assert p.returncode==0 and 'WARNING' not in p.stderr,'generic dead-owner recovery must remain working'
+        assert not list((home/'state').glob('generic.lock*')),'generic recovery must release its own artifacts'
+    sys.exit(0)
+if case=='non-omp-owner':
+    target=Path(str(lock)+'.owner.fixture')
+    owner,pid,identity=holder(target)
+    p=call(['bash','-ec','. "$1"; fm_lock_remove_path "$2" "$3" "$4"','_',lib,str(target),str(owner),str(pid)])
+    assert p.returncode==0 and not target.is_symlink() and not owner.exists(),'queue owner-family cleanup must use the guarded identity'
+    assert identity is not None,'every current queue owner-family creator must stamp its target'
+    sys.exit(0)
+append=['bash','-ec','. "$1"; fm_wake_append check "$2" "$3"','_',lib]
+assert call(append+['procevent:r8:1','retained-r8-input']).returncode==0
+before=queue.read_bytes()
+target=lock if '-primary-' in case else Path(str(lock)+('.steal.steal' if '-deep-' in case else '.steal'))
+if '-deep-' in case:holder(Path(str(lock)+'.steal'))
+owner,pid,identity=holder(target)
+if case.endswith('watch'):
+    results=[call([str(root/'bin/fm-watch.sh')],dict(FM_POLL='0',FM_SIGNAL_GRACE='0',FM_HEARTBEAT='0',FM_CHECK_INTERVAL='999999'))]
+elif case.endswith('append'):
+    results=[call(append+['r8-appended-'+str(i),'appended-r8-input-'+str(i)]) for i in range(3)]
+else:results=[call([drain]) for _ in range(3)]
+print(json.dumps(dict(case=case,queue=queue.read_text(),dead_owner_retained=owner.exists(),target_link=target.is_symlink())),flush=True)
+assert all(p.returncode==0 for p in results),'current non-omp creator must permit subsequent '+case.rsplit('-',1)[1]+' recovery'
+assert all('WARNING' not in p.stderr for p in results),'verified non-omp recovery must not warn'
+assert identity is not None,'every current queue creator must stamp its target'
+assert not owner.exists(),'recovery must remove its genuine abandoned owner'
+assert not list((home/'state').glob('.wake-queue.lock*')),'recovery must release all queue artifacts'
+if case.endswith('watch'):
+    assert 'check: process-event result captured: procevent:r8:1' in results[0].stdout,'real watcher must surface the retained event'
+    assert queue.read_bytes()==before,'watcher must leave the surfaced event queued for handling'
+    assert list((home/'state').glob('.seen-procevent-*')),'successful watcher must acknowledge actual surfacing'
+elif case.endswith('drain'):
+    assert 'retained-r8-input' in results[0].stdout,'recovered drain must deliver retained input'
+    assert not queue.read_bytes(),'recovered drain must consume delivered input'
+    assert not results[1].stdout and not results[2].stdout,'later drains must not replay consumed input'
+else:
+    assert queue.read_bytes().startswith(before),'recovered append must preserve prior input'
+    for i in range(3):assert 'appended-r8-input-'+str(i) in queue.read_text(),'each recovered append must publish'
+if not case.endswith('drain'):
+    p=call([drain]);assert p.returncode==0 and 'retained-r8-input' in p.stdout,'subsequent drain must deliver retained input'
+    if case.endswith('append'):
+        for i in range(3):assert 'appended-r8-input-'+str(i) in p.stdout,'subsequent drain must deliver every new input'
+    assert not queue.read_bytes(),'later delivery must consume its input'
+assert call(append+['r8-later','later-r8-delivery']).returncode==0
+p=call([drain]);assert p.returncode==0 and 'later-r8-delivery' in p.stdout,'later queue use must remain available'
+PYROUND8
+      ;;
     steal-recheck-unstamped)
       arm
       drain
@@ -234,6 +312,13 @@ def call(command,extra=None):
 assert call(['bash','-c','. "$1"; fm_wake_append stale recheck retained-recheck-input; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK"','_',lib]).returncode==0
 before=queue.read_bytes();shim=home/'recheck-bin';shim.mkdir()
 for name in ('recheck-ready','recheck-resume'):os.mkfifo(home/name)
+(shim/'perl').write_text('''#!/usr/bin/env bash
+if [ "${4:-}" = owner-create ] && [ "${5:-}" = "$FM_STATE_OVERRIDE/.wake-queue.lock.steal" ] && mkdir "$FM_HOME/recheck-paused" 2>/dev/null; then
+  printf 'ready\\n' > "$FM_HOME/recheck-ready"
+  read -r _ < "$FM_HOME/recheck-resume"
+fi
+exec /usr/bin/perl "$@"
+''');(shim/'perl').chmod(0o755)
 (shim/'mktemp').write_text('''#!/usr/bin/env bash
 if [ "${1:-}" = -d ] && [ "${2:-}" = "$FM_STATE_OVERRIDE/.wake-queue.lock.steal.owner.XXXXXX" ] && mkdir "$FM_HOME/recheck-paused" 2>/dev/null; then
   printf 'ready\\n' > "$FM_HOME/recheck-ready"
@@ -245,9 +330,12 @@ with (home/'recheck.out').open('w') as out,(home/'recheck.err').open('w') as err
     child=subprocess.Popen([str(home/'bin/fm-wake-drain.sh')],env=dict(env,OMPCODE='0',PATH=str(shim)+':'+env['PATH'],FM_OMP_TRANSITION_LOCK_ATTEMPTS='3'),stdout=out,stderr=err)
     with (home/'recheck-ready').open() as f:assert f.readline()=='ready\n'
     try:
-        replacement=call(['bash','-c','. "$1"; fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || exit 1; printf "%s\\n" "${BASHPID:-$$}"','_',lib],dict(OMPCODE='0'))
+        replacement=call(['bash','-c','. "$1"; fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || exit 1; fm_lock_release "$FM_WAKE_QUEUE_LOCK"; printf "%s\\n" "${BASHPID:-$$}"','_',lib],dict(OMPCODE='0'))
         assert replacement.returncode==0,'concurrent genuine holder must reclaim and naturally exit'
-        pid=int(replacement.stdout.strip());owner=lock.readlink();expected={p.name:p.read_bytes() for p in lock.iterdir()}
+        pid=int(replacement.stdout.strip())
+        owner=Path(subprocess.check_output(['mktemp','-d',str(lock)+'.owner.XXXXXX'],text=True).strip())
+        (owner/'pid').write_text(str(pid)+'\n');lock.symlink_to(owner)
+        expected={p.name:p.read_bytes() for p in lock.iterdir()}
         assert not (lock/'lock-identity').exists(),'replacement fixture must be genuinely unstamped'
         assert int((lock/'pid').read_text())==pid
         try:os.kill(pid,0)
@@ -302,7 +390,10 @@ elif case in ('steal-unknown','steal-unknown-pipe'):
     if case=='steal-unknown-pipe':os.mkfifo(target/'pid')
     else:(target/'pid').write_text(dead+'\n')
     (target/'note').write_text('unrelated data\n');steal.symlink_to(target)
-elif case=='steal-unstamped':secondary_owner=holder(steal,dict(OMPCODE='0'))
+elif case=='steal-unstamped':
+    pid=call(['bash','-c','printf \"%s\\n\" \"$$\"']).stdout.strip()
+    secondary_owner=Path(subprocess.check_output(['mktemp','-d',str(steal)+'.owner.XXXXXX'],text=True).strip())
+    (secondary_owner/'pid').write_text(pid+'\n');steal.symlink_to(secondary_owner)
 elif case=='steal-live':
     for name in ('r7-ready','r7-release'):os.mkfifo(home/name)
     live=subprocess.Popen(['bash','-c','. "$1"; fm_lock_try_create "$2" || exit 1; printf "ready\\n" > "$FM_HOME/r7-ready"; read -r _ < "$FM_HOME/r7-release"; fm_lock_release "$2"','_',lib,str(steal)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
@@ -528,10 +619,12 @@ exec /bin/sleep "$@"
 ''');(shim/'sleep').chmod(0o755)
     holder=None
     if case=='legacy-release':
-        holder=subprocess.Popen(['bash','-c','. "$1"; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK" || exit 1; printf "ready\\n" > "$FM_HOME/holder-ready"; read -r _ < "$FM_HOME/holder-release"; fm_lock_release "$FM_WAKE_QUEUE_LOCK"','_',lib],env=dict(env,OMPCODE='0'),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        holder=subprocess.Popen(['bash','-ec','legacy_owner=$(mktemp -d "$FM_STATE_OVERRIDE/.wake-queue.lock.owner.XXXXXX"); printf "%s\\n" "$$" > "$legacy_owner/pid"; ln -s "$legacy_owner" "$FM_WAKE_QUEUE_LOCK"; printf "ready\\n" > "$FM_HOME/holder-ready"; read -r _ < "$FM_HOME/holder-release"; rm -f "${legacy_owner:?}/pid" "$FM_WAKE_QUEUE_LOCK"; rmdir "${legacy_owner:?}"'],env=dict(env,FM_WAKE_QUEUE_LOCK=str(lock)),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         with (home/'holder-ready').open() as f:assert f.readline()=='ready\n'
     elif case=='legacy-dead':
-        assert call(['bash','-c','. "$1"; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK"','_',lib],dict(OMPCODE='0')).returncode==0
+        pid=call(['bash','-c','printf "%s\\n" "$$"']).stdout.strip()
+        legacy_owner=Path(subprocess.check_output(['mktemp','-d',str(lock)+'.owner.XXXXXX'],text=True).strip())
+        (legacy_owner/'pid').write_text(pid+'\n');lock.symlink_to(legacy_owner)
     else:lock.write_text('unknown permanent obstruction\n')
     original_link=lock.readlink() if lock.is_symlink() else None
     if case=='bounded-keys':command=['bash','-ec','. "$1"; if fm_wake_queued_keys check; then exit 0; else exit $?; fi','_',lib]
@@ -2219,7 +2312,7 @@ if [ -z "${FM_TRANSITION_CASE:-}" ]; then
 fi
 
 if [ -z "${FM_TRANSITION_CASE:-}" ] && [ -z "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
-  for scenario in steal-recheck-unstamped steal-absent-drain steal-absent-append steal-dead-drain steal-dead-append steal-primary steal-unknown steal-unstamped steal-live steal-budget steal-cross-drain steal-cross-append steal-replacement-budget steal-unknown-pipe caller-pid claim-rollback claim-foreign-pid candidate-foreign-pid selected-state selected-state-link selected-state-identity bounded-append bounded-non-omp bounded-keys legacy-release legacy-dead bounded-watch bounded-procevent bounded-procevent-start bounded-jira non-omp-stamped-owner nested-queue-lock foreign-lock-owner sequence-pipe queue-read-error log-read-error publication-temp-link publication-temp-replaced lock-other-lock queue-hardlink queue-outside-home queue-parent-link queue-directory queue-owner queue-snapshot-swap queue-content-change queue-inode-change lock-wrong-identity lock-owner-link lock-child-link lock-wrong-home lock-wrong-path arm-result-link unrelated-lock-target unrelated-queue-target missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
+  for scenario in non-omp-primary-drain non-omp-primary-append non-omp-primary-watch non-omp-steal-drain non-omp-steal-append non-omp-steal-watch non-omp-deep-drain non-omp-deep-append non-omp-deep-watch non-omp-owner generic-lock steal-recheck-unstamped steal-absent-drain steal-absent-append steal-dead-drain steal-dead-append steal-primary steal-unknown steal-unstamped steal-live steal-budget steal-cross-drain steal-cross-append steal-replacement-budget steal-unknown-pipe caller-pid claim-rollback claim-foreign-pid candidate-foreign-pid selected-state selected-state-link selected-state-identity bounded-append bounded-non-omp bounded-keys legacy-release legacy-dead bounded-watch bounded-procevent bounded-procevent-start bounded-jira non-omp-stamped-owner nested-queue-lock foreign-lock-owner sequence-pipe queue-read-error log-read-error publication-temp-link publication-temp-replaced lock-other-lock queue-hardlink queue-outside-home queue-parent-link queue-directory queue-owner queue-snapshot-swap queue-content-change queue-inode-change lock-wrong-identity lock-owner-link lock-child-link lock-wrong-home lock-wrong-path arm-result-link unrelated-lock-target unrelated-queue-target missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
     FM_TRANSITION_LIFECYCLE_CASE="$scenario" bash "$0"
   done
 fi

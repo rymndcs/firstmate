@@ -15,8 +15,8 @@
 # rename/unlink never follow a substituted leaf. Queue clearing additionally
 # matches the snapshot inode and digest after canonical admission.
 # Generated queue owners record home, exact lock path and directory device/inode
-# in lock-identity. The library also selects this guard for stamped owners
-# consumed outside omp. Unknown/legacy omp owners are never inferred from PID.
+# in lock-identity for every harness. Unknown/legacy queue owners are never
+# inferred from PID alone.
 # Every refusal warns and exits 1; callers preserve input and allow unknown arms.
 use strict;
 use warnings;

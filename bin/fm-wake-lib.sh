@@ -13,7 +13,8 @@
 # Unknown/unstamped/live targets stay intact.
 # 0.05s between retries, including unverified/legacy holders. Exhaustion warns
 # and returns failure; callers must retain input and stop before unlocked work.
-# Guarded omp queue/transition path mechanics: bin/fm-state-path.pl header.
+# Every new queue owner uses guarded identity regardless of the primary harness.
+# Guarded queue/transition path mechanics: bin/fm-state-path.pl header.
 
 FM_WAKE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_WAKE_DEFAULT_ROOT="$(cd "$FM_WAKE_LIB_DIR/.." && pwd)"
@@ -33,16 +34,15 @@ fm_state_path() {
   perl "$FM_WAKE_LIB_DIR/fm-state-path.pl" "$FM_HOME" "$STATE" "$@"
 }
 
-fm_omp_guarded_lock() {
+fm_queue_guarded_lock() {
   case "$1" in
-    "$FM_WAKE_QUEUE_LOCK"|"$FM_WAKE_QUEUE_LOCK".steal*|"$FM_WAKE_QUEUE_LOCK".owner.*) ;;
+    "$FM_WAKE_QUEUE_LOCK"|"$FM_WAKE_QUEUE_LOCK".steal*|"$FM_WAKE_QUEUE_LOCK".owner.*) return 0 ;;
     *) return 1 ;;
   esac
-  [ "${OMPCODE:-}" = 1 ] || [ -e "$1/lock-identity" ] || [ -L "$1/lock-identity" ]
 }
 
 fm_lock_pid() {
-  if fm_omp_guarded_lock "$1"; then
+  if fm_queue_guarded_lock "$1"; then
     fm_state_path lock-pid "$1"
   else
     cat "$1/pid" 2>/dev/null
@@ -218,7 +218,7 @@ fm_lock_points_to_owner() {
 fm_lock_discard_owner() {
   local ownerdir=$1
   [ -n "$ownerdir" ] || return 0
-  if fm_omp_guarded_lock "$ownerdir"; then
+  if fm_queue_guarded_lock "$ownerdir"; then
     fm_state_path owner-delete "$ownerdir"
     return
   fi
@@ -246,7 +246,7 @@ fm_lock_claim_blocked_by_steal() {
 
 fm_lock_claim() {
   local lockdir=$1 ownerdir=$2 allowed_steal_owner=${3:-} mypid=${4:-${BASHPID:-$$}} back
-  if fm_omp_guarded_lock "$lockdir"; then
+  if fm_queue_guarded_lock "$lockdir"; then
     fm_state_path lock-check "$lockdir" "$ownerdir" "$mypid" || return 1
     if fm_lock_claim_blocked_by_steal "$lockdir" "$allowed_steal_owner"; then
       return 1
@@ -280,7 +280,7 @@ fm_lock_try_create() {
   local lockdir=$1 allowed_steal_owner=${2:-} ownerdir mypid
   mypid=${BASHPID:-$$}
   FM_LOCK_OWNER_DIR=
-  if fm_omp_guarded_lock "$lockdir"; then
+  if fm_queue_guarded_lock "$lockdir"; then
     ownerdir=$(fm_state_path owner-create "$lockdir" "$mypid") || return 1
     if fm_state_path lock-link "$lockdir" "$ownerdir" "$mypid"; then
       if fm_lock_claim "$lockdir" "$ownerdir" "$allowed_steal_owner" "$mypid"; then
@@ -319,7 +319,7 @@ fm_lock_try_create() {
 
 fm_lock_remove_path() {
   local lockdir=$1 ownerdir
-  if fm_omp_guarded_lock "$lockdir"; then
+  if fm_queue_guarded_lock "$lockdir"; then
     fm_state_path lock-remove "$lockdir" "${2:-}" "${3:-}"
     return
   fi
@@ -419,7 +419,7 @@ fm_lock_try_acquire() {
     return 0
   fi
 
-  if fm_omp_guarded_lock "$lockdir"; then
+  if fm_queue_guarded_lock "$lockdir"; then
     [ -e "$lockdir" ] || [ -L "$lockdir" ] || return 1
     fm_state_path lock-check "$lockdir" || return 1
   fi
@@ -529,7 +529,7 @@ fm_omp_queue_lock() {
 fm_lock_release() {
   local lockdir=$1 pid current ownerdir
   current=${BASHPID:-$$}
-  if fm_omp_guarded_lock "$lockdir"; then
+  if fm_queue_guarded_lock "$lockdir"; then
     [ -e "$lockdir" ] || [ -L "$lockdir" ] || return 0
     fm_state_path lock-remove "$lockdir" '' "$current"
     return
