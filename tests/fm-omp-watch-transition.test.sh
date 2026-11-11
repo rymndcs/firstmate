@@ -1870,6 +1870,33 @@ SH
       assert_observed unknown
       assert_contains "$output" WARNING 'recovery cannot conceal unknown admitted evidence'
       ;;
+    refusal-write-failure)
+      cp "$LAB/state/.omp-watch-transition" "$LAB/expected-record"
+      before_launches=$(wc -l < "$LAB/launches" | tr -d ' ')
+      mkdir "$LAB/refusal-bin"
+      cat > "$LAB/refusal-bin/perl" <<'SH'
+#!/usr/bin/env bash
+if [ "${4:-}" = replace ] && [ "${5:-}" = "$FM_STATE_OVERRIDE/.omp-watch-transition" ]; then
+  printf 'injected\n' >> "$FM_HOME/refusal-write-failed"
+  exit 1
+fi
+exec /usr/bin/perl "$@"
+SH
+      chmod +x "$LAB/refusal-bin/perl"
+      denied=0
+      printf '{}' | PATH="$LAB/refusal-bin:$PATH" bash -c '. "$1"; fm_state_path replace "$2"' _ "$LAB/bin/fm-wake-lib.sh" "$LAB/state/.omp-watch-transition" || denied=$?
+      expect_code 1 "$denied" 'the canonical publication fault must be active'
+      assert_grep injected "$LAB/refusal-write-failed" 'the write fault must execute'
+      for claim in bare watching-only; do
+        if [ "$claim" = bare ]; then PATH="$LAB/refusal-bin:$PATH" arm
+        else PATH="$LAB/refusal-bin:$PATH" arm --transition watching-only --reason 'no work remains'; fi
+        expect_code 2 "$rc" 'canonical write failure cannot turn a reset refusal into permission'
+        assert_contains "$output" firstmate_watch_reset 'refusal still names the reset tool'
+        assert_observed clean
+        cmp "$LAB/expected-record" "$LAB/state/.omp-watch-transition" || fail 'refusal changed the canonical transition'
+        [ "$(wc -l < "$LAB/launches" | tr -d ' ')" = "$before_launches" ] || fail 'refusal launched another watcher'
+      done
+      ;;
     canonical-arm-failure)
       grant_recovery
       mkdir "$LAB/canonical-bin"
@@ -1959,12 +1986,17 @@ SH
       assert_observed unknown
       assert_contains "$output" WARNING 'malformed canonical class must warn'
       ;;
-    slow-evidence|slow-transport)
+    slow-evidence|slow-whitespace-evidence|slow-transport)
       python3 - "$LAB" <<'PYSLOW'
 import json,os,subprocess,sys
 from pathlib import Path
 home=Path(sys.argv[1])
-status=home/'state/worker.status'
+state=home/'state'
+if os.environ['FM_TRANSITION_CASE']=='slow-whitespace-evidence':
+    state=home/'state with whitespace'
+    (home/'state').rename(state)
+    os.environ['FM_STATE_OVERRIDE']=str(state)
+status=state/'worker name\twith whitespace.status'
 status.write_text('resolved [key=x]: item\n')
 os.utime(status,ns=(1000000000000000000,1000000000000000000))
 for n in ('snapshot-ready','snapshot-release'): os.mkfifo(home/n)
@@ -1985,13 +2017,13 @@ with (home/'slow.out').open('w') as out,(home/'slow.err').open('w') as err:
     drained=subprocess.run([str(home/'bin/fm-wake-drain.sh')],capture_output=True,text=True)
     assert drained.returncode==0,drained.stderr
     assert 'during-snapshot' in drained.stdout,drained.stdout
-    if os.environ['FM_TRANSITION_CASE']=='slow-evidence':
+    if os.environ['FM_TRANSITION_CASE']!='slow-transport':
         status.write_text('blocked  [key=x]: item\n')
         os.utime(status,ns=(1000000000000000000,1000000000001000000))
     with (home/'snapshot-release').open('w') as release: release.write('continue\n')
     rc=arm.wait()
-verdict=json.loads((home/'state/.omp-watch-transitions.log').read_text().splitlines()[-1])
-if os.environ['FM_TRANSITION_CASE']=='slow-evidence':
+verdict=json.loads((state/'.omp-watch-transitions.log').read_text().splitlines()[-1])
+if os.environ['FM_TRANSITION_CASE']!='slow-transport':
     assert rc==0, (rc,(home/'slow.err').read_text())
     assert verdict['observed']=='unknown',verdict
     assert 'WARNING' in (home/'slow.err').read_text()
@@ -2601,7 +2633,7 @@ PY
 pass 'unknown native identities warn and the private transition ledger stays bounded'
 
 if [ -z "${FM_TRANSITION_CASE:-}" ]; then
-  for scenario in recovery-log recovery-away recovery-hold recovery-declaration recovery-new-wake recovery-replay missing-drain-identity unavailable-lock fingerprint-unavailable duplicate-arm canonical-arm-failure sequence-reuse recovery-reused-sequence recovery-unknown batch-identity-unavailable replay-across-arm publication-before-consumption invalid-record-class invalid-record-decision invalid-record-recovery invalid-record-pid invalid-record-identity invalid-record-verdict invalid-record-batch slow-evidence slow-transport fold-provenance drain-publication-failure lock-vacate held-lock-budget legacy-fragments canonical-symlink unavailable-pipe canonical-pipe log-obstruction; do
+  for scenario in recovery-log recovery-away recovery-hold recovery-declaration recovery-new-wake recovery-replay missing-drain-identity unavailable-lock fingerprint-unavailable duplicate-arm refusal-write-failure canonical-arm-failure sequence-reuse recovery-reused-sequence recovery-unknown batch-identity-unavailable replay-across-arm publication-before-consumption invalid-record-class invalid-record-decision invalid-record-recovery invalid-record-pid invalid-record-identity invalid-record-verdict invalid-record-batch slow-evidence slow-whitespace-evidence slow-transport fold-provenance drain-publication-failure lock-vacate held-lock-budget legacy-fragments canonical-symlink unavailable-pipe canonical-pipe log-obstruction; do
     FM_TRANSITION_CASE="$scenario" bash "$0"
   done
 fi

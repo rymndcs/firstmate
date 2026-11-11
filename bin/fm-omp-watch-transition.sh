@@ -16,8 +16,7 @@
 # below the watermark is ignored, while changed replay identity is unknown.
 # uncertain poisons incomplete or unknown admission.
 # recovery contains the exact session/arm/generation/watermark/batch token it exempts.
-# decision records the command/declaration/verdict consumed to create this arm;
-# attempt is the latest refused command and grants no permission.
+# decision records the command/declaration/verdict consumed to create this arm.
 # Diagnostic .omp-watch-transitions.log and native .omp-watch-arm-result are
 # observations, never permission stores. A current-session arm observation rules
 # out startup when the canonical record is lost. Legacy split fragments grant nothing.
@@ -99,9 +98,9 @@ acquire_queue_lock() {
   trap 'fm_lock_release "$FM_WAKE_QUEUE_LOCK"' EXIT
 }
 fingerprint() {
-  perl -MTime::HiRes=stat -e '
+  perl -MTime::HiRes=stat -MFile::Glob=bsd_glob -e '
     my ($state, $data, $config, $inbox) = @ARGV;
-    my @paths = ((glob "$state/*.status"), (glob "$state/*.meta"), (glob "$state/*.turn-ended"),
+    my @paths = ((bsd_glob "$state/*.status"), (bsd_glob "$state/*.meta"), (bsd_glob "$state/*.turn-ended"),
       "$state/.afk", "$state/.afk-daemon-terminal", "$state/.captain-hold",
       "$state/.last-watcher-beat", "$state/.watch.lock/pid", "$state/.watch.lock/pid-identity",
       "$state/.watch.lock/fm-home", "$state/.watch.lock/watcher-path",
@@ -281,12 +280,7 @@ arm_transition() {
     watermark=$(printf '%s' "$record" | jq .watermark)
     batch=$(printf '%s' "$record" | jq -r .batch)
   fi
-  if [ "$verdict" = refuse ]; then
-    if ! printf '%s' "$record" | jq --arg call "$CALL" --arg claim "$claim" --arg detail "$detail" --arg observed "$observed" \
-      '.attempt={call:$call,claim:$claim,detail:$detail,observed:$observed,verdict:"refuse"}' | publish; then
-      warn 'canonical transition could not be saved'; return 0
-    fi
-  else
+  if [ "$verdict" = allow ]; then
     successor=$(new_record "$generation" "$watermark" "$batch" | jq --arg call "$CALL" --arg claim "$claim" --arg detail "$detail" --arg observed "$observed" \
       '.decision={call:$call,claim:$claim,detail:$detail,observed:$observed,verdict:"allow"}') || return 1
     if ! printf '%s' "$successor" | publish; then warn 'canonical successor could not be saved; consumption is unconfirmed'; return 0; fi
