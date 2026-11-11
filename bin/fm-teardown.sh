@@ -124,10 +124,11 @@
 # bin/fm-worktree-cleanup.sh owns writer stopping, selection, retention, the
 # task's temporary-target record (state/<task-id>.temp-targets) and reporting.
 # Ship tasks returning to Treehouse first remove registered nested worktrees,
-# deepest first, only after every nested tree is clean and its content is proven
+# deepest first, only after every nested tree is clean and its HEAD and all commits
+# reachable through its HEAD reflog and private refs/worktree/ refs are proven
 # in the refreshed default branch. Hidden index flags and ignored files retained
 # by fm-worktree-cleanup.sh refuse removal. Immediately before each non-forced
-# removal, teardown re-reads cleanliness, flags, retention and the inspected HEAD;
+# removal, teardown re-reads cleanliness, flags, retention, history and the inspected HEAD;
 # a changed or uninspectable copy refuses. The final read and removal are not atomic.
 # Unknown or unlanded nested work refuses teardown, including with --force; that
 # flag only discards the task tree itself.
@@ -1061,6 +1062,53 @@ validate_nested_worktree_files() {
   fi
 }
 
+validate_nested_worktree_history() {
+  local history refs ref commit commits
+  if ! history=$(git -C "$WT" reflog show --format=%H HEAD 2>&1); then
+    echo "REFUSED: nested worktree $WT HEAD reflog cannot be inspected." >&2
+    return 1
+  fi
+  if ! refs=$(git -C "$WT" for-each-ref --format='%(refname)' refs/worktree/ 2>&1); then
+    echo "REFUSED: nested worktree $WT private refs cannot be inspected." >&2
+    return 1
+  fi
+  while IFS= read -r ref; do
+    [ -n "$ref" ] || continue
+    if ! commit=$(git -C "$WT" rev-parse --verify "$ref^{commit}" 2>/dev/null); then
+      echo "REFUSED: nested worktree $WT private ref $ref cannot be inspected." >&2
+      return 1
+    fi
+    history="${history:+$history$'\n'}$commit"
+  done <<EOF
+$refs
+EOF
+  if ! commits=$(git -C "$WT" rev-list --stdin --not "$DEFAULT_REF" -- 2>&1 <<EOF
+$history
+EOF
+  ); then
+    echo "REFUSED: nested worktree $WT retained history cannot be inspected." >&2
+    return 1
+  fi
+  while IFS= read -r commit; do
+    [ -n "$commit" ] || continue
+    work_landed_verdict HEAD default-only "$commit"
+    case "$LANDED_VERDICT" in
+      landed) ;;
+      unlanded)
+        echo "REFUSED: nested worktree $WT retains commit $commit not in the default branch." >&2
+        return 1
+        ;;
+      *)
+        echo "REFUSED: nested worktree $WT cannot establish landing of retained commit $commit." >&2
+        printf 'what could not be checked:\n%s\n' "$LANDED_UNCERTAIN_REASONS" >&2
+        return 1
+        ;;
+    esac
+  done <<EOF
+$commits
+EOF
+}
+
 validate_worktree_teardown_safety() {
   local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch
   local scope=${1:-task}
@@ -1074,7 +1122,7 @@ validate_worktree_teardown_safety() {
     validate_nested_worktree_files "${@:2}" || return 1
     work_landed_verdict "$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)" default-only
     case "$LANDED_VERDICT" in
-      landed) return 0 ;;
+      landed) validate_nested_worktree_history; return $? ;;
       unlanded) echo "REFUSED: nested worktree $WT has work not in the default branch." >&2 ;;
       *)
         echo "REFUSED: cannot establish whether nested worktree $WT has landed in the default branch." >&2
@@ -1204,6 +1252,7 @@ remove_nested_ship_worktrees() {
     path=${nested[i]}
     WT=$path
     validate_nested_worktree_files || return 1
+    validate_nested_worktree_history || return 1
     head=$(git -C "$path" rev-parse --verify HEAD 2>/dev/null || true)
     if [ -z "${heads[i]}" ] || [ "$head" != "${heads[i]}" ]; then
       echo "REFUSED: nested worktree $path HEAD changed or cannot be inspected after landing proof." >&2
