@@ -36,6 +36,12 @@ assert_watcher_liveness() {
   "$SCRIPT_DIR/fm-guard.sh" || true
 }
 
+record_omp_drain() {
+  [ "${OMPCODE:-}" = 1 ] || return 0
+  printf '%s\n' "${RAW_ROWS:-}" | "$SCRIPT_DIR/fm-omp-watch-transition.sh" drain || \
+    echo 'watcher: WARNING - could not record the drained omp transition; preserve supervision.' >&2
+}
+
 # shellcheck disable=SC2317,SC2329 # Invoked by trap handlers below.
 cleanup() {
   local status=$?
@@ -60,6 +66,7 @@ if [ ! -s "$FM_WAKE_QUEUE" ]; then
   : > "$FM_WAKE_QUEUE"
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
+  record_omp_drain
   "$SCRIPT_DIR/fm-pr-auto-register.sh" --all || true
   assert_watcher_liveness
   exit 0
@@ -85,6 +92,7 @@ rm -f "$DRAIN_TMP" || exit "$?"
 DRAIN_TMP=
 fm_lock_release "$FM_WAKE_QUEUE_LOCK"
 DRAIN_LOCK_HELD=false
+record_omp_drain
 
 # Raw output and queue deletion are authoritative. Everything below is
 # best-effort and cannot restore, duplicate, hide, or fail the consumed rows.

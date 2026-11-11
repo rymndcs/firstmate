@@ -204,6 +204,11 @@ if (scenario.startsWith('questions-')) {
   }, `${scenario}: recovery must report delivery failure rather than throw it out of the callback`);
   assert.equal(switches, startup && !refused ? 1 : 0, 'fault must reach the intended switch boundary');
   assert.equal(checks(), checksBefore + 1, `${scenario}: delivery failure must reach the independent recovery check`);
+  if (!refused) {
+    assert.ok(existsSync(`${home}/state/.omp-watch-recovery`), 'reset recovery must save its durable arm exemption');
+    assert.equal(readFileSync(`${home}/state/.omp-watch-recovery`, 'utf8').trim(), session,
+      'reset recovery must durably exempt one arm in the actual receiving session');
+  }
   const turns = messages.filter(x => x.options?.triggerTurn);
   assert.equal(turns.length, recoveryFails ? 0 : 1, `${scenario}: queue exactly one continuation when recovery succeeds`);
   assert.equal(enqueueCalls, scenario.endsWith('enqueue') ? startup ? 2 : 1 : recoveryFails ? 0 : 1,

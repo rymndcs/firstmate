@@ -164,6 +164,8 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     ready.resolved = true;
     if (request === ready) request = undefined;
     if (spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["recover-check", String(process.pid)], { env }).status !== 0) return "refused";
+    const recovery = spawnSync(`${root}/bin/fm-omp-watch-transition.sh`, ["recovery", sessionId(ctx)], { env });
+    if (recovery.status !== 0) ctx.ui.notify("Watcher recovery declaration could not be saved; re-arm with an explicit unknown transition and keep its warning visible.", "error");
     const switched = sessionId(ctx) !== ready.session;
     try {
       pi.sendMessage({ customType: switched ? "firstmate-reset-start" : "firstmate-reset-recovery", display: false,

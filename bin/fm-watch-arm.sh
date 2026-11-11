@@ -37,6 +37,9 @@
 # identities and the exact status (three newline-terminated lines, mode 0600)
 # to state/.omp-watch-arm-result for the primary extension's result correlation.
 # Other harnesses retain their existing output and create no such result.
+# Ordinary omp re-arms require --transition <reason> --reason '<description>'.
+# bin/fm-omp-watch-transition.sh --help owns the declaration, verification and
+# recovery contract; a clean undeclared re-arm is refused before any launch.
 # It NEVER reports started/attached/healthy off a stale beacon or a dead/reused pid: a
 # stale-beacon or dead-pid holder either self-heals (the fresh child steals the
 # dead lock per the singleton self-eviction/steal path and is confirmed) or this
@@ -92,6 +95,12 @@ ARM_PID=${BASHPID:-$$}
 case "$CYCLE_LOG_MAX_BYTES" in ''|*[!0-9]*|0) CYCLE_LOG_MAX_BYTES=262144 ;; esac
 case "$CYCLE_LOG_KEEP_LINES" in ''|*[!0-9]*|0) CYCLE_LOG_KEEP_LINES=1000 ;; esac
 
+omp_transition_record() {
+  [ "${OMPCODE:-}" = 1 ] || return 0
+  "$SCRIPT_DIR/fm-omp-watch-transition.sh" "$@" || \
+    echo 'watcher: WARNING - could not record omp transition evidence; preserve supervision and inspect the transition state.' >&2
+}
+
 # The lifecycle ledger is diagnostic evidence, not a supervision dependency.
 # Writes are bounded and best-effort so an observability failure cannot stall an
 # otherwise healthy watcher cycle.
@@ -146,6 +155,11 @@ cycle_signal_name() {
 cycle_log_append() {
   local exit_code=$1 signal=$2 reason=$3 successor=$4 ended_at beacon_age lock_after size tmp raw i
   [ "$cycle_active" -eq 1 ] || return 0
+  case "$reason" in
+    actionable-*|attached-delivered-wake|clean-exit-delivered-wake)
+      omp_transition_record cycle wake "$cycle_watcher_pid" "$reason" ;;
+    *) omp_transition_record cycle failed "$cycle_watcher_pid" "$reason" ;;
+  esac
   ended_at=$(date +%s)
   beacon_age=$(fm_path_age "$BEAT")
   lock_after=$(lock_snapshot)
@@ -258,6 +272,7 @@ report_success() {
   if [ "${OMPCODE:-}" = 1 ] && [ -n "${PI_SESSION_ID:-}" ] && [ -n "${PI_TOOL_CALL_ID:-}" ]; then
     (umask 077; printf '%s\n' "$PI_SESSION_ID" "$PI_TOOL_CALL_ID" "$status" > "$tmp" && mv -f "$tmp" "$result")
   fi
+  omp_transition_record cycle running "$HEALTHY_PID" verified
   printf '%s\n' "$status"
 }
 
@@ -386,11 +401,29 @@ print_watch_output() {
 }
 
 mode=arm
-case "${1:-}" in
-  ''|arm|--arm) mode=arm ;;
-  --restart) mode=restart ;;
-  *) echo "usage: $(basename "$0") [--restart]" >&2; exit 2 ;;
-esac
+transition=
+transition_reason=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    arm|--arm) mode=arm; shift ;;
+    --restart) mode=restart; shift ;;
+    --transition|--reason)
+      [ "$#" -ge 2 ] || { echo "watcher: $1 requires a value" >&2; exit 2; }
+      if [ "$1" = --transition ]; then transition=$2; else transition_reason=$2; fi
+      shift 2 ;;
+    --help|-h) "$SCRIPT_DIR/fm-omp-watch-transition.sh" --help; exit $? ;;
+    *) echo "usage: $(basename "$0") [--restart] [--transition <reason> --reason <description>]" >&2; exit 2 ;;
+  esac
+done
+if [ "${OMPCODE:-}" = 1 ]; then
+  transition_rc=0
+  "$SCRIPT_DIR/fm-omp-watch-transition.sh" arm "$transition" "$transition_reason" || transition_rc=$?
+  [ "$transition_rc" -ne 2 ] || exit 2
+  if [ "$transition_rc" -ne 0 ]; then
+    echo 'watcher: WARNING - transition verification unavailable; arming without reset.' >&2
+  fi
+fi
+omp_transition_record cycle starting "$ARM_PID" launch
 
 if [ "$mode" = restart ]; then
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.

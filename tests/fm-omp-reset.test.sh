@@ -12,6 +12,9 @@ cp "$ROOT/bin/fm-startup-memory-budget.sh" "$LAB/bin/fm-startup-memory-budget.re
 cp "$ROOT/bin/fm-startup-memory-budget-lib.sh" "$LAB/bin/"
 cp "${FM_RESET_EXTENSION:-$ROOT/.omp/extensions/fm-primary-omp.ts}" "$LAB/.omp/extensions/fm-primary-omp.ts"
 cp "$ROOT/bin/fm-operational-input.sh" "$LAB/bin/fm-operational-input.real.sh"
+for file in fm-omp-watch-transition.sh fm-wake-lib.sh fm-classify-lib.sh; do
+  cp "$ROOT/bin/$file" "$LAB/bin/"
+done
 cat > "$LAB/bin/fm-operational-input.sh" <<'SH'
 #!/usr/bin/env bash
 if [ "$1" = encode ] && [ -f "$FM_HOME/state/encoding-failures" ]; then

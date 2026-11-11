@@ -248,6 +248,25 @@ tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh
 ```
 
+### omp transition declarations
+
+The portable declaration path was verified on 2026-11-11 with Bash 3.2.57 and Node v22.23.4 through isolated arm/drain executables and the registered extension API fixture:
+
+```sh
+bin/fm-test-run.sh tests/fm-omp-watch-transition.test.sh tests/fm-omp-reset.test.sh
+```
+
+Observed output included:
+
+```text
+ok - clean ordinary wake refuses a bare re-arm before launching
+ok - failed and missing cycles repair, and reset recovery is consumed once
+ok - unknown native identities warn and the private transition ledger stays bounded
+```
+
+`bin/fm-omp-watch-transition.sh --help` owns the declaration and evidence contract.
+This portable result does not refresh the live omp or terminal-backend measurements above.
+
 ## Wedge-alarm channels
 
 The two real notification channels were bounded manually on 2026-07-10 on macOS 26.5.2 with Herdr 0.7.3.
