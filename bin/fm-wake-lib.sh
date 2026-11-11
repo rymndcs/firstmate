@@ -11,8 +11,10 @@
 # Recovery walks secondary paths iteratively, then replaces verified dead stamped
 # owners under their owned child locks, revalidating each parent before replacement.
 # Unknown/unstamped/live targets stay intact. Verified live contention returns
-# acquisition outcome 2 and preserves the current allowance; every retry rechecks
-# identity and liveness. Unverified PIDs never grant this continuation.
+# acquisition outcome 2 and preserves the current allowance, as does observed
+# holder progress: a link collision then a vacated lock with no .steal, or a
+# refused identity read then a vacated lock. Every retry rechecks identity and
+# liveness. Unverified PIDs and lasting obstructions never grant this continuation.
 # Outcome 3 is an unverified failed-claim rollback and ends acquisition visibly.
 # link publication and post-link claim verification share one guarded operation.
 # 0.05s between retries, including unverified/legacy holders. Exhaustion warns
@@ -280,12 +282,13 @@ fm_lock_claim() {
 }
 
 fm_lock_try_create() {
-  local lockdir=$1 allowed_steal_owner=${2:-} ownerdir mypid
+  local lockdir=$1 allowed_steal_owner=${2:-} ownerdir mypid link
   mypid=${BASHPID:-$$}
   FM_LOCK_OWNER_DIR=
+  FM_LOCK_COLLIDED=
   if fm_queue_guarded_lock "$lockdir"; then
     ownerdir=$(fm_state_path owner-create "$lockdir" "$mypid") || return 1
-    if fm_state_path lock-link "$lockdir" "$ownerdir" "$mypid"; then
+    if link=$(fm_state_path lock-link "$lockdir" "$ownerdir" "$mypid"); then
       if fm_lock_claim "$lockdir" "$ownerdir" "$allowed_steal_owner" "$mypid"; then
         FM_LOCK_OWNER_DIR=$ownerdir
         return 0
@@ -295,6 +298,7 @@ fm_lock_try_create() {
       fm_state_path lock-remove "$lockdir" "$ownerdir" "$mypid" || return 3
     else
       fm_state_path owner-delete "$ownerdir" "$mypid" || return 3
+      [ "$link" != collision ] || FM_LOCK_COLLIDED=1
     fi
     return 1
   fi
@@ -408,7 +412,10 @@ fm_lock_try_acquire_bounded() {
       return 0
     fi
     if [ -e "$path" ] || [ -L "$path" ]; then
-      pid=$(fm_lock_pid "$path") || return 1
+      if ! pid=$(fm_lock_pid "$path"); then
+        if [ -e "$path" ] || [ -L "$path" ]; then return 1; fi
+        return 2
+      fi
       if fm_pid_alive "$pid"; then
         FM_LOCK_HELD_PID=$pid
         return 2
@@ -417,6 +424,7 @@ fm_lock_try_acquire_bounded() {
         return 1
       fi
     elif [ ! -e "$path.steal" ] && [ ! -L "$path.steal" ]; then
+      [ -z "$FM_LOCK_COLLIDED" ] || return 2
       return 1
     fi
     parents[depth]=$path

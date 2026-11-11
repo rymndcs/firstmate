@@ -8,8 +8,9 @@
 # SNAPSHOT matches device/inode/SHA-256. snapshot prints that identity then bytes.
 # Locks: owner-create LOCK PID; owner-delete OWNER [PID]; lock-link LOCK OWNER PID;
 # lock-check/lock-pid/lock-unlink/lock-remove LOCK [OWNER [PID]].
-# lock-link verifies the published claim in the same pinned operation; lock-pid
-# returns a PID only after the complete owner and final link recheck.
+# lock-link verifies the published claim in the same pinned operation and prints
+# collision when the lock already exists; lock-pid returns a PID only after the
+# complete owner and final link recheck.
 # lock-identity is v1, canonical home, canonical lock, device:inode, one per line.
 # Pin owned directories with no-follow opens and fchdir; regular files must have
 # one link and the current UID. Reads and truncation use the verified descriptor.
@@ -172,7 +173,7 @@ if ($op eq 'owner-create') {
     my @files = ($op ne 'lock-link') ? owner_files() : ();
     chdir($link_parent) or refuse('lock parent unavailable');
     if ($op eq 'lock-link') {
-        symlink($target, $lock) or exit 1;
+        symlink($target, $lock) or do { print "collision\n" if $!{EEXIST}; exit 1 };
         my ($claimed_leaf, $claimed_lock, $claimed_dir) = owner($target);
         $claimed_lock eq $path or refuse('owner belongs to another lock');
         my $claimed_pid = contents(regular('pid', 0)); chomp $claimed_pid;

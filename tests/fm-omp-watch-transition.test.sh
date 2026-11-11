@@ -219,6 +219,100 @@ grant_recovery() {
 }
 if [ -n "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
   case "$FM_TRANSITION_LIFECYCLE_CASE" in
+    churn-collision|churn-refused-read|churn-link-error)
+      python3 - "$LAB" <<'PYCHURN'
+import json,os,subprocess,sys
+from pathlib import Path
+home=Path(sys.argv[1]);case=os.environ['FM_TRANSITION_LIFECYCLE_CASE']
+lib=str(home/'bin/fm-wake-lib.sh');drain=str(home/'bin/fm-wake-drain.sh')
+queue=home/'state/.wake-queue';lock=home/'state/.wake-queue.lock'
+env={k:v for k,v in os.environ.items() if k not in ('PERL5LIB','PERL5OPT','FM_OMP_TRANSITION_LOCK_ATTEMPTS')}
+env['OMPCODE']='0'
+injection=home/'churn-injection';injection.mkdir()
+# Twenty holders match the default allowance; link-error fails ten times against an allowance of three.
+(injection/'FixtureChurn.pm').write_text(r'''package FixtureChurn;
+use POSIX ();
+my $holder = '. "$1"; fm_lock_try_create "$2" || exit 3; v=$(fm_lock_pid "$2") || exit 4; [ "$v" = "$$" ] || exit 5; printf "%s %s\n" "$v" "$(readlink "$2")" > "$FM_HOME/churn-held-$3.tmp"; mv "$FM_HOME/churn-held-$3.tmp" "$FM_HOME/churn-held-$3"; i=0; while [ ! -e "$FM_HOME/churn-release-$3" ] && [ "$i" -lt 1000 ]; do /bin/sleep 0.01; i=$((i+1)); done; rc=0; fm_lock_release "$2" || rc=$?; printf "%s\n" "$rc" > "$FM_HOME/churn-released-$3.tmp"; mv "$FM_HOME/churn-released-$3.tmp" "$FM_HOME/churn-released-$3"; exit "$rc"';
+sub queue_lock { my ($op)=@_; return ($ENV{FIXTURE_CHURN_CASE}//'') ne '' && ($ARGV[2]//'') eq $op && ($ARGV[3]//'') eq "$ARGV[1]/.wake-queue.lock" }
+sub note { open my $f,'>>',"$ENV{FM_HOME}/$_[0]" or die $!; print {$f} "$_[1]\n"; close $f }
+sub await { my ($path)=@_; for (1..1000) { return 1 if -e $path; select(undef,undef,undef,0.01) } return 0 }
+sub slurp { open my $f,'<',$_[0] or return ''; local $/; my $v=<$f>//''; close $f; $v=~s/\n\z//; return $v }
+BEGIN {
+ *CORE::GLOBAL::symlink = sub {
+  my ($target,$link)=@_;
+  return CORE::symlink($target,$link) unless queue_lock('lock-link');
+  my $n=slurp("$ENV{FM_HOME}/churn-count")||0; $n++;
+  open my $w,'>',"$ENV{FM_HOME}/churn-count" or die $!; print {$w} "$n\n"; close $w;
+  if ($ENV{FIXTURE_CHURN_CASE} eq 'churn-link-error') {
+   return CORE::symlink($target,$link) if $n>10;
+   note('churn-collisions',"n=$n injected_errno=EACCES lock_present=".((-e $link||-l $link)?1:0));
+   $!=POSIX::EACCES; return 0;
+  }
+  return CORE::symlink($target,$link) if $n>20;
+  my $pid=fork; die "fork: $!" unless defined $pid;
+  if (!$pid) { delete @ENV{qw(PERL5OPT PERL5LIB FIXTURE_CHURN_CASE)}; open(STDOUT,'>','/dev/null') or die $!; open(STDERR,'>>',"$ENV{FM_HOME}/churn-holder-stderr") or die $!; exec 'bash','-c',$holder,'_',"$ENV{FM_HOME}/bin/fm-wake-lib.sh",$ARGV[3],$n; POSIX::_exit(127) }
+  my $held=await("$ENV{FM_HOME}/churn-held-$n");
+  my ($verified,$owner)=split / /,slurp("$ENV{FM_HOME}/churn-held-$n");
+  my $stamped=(defined $owner && -f "$owner/lock-identity")?1:0;
+  my $alive=kill(0,$pid)?1:0;
+  my $ok=CORE::symlink($target,$link); my $err=$!+0;
+  my $line="n=$n holder=$pid verified_pid=".($verified//'')." owner=".($owner//'')." stamped=$stamped held=$held holder_alive_at_collision=$alive subject_symlink_ok=".($ok?1:0)." errno_eexist=".($err==POSIX::EEXIST?1:0);
+  if ($ENV{FIXTURE_CHURN_CASE} eq 'churn-collision') {
+   open my $r,'>',"$ENV{FM_HOME}/churn-release-$n" or die $!; close $r;
+   waitpid($pid,0); my $hrc=$?>>8;
+   $line.=" holder_rc=$hrc lock_present_after_release=".((-e $link||-l $link)?1:0);
+  } else {
+   open my $p,'>',"$ENV{FM_HOME}/churn-pending" or die $!; print {$p} "$n $pid\n"; close $p;
+  }
+  note('churn-collisions',$line);
+  $!=$err; return $ok;
+ };
+ *CORE::GLOBAL::readlink = sub {
+  my ($path)=@_;
+  my $value=CORE::readlink($path);
+  return $value unless queue_lock('lock-pid') && -e "$ENV{FM_HOME}/churn-pending";
+  my ($n,$pid)=split / /,slurp("$ENV{FM_HOME}/churn-pending"); unlink("$ENV{FM_HOME}/churn-pending") or die $!;
+  my $alive=kill(0,$pid)?1:0;
+  open my $r,'>',"$ENV{FM_HOME}/churn-release-$n" or die $!; close $r;
+  my $released=await("$ENV{FM_HOME}/churn-released-$n");
+  note('churn-reads',"n=$n holder=$pid read_target=".($value//'')." holder_alive_at_read=$alive released=$released holder_rc=".slurp("$ENV{FM_HOME}/churn-released-$n")." lock_present_after_release=".((-e $path||-l $path)?1:0));
+  return $value;
+ };
+}
+1;
+''')
+extra=dict(PERL5LIB=str(injection),PERL5OPT='-MFixtureChurn',FIXTURE_CHURN_CASE=case)
+if case=='churn-link-error':extra['FM_OMP_TRANSITION_LOCK_ATTEMPTS']='3'
+before=queue.read_bytes() if queue.exists() else b''
+p=subprocess.run(['bash','-ec','. "$1"; fm_wake_append signal "$2" "$3"','_',lib,case,'input-through-'+case],env=dict(env,**extra),capture_output=True,text=True)
+collisions=(home/'churn-collisions').read_text().splitlines() if (home/'churn-collisions').exists() else []
+reads=(home/'churn-reads').read_text().splitlines() if (home/'churn-reads').exists() else []
+after=queue.read_bytes() if queue.exists() else b''
+artifacts=sorted(x.name for x in (home/'state').glob('.wake-queue.lock*'))
+holder_stderr=(home/'churn-holder-stderr').read_text() if (home/'churn-holder-stderr').exists() else ''
+print(json.dumps(dict(case=case,rc=p.returncode,stdout=p.stdout,stderr=p.stderr,holder_stderr=holder_stderr,collisions=collisions,reads=reads,queue_before=before.decode(),queue_rows=after.decode().splitlines(),lock_artifacts=artifacts)),flush=True)
+if case=='churn-link-error':
+    assert len(collisions)==3 and all('injected_errno=EACCES lock_present=0' in c for c in collisions),'a non-collision link failure must spend the finite allowance'
+    assert p.returncode==1 and 'queue lock unavailable' in p.stderr,'a persistent link failure must refuse visibly'
+    assert after==before and not artifacts,'a refused link attempt must retain input and leave no lock artifacts'
+    p=subprocess.run(['bash','-ec','. "$1"; fm_wake_append signal "$2" "$3"','_',lib,case,'input-after-'+case],env=env,capture_output=True,text=True)
+    assert p.returncode==0,'a later uninjected producer must publish'
+else:
+    assert len(collisions)==20,'the fixture must collide exactly twenty times'
+    assert all(f'n={i+1} ' in c and 'stamped=1 held=1 holder_alive_at_collision=1 subject_symlink_ok=0 errno_eexist=1' in c and c.split('holder=')[1].split()[0]==c.split('verified_pid=')[1].split()[0] for i,c in enumerate(collisions)),'every collision must be with a stamped holder verified live through its guarded PID read'
+    if case=='churn-collision':
+        assert all(c.endswith(' holder_rc=0 lock_present_after_release=0') for c in collisions),'every holder must release normally before the producer observes'
+    else:
+        assert len(reads)==20 and all('holder_alive_at_read=1 released=1 holder_rc=0 lock_present_after_release=0' in r and r.split('read_target=')[1].split()[0]==c.split('owner=')[1].split()[0] for r,c in zip(reads,collisions)),'every identity read must be refused mid-release of the verified holder'
+    assert b'input-through-'+case.encode() in after,'producer must retain input while every observed holder progresses normally'
+    assert p.returncode==0 and 'queue lock unavailable' not in p.stderr,'live holder progress must not exhaust the finite allowance'
+    assert not artifacts,'churn must leave no lock artifacts'
+d=subprocess.run([drain],env=env,capture_output=True,text=True)
+print(json.dumps(dict(drain_rc=d.returncode,drain_rows=d.stdout.splitlines(),drain_stderr=d.stderr)),flush=True)
+assert d.returncode==0 and ('input-after-' if case=='churn-link-error' else 'input-through-')+case in d.stdout,'delivered input must reach the drain'
+assert not queue.read_bytes(),'drain must consume delivered input'
+PYCHURN
+      ;;
     contention-forty|live-primary|live-secondary|live-death|live-unknown|live-legacy|live-spent|live-arm)
       arm
       drain
@@ -2513,7 +2607,7 @@ if [ -z "${FM_TRANSITION_CASE:-}" ]; then
 fi
 
 if [ -z "${FM_TRANSITION_CASE:-}" ] && [ -z "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
-  for scenario in claim-work live-recheck claim-publish-pid claim-publish-stamp claim-publish-child claim-publish-link contention-forty live-primary live-secondary live-death live-unknown live-legacy live-spent live-arm non-omp-primary-drain non-omp-primary-append non-omp-primary-watch non-omp-steal-drain non-omp-steal-append non-omp-steal-watch non-omp-deep-drain non-omp-deep-append non-omp-deep-watch non-omp-owner generic-lock steal-recheck-unstamped steal-absent-drain steal-absent-append steal-dead-drain steal-dead-append steal-primary steal-unknown steal-unstamped steal-live steal-budget steal-cross-drain steal-cross-append steal-replacement-budget steal-unknown-pipe caller-pid claim-rollback claim-foreign-pid candidate-foreign-pid selected-state selected-state-link selected-state-identity bounded-append bounded-non-omp bounded-keys legacy-release legacy-dead bounded-watch bounded-procevent bounded-procevent-start bounded-jira non-omp-stamped-owner nested-queue-lock foreign-lock-owner sequence-pipe queue-read-error log-read-error publication-temp-link publication-temp-replaced lock-other-lock queue-hardlink queue-outside-home queue-parent-link queue-directory queue-owner queue-snapshot-swap queue-content-change queue-inode-change lock-wrong-identity lock-owner-link lock-child-link lock-wrong-home lock-wrong-path arm-result-link unrelated-lock-target unrelated-queue-target missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
+  for scenario in claim-work live-recheck claim-publish-pid claim-publish-stamp claim-publish-child claim-publish-link churn-collision churn-refused-read churn-link-error contention-forty live-primary live-secondary live-death live-unknown live-legacy live-spent live-arm non-omp-primary-drain non-omp-primary-append non-omp-primary-watch non-omp-steal-drain non-omp-steal-append non-omp-steal-watch non-omp-deep-drain non-omp-deep-append non-omp-deep-watch non-omp-owner generic-lock steal-recheck-unstamped steal-absent-drain steal-absent-append steal-dead-drain steal-dead-append steal-primary steal-unknown steal-unstamped steal-live steal-budget steal-cross-drain steal-cross-append steal-replacement-budget steal-unknown-pipe caller-pid claim-rollback claim-foreign-pid candidate-foreign-pid selected-state selected-state-link selected-state-identity bounded-append bounded-non-omp bounded-keys legacy-release legacy-dead bounded-watch bounded-procevent bounded-procevent-start bounded-jira non-omp-stamped-owner nested-queue-lock foreign-lock-owner sequence-pipe queue-read-error log-read-error publication-temp-link publication-temp-replaced lock-other-lock queue-hardlink queue-outside-home queue-parent-link queue-directory queue-owner queue-snapshot-swap queue-content-change queue-inode-change lock-wrong-identity lock-owner-link lock-child-link lock-wrong-home lock-wrong-path arm-result-link unrelated-lock-target unrelated-queue-target missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
     FM_TRANSITION_LIFECYCLE_CASE="$scenario" bash "$0"
   done
 fi
