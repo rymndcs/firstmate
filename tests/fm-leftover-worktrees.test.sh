@@ -74,15 +74,28 @@ class CleanupTest(unittest.TestCase):
         self.assertTrue((self.home / 'applied').exists())
         self.assertIn(f'removed {a}', out)
 
-    def test_linked_worktrees_in_projects_are_not_clones(self):
+    def test_linked_project_entry_is_protected_but_its_siblings_are_swept(self):
         linked = self.wt('linked', self.home / 'projects' / 'zz-linked')
         a = self.wt()
         out = self.run_cleanup('--remove')
-        self.assertTrue(self.repo.exists())
-        self.assertFalse(a.exists() or linked.exists())
-        self.assertEqual(out.count(str(a)), 1, out)
-        self.assertNotIn('kept', out)
-        self.assertNotIn(str(self.repo), out.replace(str(linked), ''))
+        self.assertTrue(self.repo.exists() and linked.exists())
+        self.assertFalse(a.exists())
+        self.assertEqual(out, f'Leftover worktrees: removed {a}\n')
+
+    def test_externally_removed_path_is_named_again_when_reused(self):
+        a = self.wt()
+        (a / 'file').write_text('dirty\n')
+        self.assertIn(f'kept {a}', self.run_cleanup())
+        self.git('worktree', 'remove', '--force', str(a))
+        self.assertEqual(self.run_cleanup(), '')
+        self.git('worktree', 'add', '-q', str(a), 'leftover')
+        self.assertIn(f'ready for --remove: {a}', self.run_cleanup())
+        self.git('worktree', 'remove', str(a))
+        self.assertEqual(self.run_cleanup(), '')
+        self.git('worktree', 'add', '-q', str(a), 'leftover')
+        self.assertIn(f'ready for --remove: {a}', self.run_cleanup())
+        (a / 'file').write_text('dirty again\n')
+        self.assertIn(f'kept {a}', self.run_cleanup())
 
     def test_reused_path_named_again_after_removal(self):
         a = self.wt()
@@ -285,8 +298,9 @@ class CleanupTest(unittest.TestCase):
         self.repo = self.repo.with_name('thanos')
         tool = self.repo / 'bin/worktree-cleanup'
         tool.parent.mkdir()
+        self.rows(lines)
         tool.write_text('#!/usr/bin/env python3\nimport os\nfrom pathlib import Path\nimport sys\n'
-                        f'lines = {lines!r}\n'
+                        'lines = Path(os.environ["FM_HOME"], "rows").read_text()\n'
                         'if "--apply" in sys.argv:\n'
                         '    Path(os.environ["FM_HOME"], "applied").touch()\n'
                         f'    {apply_extra or "pass"}\n'
@@ -297,6 +311,9 @@ class CleanupTest(unittest.TestCase):
         tool.chmod(0o755)
         self.git('add', 'bin/worktree-cleanup')
         self.git('commit', '-qm', 'cleanup tool')
+
+    def rows(self, lines):
+        (self.home / 'rows').write_text(lines)
 
     def test_global_db_dry_run_apply_and_report_each_apply(self):
         missing = self.home / 'missing'
@@ -329,18 +346,51 @@ class CleanupTest(unittest.TestCase):
         self.assertEqual((self.home / 'order').read_text(), 'present')
         self.assertFalse(candidate.exists())
 
-    def test_db_active_nested_or_reappearing_path_blocks_apply_once(self):
-        missing = self.home / 'active/.claude/worktrees/missing'
-        self.db_tool(f'WOULD DROP  path={missing}  dbs=thanos_dev_old  index=2')
-        (self.state / 'live.meta').write_text(f'worktree={self.home / "active"}\n')
-        out = self.run_cleanup('--remove')
-        self.assertFalse((self.home / 'applied').exists())
-        self.assertIn(str(missing), out)
-        self.assertEqual(self.run_cleanup('--remove'), '')
-        (self.state / 'live.meta').unlink()
+    def test_db_exact_live_identity_secondmate_or_reappearing_path_blocks_apply(self):
+        active, target = self.home / 'active', self.home / 'tmp-target'
+        mate, marked = self.home / 'mate', self.home / 'marked'
+        data = self.home / 'data'
+        data.mkdir()
+        (data / 'secondmates.md').write_text(f'- two - domain (home: {mate}; scope: demo; projects: demo; added 2026-11-11)\n')
+        marked.mkdir()
+        (marked / '.fm-secondmate-home').write_text('home')
+        (self.state / 'live.meta').write_text(f'worktree={active}\n')
+        (self.state / 'live.temp-targets').write_text(f'{target}\n')
+        self.db_tool('')
+        for blocked in (active, target, mate / 'x', marked / 'x'):
+            self.rows(f'WOULD DROP  path={blocked}  dbs=thanos_dev_old  index=2')
+            out = self.run_cleanup('--remove')
+            self.assertFalse((self.home / 'applied').exists(), blocked)
+            self.assertIn(f'kept Thanos databases for {blocked}', out)
+            self.assertEqual(self.run_cleanup('--remove'), '')
+        missing = self.home / 'missing'
+        self.rows(f'WOULD DROP  path={missing}  dbs=thanos_dev_old  index=2')
         self.env['REAPPEAR'] = str(missing)
         self.run_cleanup('--remove')
         self.assertFalse((self.home / 'applied').exists())
+
+    def test_db_absent_path_below_live_slot_does_not_block_apply(self):
+        slot = self.home / 'slot/9/thanos'
+        slot.mkdir(parents=True)
+        (self.state / 'live.meta').write_text(f'worktree={slot}\n')
+        self.db_tool(f'WOULD DROP  path={slot}/.claude/worktrees/swvl-8118  dbs=thanos_dev_swvl_8118  index=10')
+        self.run_cleanup('--remove')
+        self.assertTrue((self.home / 'applied').exists())
+
+    def test_db_notices_follow_the_current_row_set(self):
+        first, second = self.home / 'first', self.home / 'second'
+        self.db_tool(f'WOULD DROP  path={first}  dbs=thanos_dev_a  index=1')
+        self.assertIn(f'ready for --remove: {first}', self.run_cleanup())
+        self.assertEqual(self.run_cleanup(), '')
+        self.rows(f'WOULD DROP  path={first}  dbs=thanos_dev_a  index=1\n'
+                  f'WOULD DROP  path={second}  dbs=thanos_dev_b  index=2')
+        self.assertIn(f'ready for --remove: {first}; {second}', self.run_cleanup())
+        second.mkdir()
+        self.assertIn(f'kept Thanos databases for {second}', self.run_cleanup())
+        self.rows('No orphan worktrees.')
+        self.assertEqual(self.run_cleanup(), '')
+        self.rows(f'WOULD DROP  path={second}  dbs=thanos_dev_b  index=2')
+        self.assertIn(f'kept Thanos databases for {second}', self.run_cleanup())
 
     def test_db_live_name_and_malformed_output_block_apply(self):
         missing = self.home / 'missing'

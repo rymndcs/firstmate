@@ -27,8 +27,8 @@
 # falling back to an explicit path. Example: from anywhere,
 # `fm-fleet-sync.sh dotfiles-private` syncs just that one clone, same as
 # passing its full projects/dotfiles-private path.
-# Arms bin/fm-leftover-worktrees.sh's periodic cleanup without doing its work
-# during this sync; that script owns discovery, retention and reporting.
+# Arms bin/fm-leftover-worktrees.sh's report-only periodic check without doing
+# its work during this sync; that script owns discovery, retention and reporting.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

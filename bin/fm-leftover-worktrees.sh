@@ -10,9 +10,11 @@
 # The watcher kills a check at FM_CHECK_TIMEOUT, so the default form never starts
 # a removal or database apply: it names each removable path and each applicable
 # database cleanup once as ready for --remove. --remove repeats the same sweep
-# outside any cap and runs those destructive steps without a command timeout.
-# It preserves primary clones, live task paths and descendants, secondmate homes,
-# Treehouse/Orca-managed paths, locked trees, stashes, dirty and uninspectable trees.
+# outside any cap and runs those destructive steps without a command timeout;
+# fm-session-start.sh runs it once per locked session start and prints its report.
+# It preserves primary clones, every direct projects/* entry, live task paths and
+# descendants, secondmate homes, Treehouse/Orca-managed paths, locked trees,
+# stashes, dirty and uninspectable trees.
 # fm-teardown.sh --check-default-content owns proof of fully landed content,
 # including squash merges; a merely pushed branch is insufficient for this sweep.
 # Removal uses git worktree remove without --force and never deletes branches.
@@ -26,10 +28,12 @@
 # A default pass has a 20s budget and a persistent cursor; inspection commands
 # have a 5s cap so a slow candidate cannot indefinitely starve later work. The
 # registered check therefore needs the default FM_CHECK_TIMEOUT=30 or greater.
-# Database rows block an apply only when present or at, inside or around a live
-# task path or secondmate home; pool, legacy and Orca locations do not block.
-# state/leftover-worktrees.json owns the cursor and once-only notices; a path's
-# notices retire when it is removed, and every actual apply is reported.
+# A database row blocks an apply only when present on disk, equal to a live
+# task's worktree= or state/<id>.temp-targets entry, or inside a secondmate home;
+# pool, legacy and Orca locations, even below a live slot, do not block.
+# state/leftover-worktrees.json owns the cursor and once-only notices. A path's
+# notices retire when it leaves every worktree list, and database notices retire
+# when the dry run no longer produces them; every actual apply is reported.
 # An advisory flock serializes passes across restarts.
 # An absent/corrupt protection record or unsafe state path preserves all work.
 # Away mode skips both arming and project writes. No runtime endpoint is stopped.
@@ -105,6 +109,7 @@ done < "$2"
                          ROOT / 'bin/fm-secondmate-registry-lib.sh', registry).splitlines():
             homes.append(Path(value).expanduser().resolve())
     active = []
+    temps = []
     for home in homes:
         state = STATE if home == HOME else home / 'state'
         for meta in state.glob('*.meta'):
@@ -113,22 +118,27 @@ done < "$2"
             if not values or any(not v or not Path(v).is_absolute() for v in values):
                 raise ValueError(f'unreadable worktree identity in {meta}')
             active.extend(Path(v).resolve() for v in values)
-    return homes[1:], active
+            record = meta.with_suffix('.temp-targets')
+            if record.exists():
+                temps.extend(Path(v).resolve() for v in record.read_text().splitlines() if v)
+    return homes[1:], active, temps
 
 
-def live(path):
-    homes, active = protection()
-    if any(inside(path, p) or inside(p, path) for p in active + homes):
-        return 'recorded task or secondmate home'
-    if any((parent / '.fm-secondmate-home').exists() for parent in (path, *path.parents)):
-        return 'secondmate home'
-    return ''
+def marked_home(path):
+    return any((parent / '.fm-secondmate-home').exists() for parent in (path, *path.parents))
+
+
+def database_blocked(path):
+    homes, active, temps = protection()
+    return path in active or path in temps or any(inside(path, h) for h in homes) or marked_home(path)
 
 
 def protected(path):
-    reason = live(path)
-    if reason:
-        return reason
+    homes, active, _ = protection()
+    if any(inside(path, p) or inside(p, path) for p in active + homes):
+        return 'recorded task or secondmate home'
+    if marked_home(path):
+        return 'secondmate home'
     if inside(path, PROJECTS / 'thanos-worktrees'):
         return 'preserved legacy worktrees'
     for parent in (path, *path.parents):
@@ -193,7 +203,7 @@ def retire(*keys):
 
 def clean(project, entry):
     path = Path(entry['worktree']).resolve()
-    if path == project or protected(path):
+    if path == project or path.parent == PROJECTS or protected(path):
         return
     reason = ''
     if 'locked' in entry:
@@ -237,6 +247,14 @@ def databases(project):
     tool = project / 'bin/worktree-cleanup'
     if project.name != 'thanos' or not tool.is_file():
         return
+    prefix = f'db:{project}:'
+    key, message = database_pass(project, tool)
+    RECORD['named'] = [k for k in RECORD['named'] if not k.startswith(prefix) or k == prefix + key]
+    if key:
+        notice(prefix + key, message)
+
+
+def database_pass(project, tool):
     dry = run(tool, cwd=project)
     rows = []
     for line in dry.splitlines():
@@ -244,26 +262,23 @@ def databases(project):
             continue
         match = re.fullmatch(r'WOULD DROP  path=(.+)  dbs=(\S+)  index=([0-9]+)', line)
         if not match:
-            notice('db-output:' + str(project), f'kept Thanos databases: unexpected cleanup output for {project}')
-            return
+            return 'output', f'kept Thanos databases: unexpected cleanup output for {project}'
         path = Path(match[1])
         names = match[2].split(',')
         if not path.is_absolute() or not all(re.fullmatch(r'thanos_(dev|mx|ac|test|mxtest|actest)_[A-Za-z0-9_-]+', n) for n in names):
-            notice('db:' + str(path), f'kept Thanos databases for {path}: unsafe cleanup target')
-            return
+            return f'unsafe:{path}', f'kept Thanos databases for {path}: unsafe cleanup target'
         rows.append(path)
     if not rows or away():
-        return
+        return '', ''
     for path in rows:
-        if os.path.lexists(path) or live(path.resolve()):
-            notice('db:' + str(path), f'kept Thanos databases for {path}: path exists or belongs to live work')
-            return
+        if os.path.lexists(path) or database_blocked(path.resolve()):
+            return f'blocked:{path}', f'kept Thanos databases for {path}: path exists or belongs to live work'
     if CAPPED:
-        notice('db-ready:' + str(project), f'Thanos databases ready for --remove: {"; ".join(map(str, rows))}')
-        return
+        listed = '; '.join(map(str, rows))
+        return f'ready:{listed}', f'Thanos databases ready for --remove: {listed}'
     output = run(tool, '--apply', cwd=project, capped=False)
-    retire('db-ready:' + str(project), *('db:' + str(path) for path in rows))
     REPORT.append('Thanos database cleanup reported: ' + output.strip().replace('\n', '; '))
+    return '', ''
 
 
 def arm():
@@ -303,12 +318,15 @@ def sweep():
         try:
             databases(project)
         except (OSError, ValueError, AttributeError, TypeError, subprocess.SubprocessError, TimeoutError) as exc:
-            notice('db:' + str(project), f'kept Thanos databases for {project}: cleanup could not complete ({type(exc).__name__})')
+            notice(f'db:{project}:error', f'kept Thanos databases for {project}: cleanup could not complete ({type(exc).__name__})')
     jobs = []
     for project in projects:
         for entry in worktrees(project):
             if 'bare' not in entry:
                 jobs.append((str(Path(entry['worktree']).resolve()), project, entry))
+    listed = {job[0] for job in jobs}
+    RECORD['named'] = [k for k in RECORD['named']
+                       if not k.removeprefix('ready:').startswith('/') or k.removeprefix('ready:') in listed]
     jobs.sort(key=lambda job: job[0])
     cursor = RECORD.get('cursor', '')
     jobs = [j for j in jobs if j[0] > cursor] + [j for j in jobs if j[0] <= cursor]

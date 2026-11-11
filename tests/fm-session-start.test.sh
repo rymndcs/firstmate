@@ -1237,6 +1237,31 @@ EOF
   pass "fm-session-start.sh composes the real fm-lock.sh, fm-bootstrap.sh, and fm-wake-drain.sh output verbatim"
 }
 
+test_session_start_runs_uncapped_leftover_removal() {
+  local rec root home fakebin out external
+  rec=$(new_world leftover-removal)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  git init -q -b main "$home/projects/demo"
+  git -C "$home/projects/demo" config --local commit.gpgsign false
+  git -C "$home/projects/demo" commit -q --allow-empty -m init
+  external="${home%/*}/external"
+  git -C "$home/projects/demo" worktree add -q -b leftover "$external"
+
+  out=$(FM_HOME="$home" "$ROOT/bin/fm-leftover-worktrees.sh")
+  assert_contains "$out" "ready for --remove: " "the capped check did not report the removable leftover"
+  [ -d "$external" ] || fail "the capped check removed a leftover"
+
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH")
+  assert_contains "$out" "Leftover worktrees: removed " "session start did not report the uncapped leftover removal"
+  [ ! -e "$external" ] || fail "session start did not remove the clean, landed leftover"
+  [ -d "$home/projects/demo" ] || fail "session start removed the primary clone"
+  pass "session start runs the uncapped leftover removal and reports it, while the capped check only reports"
+}
+
 # --- interrupted run: drained wakes still print -----------------------------
 
 # interrupt_session_start <sigs> <run-dir> <home> <root> <fakebin>: start
@@ -2482,6 +2507,7 @@ test_endpoint_liveness_tmux
 test_endpoint_liveness_herdr
 test_pr_registered_by_drain_is_in_printed_meta
 test_composition_invokes_real_scripts
+test_session_start_runs_uncapped_leftover_removal
 test_killed_liveness_probe_leaves_wakes_queued
 test_interrupted_drain_prints_drained_wakes
 test_interrupted_bootstrap_prints_only_finished_steps
