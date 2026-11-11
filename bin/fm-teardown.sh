@@ -124,9 +124,10 @@
 # bin/fm-worktree-cleanup.sh owns writer stopping, selection, retention, the
 # task's temporary-target record (state/<task-id>.temp-targets) and reporting.
 # Ship tasks returning to Treehouse first remove registered nested worktrees,
-# deepest first, only after every nested tree is clean and its HEAD and all commits
-# reachable through its HEAD reflog and private refs/worktree/ refs are proven
-# in the refreshed default branch. Hidden index flags and ignored files retained
+# deepest first, only after every nested tree is clean, its HEAD content is proven
+# in the refreshed default branch, and Git's all-ref/all-reflog traversal across
+# every worktree finds no commits outside that branch's reachability or diagnostics.
+# Hidden index flags and ignored files retained
 # by fm-worktree-cleanup.sh refuse removal. Immediately before each non-forced
 # removal, teardown re-reads cleanliness, flags, retention, history and the inspected HEAD;
 # a changed or uninspectable copy refuses. The final read and removal are not atomic.
@@ -1062,51 +1063,47 @@ validate_nested_worktree_files() {
   fi
 }
 
+read_registered_worktrees() {
+  local field diagnostics complete=0
+  REGISTERED_WORKTREES=()
+  while IFS= read -r -d '' field; do
+    case "$field" in
+      fm-worktree-list-complete) complete=1 ;;
+      'worktree '*) REGISTERED_WORKTREES+=("${field#worktree }") ;;
+    esac
+  done < <(
+    {
+      if diagnostics=$(git -C "$PROJ" worktree list --porcelain -z 2>&1 >&3) && [ -z "$diagnostics" ]; then
+        printf 'fm-worktree-list-complete\0'
+      else
+        printf '%s\n' "$diagnostics" >&2
+      fi
+    } 3>&1
+  )
+  if [ "$complete" != 1 ] || [ "${#REGISTERED_WORKTREES[@]}" -eq 0 ]; then
+    echo "REFUSED: cannot list nested worktrees and required Git contexts for $WT." >&2
+    return 1
+  fi
+}
+
 validate_nested_worktree_history() {
-  local history refs ref commit commits
-  if ! history=$(git -C "$WT" reflog show --format=%H HEAD 2>&1); then
-    echo "REFUSED: nested worktree $WT HEAD reflog cannot be inspected." >&2
-    return 1
-  fi
-  if ! refs=$(git -C "$WT" for-each-ref --format='%(refname)' refs/worktree/ 2>&1); then
-    echo "REFUSED: nested worktree $WT private refs cannot be inspected." >&2
-    return 1
-  fi
-  while IFS= read -r ref; do
-    [ -n "$ref" ] || continue
-    if ! commit=$(git -C "$WT" rev-parse --verify "$ref^{commit}" 2>/dev/null); then
-      echo "REFUSED: nested worktree $WT private ref $ref cannot be inspected." >&2
+  local history context top common expected_common
+  local REGISTERED_WORKTREES=()
+  read_registered_worktrees || return 1
+  expected_common=$(git -C "$PROJ" rev-parse --path-format=absolute --git-common-dir 2>&1) || expected_common=
+  for context in "${REGISTERED_WORKTREES[@]}"; do
+    top=$(git -C "$context" rev-parse --show-toplevel 2>&1) || top=
+    common=$(git -C "$context" rev-parse --path-format=absolute --git-common-dir 2>&1) || common=
+    if [ "$top" != "$context" ] || [ -z "$common" ] || [ "$common" != "$expected_common" ]; then
+      echo "REFUSED: nested worktree $WT cannot inspect required Git context $context." >&2
       return 1
     fi
-    history="${history:+$history$'\n'}$commit"
-  done <<EOF
-$refs
-EOF
-  if ! commits=$(git -C "$WT" rev-list --stdin --not "$DEFAULT_REF" -- 2>&1 <<EOF
-$history
-EOF
-  ); then
-    echo "REFUSED: nested worktree $WT retained history cannot be inspected." >&2
-    return 1
-  fi
-  while IFS= read -r commit; do
-    [ -n "$commit" ] || continue
-    work_landed_verdict HEAD default-only "$commit"
-    case "$LANDED_VERDICT" in
-      landed) ;;
-      unlanded)
-        echo "REFUSED: nested worktree $WT retains commit $commit not in the default branch." >&2
-        return 1
-        ;;
-      *)
-        echo "REFUSED: nested worktree $WT cannot establish landing of retained commit $commit." >&2
-        printf 'what could not be checked:\n%s\n' "$LANDED_UNCERTAIN_REASONS" >&2
-        return 1
-        ;;
-    esac
-  done <<EOF
-$commits
-EOF
+    if ! history=$(git -C "$context" rev-list --all --reflog --not "$DEFAULT_REF" -- 2>&1) || [ -n "$history" ]; then
+      echo "REFUSED: nested worktree $WT retained history cannot be inspected or is not entirely in the default branch (Git context $context)." >&2
+      printf '%s\n' "$history" >&2
+      return 1
+    fi
+  done
 }
 
 validate_worktree_teardown_safety() {
@@ -1209,23 +1206,14 @@ validate_worktree_teardown_safety() {
 
 remove_nested_ship_worktrees() {
   local WT=$WT FORCE=$FORCE
-  local slot field path top head complete=0 i j swap
-  local nested=() heads=()
+  local slot path top head i j swap
+  local nested=() heads=() REGISTERED_WORKTREES=()
   [ "$KIND" = ship ] && [ "$BACKEND" != orca ] && [ -d "$WT" ] || return 0
   slot=$(canonical_existing_dir "$WT") || return 1
-  while IFS= read -r -d '' field; do
-    case "$field" in
-      fm-worktree-list-complete) complete=1 ;;
-      'worktree '*)
-        path=${field#worktree }
-        case "$path" in "$slot"/*) nested+=("$path") ;; esac
-        ;;
-    esac
-  done < <(git -C "$PROJ" worktree list --porcelain -z && printf 'fm-worktree-list-complete\0')
-  if [ "$complete" != 1 ]; then
-    echo "REFUSED: cannot list nested worktrees inside $slot." >&2
-    return 1
-  fi
+  read_registered_worktrees || return 1
+  for path in "${REGISTERED_WORKTREES[@]}"; do
+    case "$path" in "$slot"/*) nested+=("$path") ;; esac
+  done
   [ "${#nested[@]}" -gt 0 ] || return 0
   for path in "${nested[@]}"; do
     top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || top=

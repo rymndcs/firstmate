@@ -272,7 +272,7 @@ default_ref() {
 }
 
 content_in_default() {
-  local name ref default_tree merged_tree rc commit=${1:-HEAD}
+  local name ref default_tree merged_tree rc
   default_ref || return 1
   ref=$DEFAULT_REF
   name=${ref#refs/remotes/origin/}
@@ -282,7 +282,7 @@ content_in_default() {
     landed_note_uncertain "$name has no readable tree, so its content could not be compared"
     return 1
   fi
-  if merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" "$commit" 2>/dev/null); then
+  if merged_tree=$(git -C "$WT" merge-tree --write-tree "$ref" HEAD 2>/dev/null); then
     merged_tree=$(printf '%s\n' "$merged_tree" | head -1)
     [ "$merged_tree" = "$default_tree" ]
     return
@@ -310,7 +310,7 @@ work_landed_verdict() {
   LANDED_REMAINING=
 
   if [ "${2:-}" = default-only ]; then
-    if content_in_default "${3:-HEAD}"; then
+    if content_in_default; then
       LANDED_VERDICT=landed
     elif [ "$LANDED_UNCERTAIN" -eq 0 ]; then
       LANDED_VERDICT=unlanded
