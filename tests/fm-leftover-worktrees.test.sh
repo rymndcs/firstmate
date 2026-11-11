@@ -1,0 +1,480 @@
+#!/usr/bin/env bash
+set -eu
+# shellcheck source=tests/lib.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
+fm_git_identity
+export ROOT
+python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(os.environ['ROOT'])
+
+
+class CleanupTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='fm-leftovers-')
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name).resolve()
+        self.repo = self.home / 'projects' / 'demo'
+        self.state = self.home / 'state'
+        self.state.mkdir()
+        self.env = dict(os.environ, FM_HOME=str(self.home), FM_ROOT_OVERRIDE=str(ROOT),
+                        FM_STATE_OVERRIDE=str(self.state), HOME=str(self.home),
+                        FM_GATE_REFUSE_BYPASS='1')
+        self.git('init', '-q', '-b', 'main', str(self.repo), root=self.home)
+        self.git('config', 'commit.gpgsign', 'false')
+        (self.repo / '.gitignore').write_text('ignored\n')
+        (self.repo / 'file').write_text('base\n')
+        self.git('add', '.')
+        self.git('commit', '-qm', 'base')
+
+    def git(self, *args, root=None):
+        return subprocess.check_output(['git', '-C', str(root or self.repo), *args],
+                                       env=self.env, stderr=subprocess.DEVNULL).decode().strip()
+
+    def wt(self, name='leftover', path=None):
+        path = path or self.home / name
+        self.git('worktree', 'add', '-qb', name, str(path))
+        return path
+
+    def run_cleanup(self, *args):
+        p = subprocess.run([str(ROOT / 'bin/fm-leftover-worktrees.sh'), *args],
+                           env=self.env, text=True, capture_output=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        return p.stdout
+
+    def test_external_landed_and_detached_removed(self):
+        a = self.wt(path=self.home / 'elsewhere' / 'with spaces')
+        b = self.wt('detached')
+        self.git('checkout', '-q', '--detach', root=b)
+        out = self.run_cleanup('--remove')
+        self.assertFalse(a.exists())
+        self.assertFalse(b.exists())
+        self.assertTrue(self.repo.exists())
+        self.assertIn(str(a), out)
+        self.assertEqual(self.run_cleanup('--remove'), '')
+
+    def test_capped_check_reports_ready_without_destructive_step(self):
+        missing = self.home / 'missing'
+        self.db_tool(f'WOULD DROP  path={missing}  dbs=thanos_dev_old  index=2')
+        a = self.wt()
+        out = self.run_cleanup()
+        self.assertTrue(a.exists())
+        self.assertFalse((self.home / 'applied').exists())
+        self.assertIn(f'ready for --remove: {a}', out)
+        self.assertIn(f'Thanos databases ready for --remove: {missing}', out)
+        self.assertEqual(self.run_cleanup(), '')
+        out = self.run_cleanup('--remove')
+        self.assertFalse(a.exists())
+        self.assertTrue((self.home / 'applied').exists())
+        self.assertIn(f'removed {a}', out)
+
+    def test_linked_project_entry_is_protected_but_its_siblings_are_swept(self):
+        linked = self.wt('linked', self.home / 'projects' / 'zz-linked')
+        a = self.wt()
+        out = self.run_cleanup('--remove')
+        self.assertTrue(self.repo.exists() and linked.exists())
+        self.assertFalse(a.exists())
+        self.assertEqual(out, f'Leftover worktrees: removed {a}\n')
+
+    def test_externally_removed_path_is_named_again_when_reused(self):
+        a = self.wt()
+        (a / 'file').write_text('dirty\n')
+        self.assertIn(f'kept {a}', self.run_cleanup())
+        self.git('worktree', 'remove', '--force', str(a))
+        self.assertEqual(self.run_cleanup(), '')
+        self.git('worktree', 'add', '-q', str(a), 'leftover')
+        self.assertIn(f'ready for --remove: {a}', self.run_cleanup())
+        self.git('worktree', 'remove', str(a))
+        self.assertEqual(self.run_cleanup(), '')
+        self.git('worktree', 'add', '-q', str(a), 'leftover')
+        self.assertIn(f'ready for --remove: {a}', self.run_cleanup())
+        (a / 'file').write_text('dirty again\n')
+        self.assertIn(f'kept {a}', self.run_cleanup())
+
+    def test_reused_path_named_again_after_removal(self):
+        a = self.wt()
+        (a / 'file').write_text('dirty\n')
+        self.assertIn(f'kept {a}', self.run_cleanup('--remove'))
+        (a / 'file').write_text('base\n')
+        self.assertIn(f'removed {a}', self.run_cleanup('--remove'))
+        self.git('worktree', 'add', '-q', str(a), 'leftover')
+        (a / 'file').write_text('dirty again\n')
+        self.assertIn(f'kept {a}', self.run_cleanup('--remove'))
+        self.assertTrue(a.exists())
+
+    def test_dirty_and_untracked_named_once_then_removed(self):
+        a, b = self.wt(), self.wt('untracked')
+        (a / 'file').write_text('dirty\n')
+        (b / 'new').write_text('new\n')
+        first = self.run_cleanup()
+        self.assertIn(str(a), first)
+        self.assertIn(str(b), first)
+        self.assertTrue(a.exists() and b.exists())
+        self.assertEqual(self.run_cleanup(), '')
+        (a / 'file').write_text('base\n')
+        (b / 'new').unlink()
+        self.run_cleanup('--remove')
+        self.assertFalse(a.exists() or b.exists())
+
+    def test_unlanded_and_stash_preserved(self):
+        a = self.wt()
+        (a / 'file').write_text('unique\n')
+        self.git('commit', '-qam', 'unique', root=a)
+        self.assertIn(str(a), self.run_cleanup('--remove'))
+        self.assertTrue(a.exists())
+        b = self.wt('stash')
+        (b / 'file').write_text('saved\n')
+        self.git('stash', 'push', '-qm', 'saved', root=b)
+        self.run_cleanup('--remove')
+        self.assertTrue(a.exists() and b.exists())
+
+    def test_hidden_index_changes_preserved(self):
+        a = self.wt()
+        self.git('update-index', '--skip-worktree', 'file', root=a)
+        (a / 'file').write_text('hidden edit\n')
+        self.assertEqual(self.git('status', '--porcelain', root=a), '')
+        self.run_cleanup('--remove')
+        self.assertTrue(a.exists())
+
+    def test_unreachable_origin_and_corrupt_state_preserved(self):
+        a = self.wt()
+        self.git('remote', 'add', 'origin', str(self.home / 'unreachable'))
+        self.assertIn(str(a), self.run_cleanup('--remove'))
+        self.assertTrue(a.exists())
+        self.git('remote', 'remove', 'origin')
+        (self.state / 'leftover-worktrees.json').write_text('invalid')
+        p = subprocess.run([str(ROOT / 'bin/fm-leftover-worktrees.sh')],
+                           env=self.env, capture_output=True)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertTrue(a.exists())
+
+    def test_orca_inventory_failure_preserves_candidates(self):
+        a = self.wt()
+        fakebin = self.home / 'fakebin'
+        fakebin.mkdir()
+        orca = fakebin / 'orca'
+        orca.write_text('#!/bin/sh\nexit 1\n')
+        orca.chmod(0o755)
+        self.env['PATH'] = str(fakebin) + ':' + self.env['PATH']
+        self.assertIn(str(a), self.run_cleanup('--remove'))
+        self.assertTrue(a.exists())
+        orca.write_text('#!/bin/sh\necho "[]"\n')
+        self.assertEqual(self.run_cleanup('--remove'), '')
+        self.assertTrue(a.exists())
+
+    def test_unreadable_task_identity_named_once(self):
+        a = self.wt()
+        (self.state / 'unknown.meta').write_text('kind=ship\n')
+        self.assertIn(str(a), self.run_cleanup('--remove'))
+        self.assertTrue(a.exists())
+        self.assertEqual(self.run_cleanup('--remove'), '')
+
+    def test_landing_inspection_keeps_gate_agent_refusal(self):
+        a = self.wt()
+        env = dict(self.env, NO_MISTAKES_GATE='review')
+        env.pop('FM_GATE_REFUSE_BYPASS', None)
+        p = subprocess.run([str(ROOT / 'bin/fm-teardown.sh'), '--check-default-content',
+                            str(self.repo), str(a)], env=env, capture_output=True)
+        self.assertEqual(p.returncode, 3)
+        self.assertTrue(a.exists())
+
+    def test_orca_inventory_protects_arbitrary_managed_path(self):
+        a, b = self.wt(), self.wt('outside')
+        fakebin = self.home / 'fakebin'
+        fakebin.mkdir()
+        orca = fakebin / 'orca'
+        payload = json.dumps({'ok': True, 'result': {'worktrees': [{'path': str(a)}]}})
+        orca.write_text(f'#!/bin/sh\nprintf "%s\\n" \'{payload}\'\n')
+        orca.chmod(0o755)
+        self.env['PATH'] = str(fakebin) + ':' + self.env['PATH']
+        self.run_cleanup('--remove')
+        self.assertTrue(a.exists())
+        self.assertFalse(b.exists())
+
+    def test_fresh_task_registration_during_comparison_preserves_tree(self):
+        a = self.wt()
+        fakebin = self.home / 'fakebin'
+        fakebin.mkdir()
+        wrapper = fakebin / 'git'
+        real = subprocess.check_output(['which', 'git'], text=True).strip()
+        wrapper.write_text('#!/usr/bin/env python3\nimport os, sys\nfrom pathlib import Path\n'
+                           f'if "merge-tree" in sys.argv: Path({str(self.state / "new.meta")!r}).write_text({f"worktree={a}"!r})\n'
+                           f'os.execv({real!r}, [{real!r}] + sys.argv[1:])\n')
+        wrapper.chmod(0o755)
+        self.env['PATH'] = str(fakebin) + ':' + self.env['PATH']
+        self.run_cleanup('--remove')
+        self.assertTrue(a.exists())
+
+    def test_squash_landed_removed_but_open_pushed_work_kept(self):
+        a = self.wt()
+        (a / 'extra').write_text('feature\n')
+        self.git('add', 'extra', root=a)
+        self.git('commit', '-qm', 'feature', root=a)
+        self.git('merge', '--squash', 'leftover')
+        self.git('commit', '-qm', 'squashed')
+        self.run_cleanup('--remove')
+        self.assertFalse(a.exists())
+        b = self.wt('open')
+        (b / 'extra').write_text('open\n')
+        self.git('commit', '-qam', 'open', root=b)
+        remote = self.home / 'remote.git'
+        self.git('clone', '-q', '--bare', str(self.repo), str(remote))
+        self.git('remote', 'add', 'origin', str(remote))
+        self.git('push', '-q', 'origin', 'open')
+        self.run_cleanup('--remove')
+        self.assertTrue(b.exists())
+
+    def hold(self, cwd, path=None):
+        code = 'import sys; f = sys.argv[1] and open(sys.argv[1]); print("held", flush=True); sys.stdin.read()'
+        proc = subprocess.Popen(['python3', '-c', code, str(path or '')], cwd=str(cwd),
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.stdin.close)
+        self.assertEqual(proc.stdout.readline(), 'held\n')
+
+    def test_removal_predicate_fixture_matrix(self):
+        linked = self.wt('linked', self.home / 'projects' / 'zz-linked')
+        active = self.wt('active')
+        nested = self.wt('nested', active / '.claude/worktrees/nested')
+        target = self.wt('target', self.home / 'tmp-base')
+        below_target = self.wt('below-target', self.home / 'tmp-root' / 'inner')
+        (self.state / 'live.meta').write_text(f'worktree={active}\n')
+        (self.state / 'live.temp-targets').write_text(f'{target}\n{self.home / "tmp-root"}\n')
+        locked = self.wt('locked')
+        self.git('worktree', 'lock', str(locked))
+        legacy = self.wt('legacy', self.home / 'projects/thanos-worktrees/legacy-claude/x')
+        pool = self.home / 'pool'
+        slot = self.wt('slot', pool / 'one')
+        (pool / 'treehouse-state.json').write_text('{}')
+        orca = self.wt('orca-slot', self.home / 'orca' / 'slot')
+        secondmate = self.wt('secondmate')
+        (secondmate / '.fm-secondmate-home').write_text('home')
+        busy_cwd = self.wt('busy-cwd')
+        self.hold(busy_cwd)
+        busy_file = self.wt('busy-file')
+        self.hold(self.home, busy_file / 'file')
+        control = self.wt()
+        out = self.run_cleanup('--remove')
+        for path in (self.repo, linked, active, nested, target, below_target, locked, legacy,
+                     slot, orca, secondmate, busy_cwd, busy_file):
+            self.assertTrue(path.exists(), str(path))
+        self.assertFalse(control.exists())
+        self.assertEqual(out, f'Leftover worktrees: removed {control}; kept {locked}: locked worktree\n')
+
+    def test_uninspectable_process_use_removes_nothing_and_warns_once(self):
+        a = self.wt()
+        fakebin = self.home / 'fakebin'
+        fakebin.mkdir()
+        real = subprocess.check_output(['which', 'python3'], text=True).strip()
+        wrapper = fakebin / 'python3'
+        wrapper.write_text(f'#!/bin/sh\ncase " $* " in *" --in-use "*) exit 1 ;; esac\nexec {real} "$@"\n')
+        wrapper.chmod(0o755)
+        path = self.env['PATH']
+        self.env['PATH'] = f'{fakebin}:{path}'
+        warning = 'removed nothing this pass: process use could not be inspected'
+        self.assertEqual(self.run_cleanup('--remove'), f'Leftover worktrees: {warning}\n')
+        self.assertEqual(self.run_cleanup('--remove'), '')
+        self.assertTrue(a.exists())
+        self.env['PATH'] = path
+        self.assertIn(f'removed {a}', self.run_cleanup('--remove'))
+        b = self.wt('again')
+        self.env['PATH'] = f'{fakebin}:{path}'
+        self.assertIn(warning, self.run_cleanup('--remove'))
+        self.assertTrue(b.exists())
+
+    def test_failed_refresh_never_compares_against_a_stale_default(self):
+        remote = self.home / 'remote.git'
+        self.git('clone', '-q', '--bare', str(self.repo), str(remote))
+        self.git('remote', 'add', 'origin', str(remote))
+        a = self.wt()
+        (a / 'file').write_text('dirty\n')
+        self.assertIn(f'kept {a}', self.run_cleanup('--remove'))
+        self.git('fetch', '-q', 'origin')
+        b = self.wt('second')
+        remote.rename(self.home / 'gone.git')
+        (a / 'file').write_text('base\n')
+        self.run_cleanup('--remove')
+        self.assertTrue(a.exists() and b.exists())
+
+    def test_default_branch_fetched_once_per_repository(self):
+        remote = self.home / 'remote.git'
+        self.git('clone', '-q', '--bare', str(self.repo), str(remote))
+        self.git('remote', 'add', 'origin', str(remote))
+        paths = [self.wt(f'landed-{n}') for n in range(3)]
+        fakebin = self.home / 'fakebin'
+        fakebin.mkdir()
+        real = subprocess.check_output(['which', 'git'], text=True).strip()
+        log = self.home / 'fetches'
+        wrapper = fakebin / 'git'
+        wrapper.write_text(f'#!/bin/sh\ncase " $* " in *" fetch "*) echo fetch >> {log} ;; esac\nexec {real} "$@"\n')
+        wrapper.chmod(0o755)
+        self.env['PATH'] = f'{fakebin}:{self.env["PATH"]}'
+        self.run_cleanup('--remove')
+        self.assertFalse(any(p.exists() for p in paths))
+        self.assertEqual(log.read_text(), 'fetch\n')
+
+    def test_away_skips_all_writes(self):
+        a = self.wt()
+        (self.state / '.afk').touch()
+        self.assertEqual(self.run_cleanup('--remove'), '')
+        self.assertTrue(a.exists())
+
+    def test_help_includes_safety_contract_without_cleanup(self):
+        a = self.wt()
+        out = self.run_cleanup('--help')
+        self.assertIn('Away mode skips both arming and project writes.', out)
+        self.assertTrue(a.exists())
+
+    def test_ignored_material_removed_without_force(self):
+        a = self.wt()
+        (a / 'ignored').write_text('local ignored data')
+        self.run_cleanup('--remove')
+        self.assertFalse(a.exists())
+
+    def test_secondmate_registry_and_orca_pool_preserved(self):
+        a = self.wt('secondmate')
+        data = self.home / 'data'
+        data.mkdir()
+        (data / 'secondmates.md').write_text(f'- two - domain (home: {a}; scope: demo; projects: demo; added 2026-11-11)\n')
+        b = self.wt('orca-slot', self.home / 'orca' / 'slot')
+        self.run_cleanup('--remove')
+        self.assertTrue(a.exists() and b.exists())
+
+    def test_fleet_sync_arms_cleanup_instead_of_doing_it_at_startup(self):
+        a = self.wt()
+        p = subprocess.run([str(ROOT / 'bin/fm-fleet-sync.sh')], env=self.env,
+                           text=True, capture_output=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(a.exists())
+        self.assertTrue((self.state / 'leftover-worktrees.check-trust').exists())
+
+    def test_arm_registers_check_without_running_cleanup(self):
+        a = self.wt()
+        self.run_cleanup('--arm')
+        self.assertTrue(a.exists())
+        check = self.state / 'leftover-worktrees.check.sh'
+        self.assertTrue(check.exists())
+        self.assertTrue((self.state / 'leftover-worktrees.check-trust').exists())
+        p = subprocess.run(['bash', str(check)], env=self.env, capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f'ready for --remove: {a}', p.stdout)
+        self.assertTrue(a.exists())
+
+    def db_tool(self, lines, apply_extra=''):
+        self.repo.rename(self.repo.with_name('thanos'))
+        self.repo = self.repo.with_name('thanos')
+        tool = self.repo / 'bin/worktree-cleanup'
+        tool.parent.mkdir()
+        self.rows(lines)
+        tool.write_text('#!/usr/bin/env python3\nimport os\nfrom pathlib import Path\nimport sys\n'
+                        'lines = Path(os.environ["FM_HOME"], "rows").read_text()\n'
+                        'if "--apply" in sys.argv:\n'
+                        '    Path(os.environ["FM_HOME"], "applied").touch()\n'
+                        f'    {apply_extra or "pass"}\n'
+                        '    print(lines.replace("WOULD DROP", "DROP"))\n'
+                        'else:\n    print(lines)\n'
+                        '    target = os.environ.get("REAPPEAR")\n'
+                        '    if target: Path(target).mkdir()\n')
+        tool.chmod(0o755)
+        self.git('add', 'bin/worktree-cleanup')
+        self.git('commit', '-qm', 'cleanup tool')
+
+    def rows(self, lines):
+        (self.home / 'rows').write_text(lines)
+
+    def test_global_db_dry_run_apply_and_report_each_apply(self):
+        missing = self.home / 'missing'
+        self.db_tool(f'WOULD DROP  path={missing}  dbs=thanos_dev_old,thanos_test_old  index=2')
+        for _ in range(2):
+            (self.home / 'applied').unlink(missing_ok=True)
+            out = self.run_cleanup('--remove')
+            self.assertTrue((self.home / 'applied').exists())
+            self.assertIn('thanos_dev_old', out)
+            self.assertIn('DROP', out)
+
+    def test_db_absent_pool_nested_path_does_not_block_apply(self):
+        missing = self.home / '.treehouse/thanos-2d8e03/9/thanos/.claude/worktrees/swvl-8117'
+        (self.home / '.treehouse/thanos-2d8e03/9').mkdir(parents=True)
+        (self.home / '.treehouse/thanos-2d8e03/treehouse-state.json').write_text('{}')
+        legacy = self.home / 'projects/thanos-worktrees/gone'
+        self.db_tool(f'WOULD DROP  path={missing}  dbs=thanos_dev_swvl_8117  index=9\n'
+                     f'WOULD DROP  path={legacy}  dbs=thanos_dev_gone  index=3')
+        (self.home / 'Library/Application Support/Orca').mkdir(parents=True)
+        self.run_cleanup('--remove')
+        self.assertTrue((self.home / 'applied').exists())
+
+    def test_database_cleanup_runs_before_worktree_comparison_budget(self):
+        missing = self.home / 'missing'
+        candidate = self.home / 'leftover'
+        self.db_tool(f'WOULD DROP  path={missing}  dbs=thanos_dev_old  index=2',
+                     f'Path({str(self.home / "order")!r}).write_text("present" if Path({str(candidate)!r}).exists() else "removed")')
+        self.wt()
+        self.run_cleanup('--remove')
+        self.assertEqual((self.home / 'order').read_text(), 'present')
+        self.assertFalse(candidate.exists())
+
+    def test_db_exact_live_identity_secondmate_or_reappearing_path_blocks_apply(self):
+        active, target = self.home / 'active', self.home / 'tmp-target'
+        mate, marked = self.home / 'mate', self.home / 'marked'
+        data = self.home / 'data'
+        data.mkdir()
+        (data / 'secondmates.md').write_text(f'- two - domain (home: {mate}; scope: demo; projects: demo; added 2026-11-11)\n')
+        marked.mkdir()
+        (marked / '.fm-secondmate-home').write_text('home')
+        (self.state / 'live.meta').write_text(f'worktree={active}\n')
+        (self.state / 'live.temp-targets').write_text(f'{target}\n')
+        self.db_tool('')
+        for blocked in (active, target, mate / 'x', marked / 'x'):
+            self.rows(f'WOULD DROP  path={blocked}  dbs=thanos_dev_old  index=2')
+            out = self.run_cleanup('--remove')
+            self.assertFalse((self.home / 'applied').exists(), blocked)
+            self.assertIn(f'kept Thanos databases for {blocked}', out)
+            self.assertEqual(self.run_cleanup('--remove'), '')
+        missing = self.home / 'missing'
+        self.rows(f'WOULD DROP  path={missing}  dbs=thanos_dev_old  index=2')
+        self.env['REAPPEAR'] = str(missing)
+        self.run_cleanup('--remove')
+        self.assertFalse((self.home / 'applied').exists())
+
+    def test_db_absent_path_below_live_slot_does_not_block_apply(self):
+        slot = self.home / 'slot/9/thanos'
+        slot.mkdir(parents=True)
+        (self.state / 'live.meta').write_text(f'worktree={slot}\n')
+        self.db_tool(f'WOULD DROP  path={slot}/.claude/worktrees/swvl-8118  dbs=thanos_dev_swvl_8118  index=10')
+        self.run_cleanup('--remove')
+        self.assertTrue((self.home / 'applied').exists())
+
+    def test_db_notices_follow_the_current_row_set(self):
+        first, second = self.home / 'first', self.home / 'second'
+        self.db_tool(f'WOULD DROP  path={first}  dbs=thanos_dev_a  index=1')
+        self.assertIn(f'ready for --remove: {first}', self.run_cleanup())
+        self.assertEqual(self.run_cleanup(), '')
+        self.rows(f'WOULD DROP  path={first}  dbs=thanos_dev_a  index=1\n'
+                  f'WOULD DROP  path={second}  dbs=thanos_dev_b  index=2')
+        self.assertIn(f'ready for --remove: {first}; {second}', self.run_cleanup())
+        second.mkdir()
+        self.assertIn(f'kept Thanos databases for {second}', self.run_cleanup())
+        self.rows('No orphan worktrees.')
+        self.assertEqual(self.run_cleanup(), '')
+        self.rows(f'WOULD DROP  path={second}  dbs=thanos_dev_b  index=2')
+        self.assertIn(f'kept Thanos databases for {second}', self.run_cleanup())
+
+    def test_db_live_name_and_malformed_output_block_apply(self):
+        missing = self.home / 'missing'
+        self.db_tool(f'WOULD DROP  path={missing}  dbs=thanos_development  index=2')
+        self.run_cleanup('--remove')
+        self.assertFalse((self.home / 'applied').exists())
+        tool = self.repo / 'bin/worktree-cleanup'
+        tool.write_text('#!/bin/sh\necho "WOULD DROP unparseable"\n')
+        self.run_cleanup('--remove')
+        self.assertFalse((self.home / 'applied').exists())
+
+
+unittest.main(verbosity=2)
+PY

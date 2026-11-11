@@ -38,7 +38,10 @@
 #                       uses read-only advisory wording and prints no checkout
 #                       repair command. Bootstrap's MUTATING sweeps also run
 #                       only when locked; bin/fm-bootstrap.sh's own header owns
-#                       their current list. Among them the secondmate liveness
+#                       their current list. Then, still only when locked,
+#                       bin/fm-leftover-worktrees.sh --remove runs uncapped
+#                       and its report joins this section; its header owns
+#                       the guards. Among bootstrap's sweeps the secondmate liveness
 #                       sweep deterministically accounts for EVERY registered
 #                       secondmate: it relaunches only from the recovery-grade
 #                       'dead' or 'missing' states, preserves ambiguous,
@@ -319,8 +322,9 @@ render_head() {
     printf '●  Skipping every mutating step: PR-check migration, stale Herdr child\n'
     printf '●  cleanup, shared no-mistakes daemon rooting, secondmate convergence,\n'
     printf '●  secondmate liveness, pending remote handoff retry, X-mode artifacts,\n'
-    printf '●  fleet sync, and wake-queue drain. Detect-only bootstrap diagnostics\n'
-    printf '●  and the rest of this read-only-safe digest still ran below.\n'
+    printf '●  fleet sync, leftover worktree cleanup, and wake-queue drain.\n'
+    printf '●  Detect-only bootstrap diagnostics and the rest of this\n'
+    printf '●  read-only-safe digest still ran below.\n'
     printf '●  Operate read-only until this resolves - do not spawn, steer, merge, or\n'
     printf '●  otherwise mutate fleet state from this session.\n'
     printf '%s\n' "$BAR"
@@ -382,6 +386,7 @@ else
   BOOT_OUT=$(
     "$SCRIPT_DIR/fm-herdr-session-cleanup.sh" 2>&1 || true
     "$SCRIPT_DIR/fm-bootstrap.sh" 2>&1
+    FM_HOME="$FM_HOME" "$SCRIPT_DIR/fm-leftover-worktrees.sh" --remove 2>&1 || true
   )
 fi
 
