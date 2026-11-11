@@ -1,9 +1,12 @@
 #!/usr/bin/env perl
 # Guarded transition state operations; called through fm_state_path in fm-wake-lib.sh.
 # Usage: fm-state-path.pl HOME STATE OP PATH [identity]
+# STATE is the configured trust root, independent of HOME containment. Open the
+# selected directory without following its leaf and match its resolved inode.
+# Caller PID is captured before forking and supplied to create/claim/rollback.
 # Files: check/read/snapshot PATH; replace/append PATH read stdin; clear PATH
 # SNAPSHOT matches device/inode/SHA-256. snapshot prints that identity then bytes.
-# Locks: owner-create LOCK PID; owner-delete OWNER; lock-link LOCK OWNER;
+# Locks: owner-create LOCK PID; owner-delete OWNER [PID]; lock-link LOCK OWNER PID;
 # lock-check/lock-pid/lock-unlink/lock-remove LOCK [OWNER [PID]].
 # lock-identity is v1, canonical home, canonical lock, device:inode, one per line.
 # Pin owned directories with no-follow opens and fchdir; regular files must have
@@ -25,8 +28,7 @@ use File::Temp qw(tempfile tempdir);
 my ($home, $state, $op, $path, @args) = @ARGV;
 sub refuse { die "watcher: WARNING - unverified state path ($op): $_[0]\n" }
 my $home_real = abs_path($home) // refuse('home unavailable');
-my $state_rel = substr($state, length($home) + 1);
-index($state, "$home/") == 0 or refuse('state is outside this home');
+my $state_real = abs_path($state) // refuse('state unavailable');
 my @dirs;
 sub pin_dir {
     my ($name) = @_;
@@ -43,10 +45,10 @@ sub components {
     @p && !grep { $_ eq '' || $_ eq '.' || $_ eq '..' } @p or refuse('invalid relative path');
     return @p;
 }
-pin_dir($home_real);
-for my $part (components($state_rel)) { pin_dir($part) }
-my $state_dir = $dirs[-1];
-my $state_real = "$home_real/$state_rel";
+my @selected = lstat($state_real);
+my $state_dir = pin_dir($state);
+my @pinned = stat($state_dir);
+@selected && $selected[0] == $pinned[0] && $selected[1] == $pinned[1] or refuse('state identity changed');
 sub parent {
     my ($p) = @_;
     index($p, "$state/") == 0 or refuse('path is outside selected state');
@@ -146,6 +148,8 @@ if ($op eq 'owner-create') {
     print "$owner_parent/$dir\n";
 } elsif ($op eq 'owner-delete') {
     my ($leaf, $lock, $d, $owner_parent) = owner($path);
+    my $pid = contents(regular('pid', 0)); chomp $pid;
+    !@args || $pid eq $args[0] or refuse('owner PID changed');
     my @files = owner_files();
     remove_owner_files(@files);
     chdir($owner_parent) or refuse('owner parent unavailable');

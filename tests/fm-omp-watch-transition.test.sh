@@ -219,6 +219,212 @@ grant_recovery() {
 }
 if [ -n "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
   case "$FM_TRANSITION_LIFECYCLE_CASE" in
+    caller-pid|claim-rollback|claim-foreign-pid|candidate-foreign-pid|selected-state|selected-state-link|selected-state-identity|bounded-append|bounded-non-omp|bounded-keys|legacy-release|legacy-dead|bounded-watch|bounded-procevent|bounded-procevent-start|bounded-jira)
+      arm
+      drain
+      python3 - "$LAB" "$ROOT" <<'PYROUND6'
+import json,os,subprocess,sys
+from pathlib import Path
+home,root=map(Path,sys.argv[1:]);case=os.environ['FM_TRANSITION_LIFECYCLE_CASE']
+env=dict(os.environ);lib=str(home/'bin/fm-wake-lib.sh');drain=str(home/'bin/fm-wake-drain.sh');arm=str(home/'bin/fm-watch-arm.sh')
+def call(cmd,extra=None):
+    p=subprocess.run(cmd,env=dict(env,**(extra or {})),capture_output=True,text=True)
+    print(json.dumps(dict(command=cmd,rc=p.returncode,stdout=p.stdout,stderr=p.stderr)),flush=True)
+    return p
+append=['bash','-c','. "$1"; fm_wake_append stale r6 retained-before-refusal','_',lib]
+assert call(append).returncode==0
+queue=home/'state/.wake-queue';before=queue.read_bytes();lock=home/'state/.wake-queue.lock'
+if case=='bounded-keys':
+    assert call(['bash','-c','. \"$1\"; fm_wake_append check queued-key retained-check','_',lib]).returncode==0
+    before=queue.read_bytes()
+if case=='caller-pid':
+    fork=call(['bash','-c','printf "%s\\n" "$$"']).stdout.strip()
+    sim=home/'pid-semantics.sh'
+    sim.write_text('''. "$FM_SAFETY_ENV"
+if [ -z "${BASHPID:-}" ]; then
+  set -T
+  trap 'if [ "$BASH_SUBSHELL" -gt 0 ]; then BASHPID=$FM_SIMULATED_FORK_PID; else BASHPID=$$; fi' DEBUG
+fi
+''')
+    extra=dict(BASH_ENV=str(sim),FM_SAFETY_ENV=env.get('BASH_ENV','/dev/null'),FM_SIMULATED_FORK_PID=fork)
+    neutral=call(['bash','-c','caller=${BASHPID:-$$}; late=$(printf "%s" "${BASHPID:-$$}"); printf "%s %s %s\\n" "$$" "$caller" "$late"'],extra)
+    actual,captured,late=neutral.stdout.split()
+    assert actual==captured and late!=captured,'PID simulation must distinguish pre-fork capture'
+    result=call([drain],extra)
+    assert result.returncode==0,'caller identity must survive substitution: expected drain exit 0'
+    assert not lock.exists() and not lock.is_symlink(),'caller identity left a queue link'
+    result=call([arm],dict(extra,PI_TOOL_CALL_ID='pid-next-arm'))
+    assert result.returncode==2,'simulated caller must retain clean refusal'
+    assert 'WARNING' not in result.stderr
+elif case.startswith('selected-state'):
+    state=home/'outside-selected-state';state.mkdir();identity_home=home/'identity-home';identity_home.mkdir()
+    extra=dict(FM_HOME=str(identity_home),FM_STATE_OVERRIDE=str(state),PI_SESSION_ID='selected-root',PI_TOOL_CALL_ID='selected-drain')
+    if case=='selected-state-link':
+        alias=home/'selected-alias';alias.symlink_to(state);extra['FM_STATE_OVERRIDE']=str(alias)
+    elif case=='selected-state-identity':
+        injection=home/'state-injection';injection.mkdir()
+        (injection/'FixtureState.pm').write_text("""package FixtureState;
+BEGIN {
+ *CORE::GLOBAL::lstat = sub {
+   my @s=CORE::lstat($_[0]);
+   if (@s && $_[0] eq $ENV{FM_STATE_OVERRIDE}) {
+     $s[1]++;
+     open my $proof, '>>', \"$ENV{FM_HOME}/state-mismatch\" or die $!;
+     print {$proof} \"mismatch\\n\";
+   }
+   return wantarray ? @s : scalar @s;
+ };
+}
+1;
+""")
+        extra.update(PERL5LIB=str(injection),PERL5OPT='-MFixtureState')
+    result=call([drain],extra)
+    if case!='selected-state':
+        assert result.returncode==1,'unverified selected root must refuse consumption'
+        assert 'WARNING' in result.stderr
+        assert not list(state.iterdir()),'unverified selected root was modified'
+        if case=='selected-state-identity':assert (identity_home/'state-mismatch').exists()
+        sys.exit(0)
+    assert result.returncode==0,'configured outside-home state must drain'
+    result=call([arm],dict(extra,PI_TOOL_CALL_ID='selected-arm'))
+    assert result.returncode==0
+    assert (state/'.omp-watch-arm-result').exists(),'selected state must publish native receipt'
+    assert 'WARNING' not in result.stderr
+elif case in ('claim-rollback','claim-foreign-pid','candidate-foreign-pid'):
+    shim=home/'rollback-bin';shim.mkdir()
+    (shim/'perl').write_text('''#!/usr/bin/env bash
+if [ "$FM_TRANSITION_LIFECYCLE_CASE" = candidate-foreign-pid ] && [ "${4:-}" = lock-link ]; then
+  printf '999999\\n' > "$6/pid"
+  cp -R "$6/" "$FM_HOME/foreign-candidate-owner"
+  printf '%s\\n' "$6" > "$FM_HOME/foreign-candidate-path"
+fi
+if [ "${4:-}" = lock-check ] && [ -n "${6:-}" ] && mkdir "$FM_HOME/claim-refused" 2>/dev/null; then
+  if [ "$FM_TRANSITION_LIFECYCLE_CASE" = claim-foreign-pid ]; then
+    printf '%s\\n' "$FM_FOREIGN_CALLER_PID" > "$6/pid"
+    cp -R "$6/" "$FM_HOME/foreign-claim-owner"
+    readlink "$5" > "$FM_HOME/foreign-claim-link"
+  fi
+  echo 'injected claim refusal' >&2
+  exit 1
+fi
+exec /usr/bin/perl "$@"
+''');(shim/'perl').chmod(0o755)
+    result=call([drain],dict(PATH=str(shim)+':'+env['PATH'],FM_OMP_TRANSITION_LOCK_ATTEMPTS='1',FM_FOREIGN_CALLER_PID=str(os.getpid())))
+    if case=='candidate-foreign-pid':
+        target=Path((home/'foreign-candidate-path').read_text().strip());expected=home/'foreign-candidate-owner'
+        assert target.is_dir(),'rollback removed a mismatched unlinked candidate'
+        assert {f.name:f.read_bytes() for f in target.iterdir()}=={f.name:f.read_bytes() for f in expected.iterdir()},'rollback changed a mismatched candidate'
+        assert not lock.is_symlink(),'mismatched candidate must not be linked'
+        assert queue.read_bytes()==before
+        sys.exit(0)
+    assert (home/'claim-refused').exists(),'claim refusal must execute'
+    assert result.returncode==1,'failed claim must refuse drain'
+    if case=='claim-foreign-pid':
+        assert lock.is_symlink(),'rollback removed a mismatched claim link'
+        target=lock.readlink();expected=home/'foreign-claim-owner'
+        assert {f.name:f.read_bytes() for f in target.iterdir()}=={f.name:f.read_bytes() for f in expected.iterdir()},'rollback removed a mismatched claim owner'
+        assert queue.read_bytes()==before,'mismatched rollback consumed input'
+        sys.exit(0)
+    assert not lock.exists() and not lock.is_symlink(),'failed claim left its matching lock link'
+    assert not list((home/'state').glob('.wake-queue.lock.owner.*')),'failed claim left its matching owner'
+    assert queue.read_bytes()==before,'failed claim consumed input'
+    assert call([drain]).returncode==0,'claim rollback must permit subsequent wake delivery'
+else:
+    shim=home/'bound-bin';shim.mkdir()
+    for name in ('bound-progress','bound-resume','holder-ready','holder-release'):os.mkfifo(home/name)
+    for tool,condition in (
+        ('perl','[ "${4:-}" = owner-create ] && [ "${5:-}" = "$FM_STATE_OVERRIDE/.wake-queue.lock" ]'),
+        ('mktemp','[ "$#" -eq 2 ] && [ "$1" = -d ] && [ "$2" = "$FM_STATE_OVERRIDE/.wake-queue.lock.owner.XXXXXX" ]')):
+        (shim/tool).write_text('#!/usr/bin/env bash\nif '+condition+"; then\n  n=0\n  [ ! -f \"$FM_HOME/bound-attempts\" ] || read -r n < \"$FM_HOME/bound-attempts\"\n  printf '%s\\n' \"$((n + 1))\" > \"$FM_HOME/bound-attempts\"\nfi\nexec /usr/bin/"+tool+' \"$@\"\n')
+        (shim/tool).chmod(0o755)
+    (shim/'sleep').write_text('''#!/usr/bin/env bash
+case "$1" in 0.05|0.1)
+  printf 'retry\\n' > "$FM_HOME/bound-progress"
+  read -r _ < "$FM_HOME/bound-resume"
+  exit 0 ;;
+esac
+exec /bin/sleep "$@"
+''');(shim/'sleep').chmod(0o755)
+    holder=None
+    if case=='legacy-release':
+        holder=subprocess.Popen(['bash','-c','. "$1"; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK" || exit 1; printf "ready\\n" > "$FM_HOME/holder-ready"; read -r _ < "$FM_HOME/holder-release"; fm_lock_release "$FM_WAKE_QUEUE_LOCK"','_',lib],env=dict(env,OMPCODE='0'),stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        with (home/'holder-ready').open() as f:assert f.readline()=='ready\n'
+    elif case=='legacy-dead':
+        assert call(['bash','-c','. "$1"; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK"','_',lib],dict(OMPCODE='0')).returncode==0
+    else:lock.write_text('unknown permanent obstruction\n')
+    original_link=lock.readlink() if lock.is_symlink() else None
+    if case=='bounded-keys':command=['bash','-ec','. "$1"; if fm_wake_queued_keys check; then exit 0; else exit $?; fi','_',lib]
+    elif case=='bounded-jira':command=[str(root/'bin/fm-jira.sh'),'--manual','fixture','r6','bounded refusal']
+    elif case in ('bounded-procevent','bounded-procevent-start'):
+        inbox=home/'state/procevent-inbox';inbox.mkdir()
+        if case=='bounded-procevent':
+            (inbox/'fixture.1.result').write_text('captured result\n');(inbox/'fixture.1.adapter').write_text('lavish\n')
+        command=[str(root/'bin/fm-procevent.sh'),'reconcile']
+        if case=='bounded-procevent-start':
+            adapter=home/'bin/fm-procevent-fixture.sh';adapter.write_text('#!/usr/bin/env bash\nexit 1\n');adapter.chmod(0o755)
+            assert call([str(root/'bin/fm-procevent.sh'),'register','fixture','round6','--','bash','-c','printf "captured-round6\\n"']).returncode==0
+            command=[str(root/'bin/fm-procevent.sh'),'start','round6']
+    elif case=='bounded-watch':
+        command=[str(root/'bin/fm-watch.sh')]
+        queue.write_text('1\t1\tcheck\tprocevent:fixture:1\tcheck: captured\n');before=queue.read_bytes()
+    elif case in ('legacy-release','legacy-dead','bounded-non-omp'):command=[drain]
+    else:command=['bash','-ec','. "$1"; if fm_wake_append heartbeat r6 forbidden-unlocked-append; then exit 0; else exit $?; fi','_',lib]
+    extra=dict(PATH=str(shim)+':'+env['PATH'],FM_OMP_TRANSITION_LOCK_ATTEMPTS='3',FM_POLL='0',FM_SIGNAL_GRACE='0',FM_CHECK_INTERVAL='999999',FM_HEARTBEAT='0')
+    if case=='bounded-non-omp':extra['OMPCODE']='0'
+    wrapper=['bash','-c','"$@"; rc=$?; printf "completed\\n" > "$FM_HOME/bound-progress"; exit "$rc"','_',*command]
+    with (home/'bound.out').open('w') as out,(home/'bound.err').open('w') as err,os.fdopen(os.open(home/'bound-progress',os.O_RDWR)) as progress:
+        child=subprocess.Popen(wrapper,env=dict(env,**extra),stdout=out,stderr=err)
+        retries=0;released=False
+        while True:
+            event=progress.readline()
+            if event=='completed\n':break
+            assert event=='retry\n',event
+            retries+=1
+            if holder is not None and not released:
+                with (home/'holder-release').open('w') as f:f.write('release\n')
+                stdout,stderr=holder.communicate();assert holder.returncode==0,(stdout,stderr);released=True
+            # Old code naturally finishes after exceeding the accepted budget.
+            if retries==4:lock.rename(home/'after-budget-obstruction')
+            with (home/'bound-resume').open('w') as f:f.write('retry\n')
+        rc=child.wait()
+    if holder is not None and not released:
+        with (home/'holder-release').open('w') as f:f.write('release\n')
+        stdout,stderr=holder.communicate();assert holder.returncode==0,(stdout,stderr)
+    stdout=(home/'bound.out').read_text();stderr=(home/'bound.err').read_text()
+    attempts=int((home/'bound-attempts').read_text())
+    print(json.dumps(dict(case=case,attempts=attempts,retries=retries,rc=rc,stdout=stdout,stderr=stderr)),flush=True)
+    if case=='legacy-release':
+        assert attempts>1 and attempts<=3 and retries>0 and retries<3,'live legacy holder must get the finite retry budget'
+        assert rc==0,'live legacy holder release must let the drain complete'
+        assert 'retained-before-refusal' in stdout
+    else:
+        assert attempts==3,'guarded acquisition must use exactly three attempts'
+        assert retries==2,'guarded acquisition must pause only between attempts'
+        if case=='bounded-keys':assert not stdout,'refused queued-keys read ran without its lock'
+        assert rc!=0,'guarded refusal must propagate nonzero, including errexit-exempt callers'
+        assert 'WARNING' in stderr,'bounded refusal must warn visibly'
+        assert queue.read_bytes()==before,'bounded refusal changed queued input'
+        if original_link is not None:assert lock.is_symlink() and lock.readlink()==original_link,'dead PID must not authorize legacy cleanup'
+        assert not list((home/'state').glob('.seen-procevent-*')),'unlocked watcher marked a result surfaced'
+        if case=='bounded-procevent':assert (inbox/'fixture.1.result').read_text()=='captured result\n'
+        elif case=='bounded-procevent-start':
+            assert (inbox/'round6.1.result').read_text()=='captured-round6\n','failed publication must retain captured output'
+            (home/'state/procevent/round6.source').rename(home/'retired-fixture-source')
+        result=call([arm],dict(PI_TOOL_CALL_ID='after-bound-refusal',FM_OMP_TRANSITION_LOCK_ATTEMPTS='1'))
+        assert result.returncode==0 and 'WARNING' in result.stderr,'refusal must preserve unknown arming'
+        if original_link is not None:lock.unlink()
+        else:lock.rename(home/'retired-obstruction')
+        if case=='bounded-watch':
+            delivered=call([str(root/'bin/fm-watch.sh')],dict(FM_POLL='0',FM_SIGNAL_GRACE='0',FM_HEARTBEAT='0',FM_CHECK_INTERVAL='999999'))
+            assert delivered.returncode==0 and 'check: process-event result captured:' in delivered.stdout,'subsequent watcher must deliver retained process event'
+        elif case.startswith('bounded-procevent'):
+            assert call([str(root/'bin/fm-procevent.sh'),'reconcile']).returncode==0,'captured result must remain eligible for publication'
+            key='procevent:round6:1' if case=='bounded-procevent-start' else 'procevent:fixture:1'
+            assert key in queue.read_text(),'retried process event must reach the wake queue'
+        elif case=='bounded-jira':assert call(command).returncode==0,'manual wake retry must remain available'
+        assert call([drain]).returncode==0,'subsequent wake must remain deliverable'
+PYROUND6
+      ;;
     non-omp-stamped-owner)
       arm
       drain
@@ -1832,7 +2038,7 @@ if [ -z "${FM_TRANSITION_CASE:-}" ]; then
 fi
 
 if [ -z "${FM_TRANSITION_CASE:-}" ] && [ -z "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
-  for scenario in non-omp-stamped-owner nested-queue-lock foreign-lock-owner sequence-pipe queue-read-error log-read-error publication-temp-link publication-temp-replaced lock-other-lock queue-hardlink queue-outside-home queue-parent-link queue-directory queue-owner queue-snapshot-swap queue-content-change queue-inode-change lock-wrong-identity lock-owner-link lock-child-link lock-wrong-home lock-wrong-path arm-result-link unrelated-lock-target unrelated-queue-target missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
+  for scenario in caller-pid claim-rollback claim-foreign-pid candidate-foreign-pid selected-state selected-state-link selected-state-identity bounded-append bounded-non-omp bounded-keys legacy-release legacy-dead bounded-watch bounded-procevent bounded-procevent-start bounded-jira non-omp-stamped-owner nested-queue-lock foreign-lock-owner sequence-pipe queue-read-error log-read-error publication-temp-link publication-temp-replaced lock-other-lock queue-hardlink queue-outside-home queue-parent-link queue-directory queue-owner queue-snapshot-swap queue-content-change queue-inode-change lock-wrong-identity lock-owner-link lock-child-link lock-wrong-home lock-wrong-path arm-result-link unrelated-lock-target unrelated-queue-target missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
     FM_TRANSITION_LIFECYCLE_CASE="$scenario" bash "$0"
   done
 fi

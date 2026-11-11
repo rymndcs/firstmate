@@ -162,7 +162,7 @@ cmd_register() {
 # publication, so a result stays eligible for re-announcement across restarts
 # and drains until `fm_procevent_mark_handled` records it.
 publish_pending() {
-  local result id seq adapter line published=0
+  local result id seq adapter line published=0 status=0
   while IFS= read -r result; do
     [ -n "$result" ] || continue
     id=$(fm_procevent_result_source_id "$result")
@@ -172,13 +172,17 @@ publish_pending() {
     [ -n "$adapter" ] || continue
     line=$(fm_procevent_event_line "$adapter" "$id" "$seq") || continue
     fm_procevent_source_lock_acquire "$id" || continue
-    if ! fm_procevent_is_handled "$STATE" "$id" "$seq" \
-      && fm_wake_append check "procevent:$id:$seq" "check: $line"; then
-      published=$((published + 1))
+    if ! fm_procevent_is_handled "$STATE" "$id" "$seq"; then
+      if fm_wake_append check "procevent:$id:$seq" "check: $line"; then
+        published=$((published + 1))
+      else
+        status=1
+      fi
     fi
     fm_procevent_source_lock_release "$id"
   done < <(fm_procevent_pending "$STATE")
   printf '%s\n' "$published"
+  return "$status"
 }
 
 isolate_runner() {  # <wait|detach> <source-id>
@@ -326,7 +330,7 @@ cmd_start() {
   STAGED_OUTPUT=
   [ "$truncated" -eq 1 ] && printf 'truncated: %s at %s bytes\n' "$id" "$MAX_OUTPUT_BYTES" >&2
 
-  publish_pending >/dev/null
+  publish_pending >/dev/null || die "wake publication unavailable; captured result retained"
   rm -f -- "$(runner_file "$id")"
   # Publication is already durable, so retiring an ended source here can never
   # cost the result or its wake; leaving it armed, by contrast, lets every later
@@ -380,7 +384,7 @@ detach_runner() {  # <source-id>
 
 cmd_reconcile() {
   local rec id published started=0 stopped=0 uncertain=0 claim owner pid token identity claim_state stop_state
-  published=$(publish_pending)
+  published=$(publish_pending) || return 1
 
   # Stop a runner this home owns whose source is no longer registered. Without
   # this, unregistering a source that never completes leaves its child blocked

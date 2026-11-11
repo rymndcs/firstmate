@@ -88,7 +88,7 @@ if [ "${OMPCODE:-}" = 1 ]; then
   assert_watcher_liveness
   exit 0
 fi
-fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || exit 1
 DRAIN_LOCK_HELD=true
 
 if [ ! -s "$FM_WAKE_QUEUE" ]; then

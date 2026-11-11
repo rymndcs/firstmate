@@ -31,8 +31,8 @@
 #   recovery <session> <captured-token> - one-use, exact-transition recovery
 # The sole implementation writer is this script. All record operations share
 # .wake-queue.lock; parent-owned drain calls verify its PID and symlink owner.
-# Lock creation is bounded by FM_OMP_TRANSITION_LOCK_ATTEMPTS (default 20),
-# retrying every 0.05s; verified dead owners reuse bounded stale-lock recovery.
+# Queue acquisition mechanics: fm-wake-lib.sh header; verified dead owners
+# reuse bounded stale-lock recovery.
 # Unknown obstructions are never stolen. Public startup drains initialize this
 # same record before the first arm, retaining replay identity across sessions.
 # Slow evidence is gathered outside the lock and its local input fingerprint
