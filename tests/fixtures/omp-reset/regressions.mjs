@@ -48,7 +48,7 @@ async function emit(name, event = {}) {
   for (const fn of handlers.get(name) ?? []) results.push(await fn(event, ctx));
   return results;
 }
-const call = params => tools.get('firstmate_watch_reset').execute('test', params, undefined, undefined, ctx);
+const call = (params, context = ctx) => tools.get('firstmate_watch_reset').execute('test', params, undefined, undefined, context);
 const recoveries = () => messages.filter(x => x.message.customType === 'firstmate-reset-recovery' && x.options.triggerTurn);
 function classify(content) {
   const result = spawnSync('bash', ['-c', `
@@ -130,7 +130,7 @@ function admitHeartbeat() {
   }
 }
 let rearmCalls = 0;
-async function rearm(context = ctx, claim = '') {
+async function rearm(context, claim = '') {
   const event = { toolName: 'bash', toolCallId: `after-context-refusal-${++rearmCalls}`, input: {
     command: `[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh${claim}`,
     async: true, timeout: 0,
@@ -153,7 +153,50 @@ mkdirSync(`${home}/state/classifier-away`, { recursive: true });
 writeFileSync(`${home}/state/classifier-away/.afk`, '');
 assert.deepEqual(classify('I am back; please show the investigation results.'), ['', '', 'yes'], 'a real human return must remain unmarked and end away mode');
 await emit('session_start');
-if (scenario === 'context-rearm-fresh' || scenario === 'context-rearm-isolation') {
+if (scenario === 'context-missing-ctx' || scenario === 'context-missing-method') {
+  await arm();
+  const previousNonce = (await call({action:'prepare'})).details.nonce;
+  assert.ok(previousNonce, 'measured high context must prepare before missing evidence');
+  const context = scenario === 'context-missing-ctx' ? undefined : ctx;
+  if (context) delete context.getContextUsage;
+  const event = {toolName:'bash',input:{command:'exec bin/fm-watch-arm.sh | head -1'}};
+  await assert.doesNotReject(async () => {
+    for (const handler of handlers.get('tool_call') ?? []) {
+      const blocked = await handler(event, context);
+      if (blocked?.block) assert.match(blocked.reason, /watcher-arm/);
+    }
+  }, 'missing context must not throw before the Bash rejection');
+  assert.ok((await handlers.get('tool_call').at(-1)(event, context)).block,
+    'missing context must not bypass rejected Bash commands');
+  let result;
+  await assert.doesNotReject(async () => {
+    result = await call({action:'prepare'}, context ?? null);
+  }, 'missing context or measurement method must refuse reset without throwing');
+  assert.equal(result.isError, true);
+  assert.equal(result.details.nonce, undefined);
+  assert.match(result.content.map(x => x.text ?? '').join('\n'), /plain re-arm/i);
+  assert.doesNotMatch(result.content.map(x => x.text ?? '').join('\n'), /# stow/);
+  let refused;
+  await assert.doesNotReject(async () => {
+    refused = await call({action:'ready',nonce:previousNonce,stowComplete:true,onlyKeepingWatch:true,
+      pendingQuestionsRecorded:true,stowReceipt:stowReceipt(),handoff:'Next: supervise.'}, context ?? null);
+  }, 'missing context must also safely refuse readiness');
+  assert.equal(refused.isError, true, 'missing evidence must invalidate the earlier nonce');
+  assert.equal(timers.length, 0);
+  assert.equal(existsSync(`${home}/state/.omp-reset-handoff.json`), false);
+  await commands.get('fm-reset').handler(previousNonce, ctx);
+  assert.equal(switches, 0);
+  assert.deepEqual(messages, []);
+  admitHeartbeat();
+  for (const claim of ['', ' --transition watching-only --reason "only watching remains"']) {
+    let continuation;
+    await assert.doesNotReject(async () => { continuation = await rearm(context, claim); },
+      'missing context must not throw in either registered Bash callback');
+    assert.equal(continuation.status, 0, 'unavailable context must replace inherited high usage and permit real arm');
+    assert.match(continuation.stdout, /heartbeat: fixture/);
+    admitHeartbeat();
+  }
+} else if (scenario === 'context-rearm-fresh' || scenario === 'context-rearm-isolation') {
   await arm();
   admitHeartbeat();
   contextUsage = { tokens: 39990, contextWindow: 100000, percent: 39.99 };
@@ -166,11 +209,11 @@ if (scenario === 'context-rearm-fresh' || scenario === 'context-rearm-isolation'
     }
   } else {
     contextUsage = { tokens: 40001, contextWindow: 100000, percent: 40.001 };
-    const high = await rearm();
+    const high = await rearm(ctx);
     assert.equal(high.status, 2, 'a refused low preparation must not exempt a later high-context arm');
     assert.match(high.stderr, /reset required/);
     contextUsage = undefined;
-    const unavailable = await rearm();
+    const unavailable = await rearm(ctx);
     assert.equal(unavailable.status, 0, 'unavailable usage must replace the prior high measurement');
     assert.match(unavailable.stdout, /heartbeat: fixture/);
   }

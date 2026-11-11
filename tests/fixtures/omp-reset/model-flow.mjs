@@ -24,6 +24,7 @@ for (const mode of cases) {
   }
   assert.equal(model.status,0,model.stderr);
   const expected = mode === 'normal' || mode === 'high' ? 'PREPARE_RESET' : 'REARM';
-  assert.match(model.stdout.trim(), new RegExp(`(?:^|\\n)${expected}\\s*$`), `${mode} flow selected ${model.stdout.trim()}`);
+  const decision = model.stdout.match(/^(PREPARE_RESET|REARM)(?:\s|$)/m)?.[1];
+  assert.equal(decision, expected, `${mode} flow selected ${model.stdout.trim()}`);
   console.log(`ok - model follows emitted ${mode} flow: ${expected}`);
 }

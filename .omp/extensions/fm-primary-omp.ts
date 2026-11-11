@@ -140,7 +140,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   let removeInputListener: (() => void) | undefined;
   const fresh = () => request?.readyAt !== undefined && Date.now() - request.readyAt < 30_000;
   const sessionId = (ctx: ExtensionContext) => ctx.sessionManager.getSessionId();
-  const main = (ctx: ExtensionContext) => ctx.agent?.kind === "main" && ctx.mode === "tui";
+  const main = (ctx: ExtensionContext) => ctx?.agent?.kind === "main" && ctx.mode === "tui";
   const check = () => spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["check", String(process.pid)], { env }).status === 0;
   const budget = () => {
     const result = spawnSync(`${root}/bin/fm-startup-memory-budget.sh`, ["report"], { env, encoding: "utf8" });
@@ -151,8 +151,9 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     return effectiveBudgetTokens && totalTokensAfter !== undefined ? { effectiveBudgetTokens, totalTokensAfter } : undefined;
   };
   const available = (ctx: ExtensionContext) => {
+    if (!main(ctx)) return false;
     const jobs = ctx.getAsyncJobSnapshot();
-    return main(ctx) && check() && !ctx.hasPendingMessages() && ctx.ui.getEditorText() === ""
+    return check() && !ctx.hasPendingMessages() && ctx.ui.getEditorText() === ""
       && (jobs === null || (jobs.running.every(job => armedJobs.has(job.id))
         && jobs.delivery.queued === 0 && !jobs.delivery.delivering && jobs.delivery.pendingJobIds.length === 0));
   };
@@ -267,16 +268,18 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
         request = undefined;
         return result("Reset cancelled. Continue the current supervision protocol.");
       }
+      if (params.action === "prepare") {
+        const usage = ctx?.getContextUsage?.();
+        if (!usage || !(usage.percent > 40)) {
+          request = undefined;
+          return result("Reset unavailable: context usage must be above 40%. At 40% or below, or when usage is unavailable, do a plain re-arm instead; keep this session without stowing or clearing.", true);
+        }
+      }
       if (!eligible || !available(ctx)) {
         request = undefined;
         return result("Reset unavailable: remain in normal mode, finish startup and arm supervision, or handle pending input/work first. Continue supervision in this session.", true);
       }
       if (params.action === "prepare") {
-        const usage = ctx.getContextUsage();
-        if (!usage || !(usage.percent > 40)) {
-          request = undefined;
-          return result("Reset unavailable: context usage must be above 40%. At 40% or below, or when usage is unavailable, do a plain re-arm instead; keep this session without stowing or clearing.", true);
-        }
         const identity = spawnSync(`${root}/bin/fm-omp-watch-transition.sh`, ["identity", sessionId(ctx)], { env, encoding: "utf8" });
         request = { nonce: randomUUID(), session: sessionId(ctx), transition: identity.status === 0 ? identity.stdout.trim() : undefined };
         return result(`Readiness nonce: ${request.nonce}. Complete this stow skill now. Report its full Completion receipt; only then call ready with that stowReceipt as defined by the tool schema, the nonce and a short handoff containing durable open-thread pointers, already-reported outcomes, and the next supervision action.\n\n${readFileSync(`${root}/.agents/skills/stow/SKILL.md`, "utf8")}`, undefined, request.nonce);
@@ -430,8 +433,8 @@ export default function (pi: ExtensionAPI) {
     if (armResult.code === 2) {
       return { block: true, reason: armResult.stderr.trim() || "denied by the watcher-arm PreToolUse seatbelt" };
     }
-    if (ctx.agent?.kind !== "main" || ctx.mode !== "tui") return {};
-    const percent = JSON.stringify(ctx.getContextUsage()?.percent ?? null);
+    if (ctx && (ctx.agent?.kind !== "main" || ctx.mode !== "tui")) return {};
+    const percent = JSON.stringify(ctx?.getContextUsage?.()?.percent ?? null);
     return { input: { ...event.input, command: `export FM_OMP_CONTEXT_PERCENT='${percent}';\n${command}` } };
   });
 
