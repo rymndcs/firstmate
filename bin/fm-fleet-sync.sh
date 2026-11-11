@@ -27,6 +27,8 @@
 # falling back to an explicit path. Example: from anywhere,
 # `fm-fleet-sync.sh dotfiles-private` syncs just that one clone, same as
 # passing its full projects/dotfiles-private path.
+# Arms bin/fm-leftover-worktrees.sh's periodic cleanup without doing its work
+# during this sync; that script owns discovery, retention and reporting.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,6 +65,11 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   exit 0
 fi
 [ $# -le 1 ] || { usage; exit 1; }
+
+if [ -x "$SCRIPT_DIR/fm-leftover-worktrees.sh" ]; then
+  "$SCRIPT_DIR/fm-leftover-worktrees.sh" --arm \
+    || echo 'fleet: skipped: could not schedule leftover worktree cleanup'
+fi
 
 project_label() {
   case "$PROJ" in
