@@ -243,7 +243,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   pi.registerTool({
     name: "firstmate_watch_reset",
     label: "Stow before watching",
-    description: "In normal mode only, before re-arming omp supervision when only keeping watch: prepare, complete the returned stow skill, then ready with its stowReceipt, a compact durable handoff and true stowComplete, onlyKeepingWatch and pendingQuestionsRecorded attestations. pendingQuestionsRecorded confirms every unanswered captain question is durably recorded in the home's decision inbox or backlog, or as a mockup question with an open captain decision hold; none lives only in chat or the handoff. Receipt token counts are decimal strings from the before/after budget reports; the actions object records one Completion receipt action per memory file. Never call ready after stow fails.",
+    description: "In normal mode only, before re-arming omp supervision when only keeping watch and context usage is above 40%: prepare, complete the returned stow skill, then ready with its stowReceipt, a compact durable handoff and true stowComplete, onlyKeepingWatch and pendingQuestionsRecorded attestations. pendingQuestionsRecorded confirms every unanswered captain question is durably recorded in the home's decision inbox or backlog, or as a mockup question with an open captain decision hold; none lives only in chat or the handoff. Receipt token counts are decimal strings from the before/after budget reports; the actions object records one Completion receipt action per memory file. Never call ready after stow fails.",
     parameters: pi.zod.object({
       action: pi.zod.enum(["prepare", "ready", "cancel"]),
       nonce: pi.zod.string().optional(),
@@ -272,6 +272,11 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
         return result("Reset unavailable: remain in normal mode, finish startup and arm supervision, or handle pending input/work first. Continue supervision in this session.", true);
       }
       if (params.action === "prepare") {
+        const usage = ctx.getContextUsage();
+        if (!usage || !(usage.percent > 40)) {
+          request = undefined;
+          return result("Reset unavailable: context usage must be above 40%. At 40% or below, or when usage is unavailable, do a plain re-arm instead; keep this session without stowing or clearing.", true);
+        }
         const identity = spawnSync(`${root}/bin/fm-omp-watch-transition.sh`, ["identity", sessionId(ctx)], { env, encoding: "utf8" });
         request = { nonce: randomUUID(), session: sessionId(ctx), transition: identity.status === 0 ? identity.stdout.trim() : undefined };
         return result(`Readiness nonce: ${request.nonce}. Complete this stow skill now. Report its full Completion receipt; only then call ready with that stowReceipt as defined by the tool schema, the nonce and a short handoff containing durable open-thread pointers, already-reported outcomes, and the next supervision action.\n\n${readFileSync(`${root}/.agents/skills/stow/SKILL.md`, "utf8")}`, undefined, request.nonce);

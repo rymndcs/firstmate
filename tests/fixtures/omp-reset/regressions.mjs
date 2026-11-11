@@ -10,6 +10,7 @@ const handlers = new Map(), tools = new Map(), commands = new Map();
 const messages = [], timers = [], submitted = [], errors = [];
 let enqueueFailures = 0, enqueueCalls = 0;
 let queued = false;
+let contextUsage = { tokens: 60000, contextWindow: 100000, percent: 60 };
 let editor = '', jobs = null, session = 'old', terminalInput, switchMode = 'success', idle = true, switches = 0;
 const pi = {
   zod: chain,
@@ -26,6 +27,7 @@ const ctx = {
   agent: { kind: 'main' }, mode: 'tui', hasUI: true,
   sessionManager: { getSessionId: () => session, getSessionFile: () => '/old.jsonl' },
   isIdle: () => idle, hasPendingMessages: () => queued, getAsyncJobSnapshot: () => jobs,
+  getContextUsage: () => contextUsage,
   ui: { getEditorText: () => editor, setEditorText: value => { editor = value; },
     notify(text, type) { errors.push({ text, type, session }); },
     onTerminalInput(fn) { terminalInput = fn; return () => { terminalInput = undefined; }; } },
@@ -121,7 +123,40 @@ mkdirSync(`${home}/state/classifier-away`, { recursive: true });
 writeFileSync(`${home}/state/classifier-away/.afk`, '');
 assert.deepEqual(classify('I am back; please show the investigation results.'), ['', '', 'yes'], 'a real human return must remain unmarked and end away mode');
 await emit('session_start');
-if (scenario.startsWith('questions-')) {
+if (scenario.startsWith('context-')) {
+  await arm();
+  const previousNonce = (await call({action:'prepare'})).details.nonce;
+  assert.ok(previousNonce, 'high context must prepare before testing a changed measurement');
+  const kind = scenario.slice('context-'.length);
+  const percent = {zero:0,below:39.99,boundary:40,above:40.01,high:80,unknown:null,nan:NaN}[kind];
+  contextUsage = kind === 'unavailable' ? undefined : {tokens:percent * 1000,contextWindow:100000,percent};
+  const result = await call({action:'prepare'});
+  if (kind === 'above' || kind === 'high') {
+    assert.equal(result.isError, undefined, `${scenario}: context above 40% must prepare`);
+    const nonce = result.details.nonce;
+    assert.ok(nonce, 'accepted preparation must return a fresh nonce');
+    const accepted = await call({action:'ready',nonce,stowComplete:true,onlyKeepingWatch:true,
+      pendingQuestionsRecorded:true,stowReceipt:stowReceipt(),handoff:'Next: supervise.'});
+    assert.equal(accepted.isError, undefined, 'eligible context must retain readiness');
+    await commands.get('fm-reset').handler(nonce, ctx);
+    assert.equal(switches, 1, 'eligible context must retain native reset');
+    unlinkSync(`${home}/state/.omp-reset-handoff.json`);
+  } else {
+    assert.equal(result.isError, true, `${scenario}: context at or below 40% or unavailable must refuse preparation`);
+    assert.equal(result.details.nonce, undefined, 'refused preparation must not return a nonce');
+    const text = result.content.map(x => x.text ?? '').join('\n');
+    assert.match(text, /plain re-arm/i, 'refusal must direct a plain re-arm');
+    assert.doesNotMatch(text, /# stow/, 'refusal must not start the stow skill');
+    const refused = await call({action:'ready',nonce:previousNonce,stowComplete:true,onlyKeepingWatch:true,
+      pendingQuestionsRecorded:true,stowReceipt:stowReceipt(),handoff:'Next: supervise.'});
+    assert.equal(refused.isError, true, 'refusal must invalidate an earlier preparation');
+    assert.equal(timers.length, 0, 'refusal must not schedule transport');
+    assert.equal(existsSync(`${home}/state/.omp-reset-handoff.json`), false, 'refusal must not save a handoff');
+    await commands.get('fm-reset').handler(previousNonce, ctx);
+    assert.equal(switches, 0, 'refusal must preserve the current session');
+    assert.deepEqual(messages, [], 'refusal must not queue another turn');
+  }
+} else if (scenario.startsWith('questions-')) {
   await arm();
   const nonce = (await call({action:'prepare'})).details.nonce;
   const params = {action:'ready',nonce,stowComplete:true,onlyKeepingWatch:true,
