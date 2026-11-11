@@ -399,6 +399,10 @@
     {
       "path": "skills/stow/SKILL.md",
       "audience": "public-product"
+    },
+    {
+      "path": "docs/process-kill-guard.md",
+      "audience": "maintainer-architecture"
     }
   ]
 }

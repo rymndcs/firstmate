@@ -703,6 +703,25 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
   pass "active crew-dispatch profile does not block secondmate launches or their rate-limit reminder config"
 }
 
+test_worker_process_guard() {
+  local rec id out rc hook
+  id=process-guard-claude
+  rec=$(make_spawn_case "$id" claude "$id")
+  read_case_record "$rec"
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$id" "$PROJ_DIR")
+  rc=$?
+  expect_code 0 "$rc" "Claude guarded worker spawn: $out"
+  hook=$(jq -er '.hooks.PreToolUse[] | select(.matcher == "Bash") | .hooks[].command' "$WT_DIR/.claude/settings.local.json") \
+    || fail "Claude worker did not receive a Bash hook"
+  out=$(cd "$WT_DIR" && printf '%s' '{"tool_name":"Bash","tool_input":{"command":"pkill -f agent -n -P 123"}}' | bash -c "$hook" 2>&1)
+  rc=$?
+  expect_code 2 "$rc" "Claude generated hook must refuse the incident command"
+  assert_contains "$out" '[process-kill]' "Claude hook must reach the shared process policy"
+  pass "Claude generated worker hook executes the shared process policy"
+}
+
+test_worker_process_guard
+
 test_no_profile_keeps_claude_profile_defaults
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
 test_home_defaults_preserve_absolute_or_resolve_relative_paths

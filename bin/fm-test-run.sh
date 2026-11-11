@@ -184,7 +184,7 @@ family_for_basename() {
     fm-arm-pretool-check.test.sh|fm-ask-user-authority.test.sh|\
     fm-ask-user-pretool-check.test.sh|\
     fm-brief.test.sh|fm-vendor-auth-probe.test.sh|\
-    fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|\
+    fm-calm-pi-extension.test.sh|fm-cd-pretool-check.test.sh|fm-process-pretool-check.test.sh|\
     fm-composer-ghost.test.sh|fm-composer-lib.test.sh|\
     fm-crew-state.test.sh|fm-decision-hold-lifecycle.test.sh|\
     fm-documentation-audiences.test.sh|fm-grok-harness.test.sh|\
@@ -233,7 +233,7 @@ family_for_basename() {
     fm-afk-omp-herdr-live-e2e.test.sh|fm-afk-desktop-live-e2e.test.sh|fm-afk-desktop-policy-live-e2e.test.sh|fm-afk-pi-herdr-return-e2e.test.sh|fm-ask-user-gate-live-e2e.test.sh|\
     fm-codex-continuity-live-e2e.test.sh|fm-grok-continuity-live-e2e.test.sh|\
     fm-grok-stop-live-e2e.test.sh|fm-harness-liveness-drift-live-e2e.test.sh|fm-review-round-live-e2e.test.sh|\
-    fm-omp-reset-live-e2e.test.sh|\
+    fm-omp-reset-live-e2e.test.sh|fm-process-guard-live-e2e.test.sh|\
     fm-omp-herdr-live-e2e.test.sh|fm-omp-primary-live-e2e.test.sh|fm-opencode-primary-live-e2e.test.sh|fm-pi-primary-live-e2e.test.sh|\
     fm-quota-array-dispatch-live-e2e.test.sh|fm-send-secondmate-marker-herdr-e2e.test.sh)
       printf '%s\n' live-harness-optin

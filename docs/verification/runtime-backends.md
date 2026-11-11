@@ -29,6 +29,30 @@ The Codex diagnostics also reported `reasoning effort: high`.
 Claude's installed help advertised `--effort <level>`, and its JSON result identified the Opus model above.
 The portable argv, refusal, and evidence-preservation regressions run with `bin/fm-test-run.sh tests/fm-review-round.test.sh`.
 
+## Scoped process-kill hooks
+
+Verified on 2026-11-11 on macOS with Claude Code 2.1.322 and codex-cli 0.167.1.
+The [process-kill guard](../process-kill-guard.md) owns coverage and installation limits.
+Refresh the real-harness enforcement evidence with:
+
+```sh
+FM_PROCESS_GUARD_LIVE_E2E=1 bash tests/fm-process-guard-live-e2e.test.sh
+```
+
+Observed stable output:
+
+```text
+ok - 2.1.322 (Claude Code): allowed write ran; attempted denied write blocked by real hook
+ok - codex-cli 0.167.1: allowed write ran; attempted denied write blocked by real hook
+```
+
+The test inspected Codex's user hook with `hooks/list`, received its current definition hash, and trusted exactly that definition in an isolated user configuration before the live run.
+No hook-trust bypass was used.
+Project-only Codex registration did not execute in the scratch repository; the user-level registration and normal trust approval remain required.
+The test substituted fake kill text at the hook boundary for a harmless marker-write attempt, so a failure could not execute a pattern kill.
+This proves CLI hook enforcement, not installation into a real home or separate lifecycle evidence for tmux, Herdr, Zellij, Orca or cmux.
+OpenCode, Pi, pi-signed, Grok and Kimi process-kill hooks were not implemented or claimed.
+
 ## tmux
 
 Foreground-process behavior was verified on 2026-07-07 with tmux 3.6a on macOS.
