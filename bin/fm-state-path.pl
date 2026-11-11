@@ -3,6 +3,8 @@
 # Usage: fm-state-path.pl HOME STATE OP PATH [identity]
 # STATE is the configured trust root, independent of HOME containment. Open the
 # selected directory without following its leaf and match its resolved inode.
+# A symlinked STATE leaf is accepted only when it resolves inside HOME; it is
+# then opened at that resolved path under the same pin and inode match.
 # Caller PID is captured before forking and supplied to create/claim/rollback.
 # Files: check/read/snapshot PATH; replace/append PATH read stdin; clear PATH
 # SNAPSHOT matches device/inode/SHA-256. snapshot prints that identity then bytes.
@@ -11,7 +13,9 @@
 # lock-link verifies the published claim in the same pinned operation and prints
 # collision when the lock already exists; lock-pid returns a PID only after the
 # complete owner and final link recheck.
-# lock-identity is v1, canonical home, canonical lock, device:inode, one per line.
+# lock-identity is v1, creator home, canonical lock, device:inode, one per line.
+# The lock and inode must match; the creator home must be this HOME or a home
+# containing the selected STATE, so homes sharing one STATE recover each other.
 # Pin owned directories with no-follow opens and fchdir; regular files must have
 # one link and the current UID. Reads and truncation use the verified descriptor.
 # Atomic publication uses an exclusive private temporary in the pinned parent;
@@ -33,6 +37,7 @@ sub refuse { die "watcher: WARNING - unverified state path ($op): $_[0]\n" }
 my $home_real = abs_path($home) // refuse('home unavailable');
 my $state_real = abs_path($state) // refuse('state unavailable');
 my @dirs;
+sub within { my ($dir, $root) = @_; return index("$dir/", "$root/") == 0 && $dir ne $root }
 sub pin_dir {
     my ($name) = @_;
     sysopen(my $d, $name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) or refuse('directory unavailable');
@@ -49,7 +54,8 @@ sub components {
     return @p;
 }
 my @selected = lstat($state_real);
-my $state_dir = pin_dir($state);
+!-l $state || within($state_real, $home_real) or refuse('state alias outside home');
+my $state_dir = pin_dir(-l $state ? $state_real : $state);
 my @pinned = stat($state_dir);
 @selected && $selected[0] == $pinned[0] && $selected[1] == $pinned[1] or refuse('state identity changed');
 sub parent {
@@ -115,7 +121,9 @@ sub owner {
     my $d = pin_dir($leaf);
     my @s = stat($d);
     my $id = regular('lock-identity', 0) // refuse('owner identity missing');
-    contents($id) eq "v1\n$home_real\n$lock_real\n$s[0]:$s[1]\n" or refuse('owner identity mismatch');
+    my ($creator) = contents($id) =~ /\Av1\n([^\n]+)\n\Q$lock_real\E\n\Q$s[0]:$s[1]\E\n\z/ or refuse('owner identity mismatch');
+    my $creator_real = $creator eq $home_real ? $home_real : abs_path($creator);
+    defined($creator_real) && ($creator_real eq $home_real || within($state_real, $creator_real)) or refuse('owner identity mismatch');
     return ($leaf, $lock, $d, $owner_parent);
 }
 sub owner_files {

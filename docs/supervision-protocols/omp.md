@@ -8,8 +8,6 @@ When this session owns supervision, including omp away mode selected by `/afk`:
    `bash` with `async: true` and `timeout: 0` on:
    `[ -f __FM_X_MODE_ENV_SH__ ] && . __FM_X_MODE_ENV_SH__; exec bin/fm-watch-arm.sh`
 
-   For an ordinary re-arm, append the transition declaration from `bin/fm-watch-arm.sh --help` to this same standalone command.
-
 4. The call returns a job id, not the arm's status.
    Read `proc://<job-id>` once for the arm's one-line status; reading it does not consume the completion delivery.
 5. Trust only that one-line status.
