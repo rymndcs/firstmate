@@ -219,6 +219,187 @@ grant_recovery() {
 }
 if [ -n "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
   case "$FM_TRANSITION_LIFECYCLE_CASE" in
+    steal-recheck-unstamped)
+      arm
+      drain
+      python3 - "$LAB" <<'PYRECHECK'
+import json,os,subprocess,sys
+from pathlib import Path
+home=Path(sys.argv[1]);lib=str(home/'bin/fm-wake-lib.sh');lock=home/'state/.wake-queue.lock';queue=home/'state/.wake-queue'
+env=dict(os.environ)
+def call(command,extra=None):
+    p=subprocess.run(command,env=dict(env,**(extra or {})),capture_output=True,text=True)
+    print(json.dumps(dict(command=command,rc=p.returncode,stdout=p.stdout,stderr=p.stderr)),flush=True)
+    return p
+assert call(['bash','-c','. "$1"; fm_wake_append stale recheck retained-recheck-input; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK"','_',lib]).returncode==0
+before=queue.read_bytes();shim=home/'recheck-bin';shim.mkdir()
+for name in ('recheck-ready','recheck-resume'):os.mkfifo(home/name)
+(shim/'mktemp').write_text('''#!/usr/bin/env bash
+if [ "${1:-}" = -d ] && [ "${2:-}" = "$FM_STATE_OVERRIDE/.wake-queue.lock.steal.owner.XXXXXX" ] && mkdir "$FM_HOME/recheck-paused" 2>/dev/null; then
+  printf 'ready\\n' > "$FM_HOME/recheck-ready"
+  read -r _ < "$FM_HOME/recheck-resume"
+fi
+exec /usr/bin/mktemp "$@"
+''');(shim/'mktemp').chmod(0o755)
+with (home/'recheck.out').open('w') as out,(home/'recheck.err').open('w') as err:
+    child=subprocess.Popen([str(home/'bin/fm-wake-drain.sh')],env=dict(env,OMPCODE='0',PATH=str(shim)+':'+env['PATH'],FM_OMP_TRANSITION_LOCK_ATTEMPTS='3'),stdout=out,stderr=err)
+    with (home/'recheck-ready').open() as f:assert f.readline()=='ready\n'
+    try:
+        replacement=call(['bash','-c','. "$1"; fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || exit 1; printf "%s\\n" "${BASHPID:-$$}"','_',lib],dict(OMPCODE='0'))
+        assert replacement.returncode==0,'concurrent genuine holder must reclaim and naturally exit'
+        pid=int(replacement.stdout.strip());owner=lock.readlink();expected={p.name:p.read_bytes() for p in lock.iterdir()}
+        assert not (lock/'lock-identity').exists(),'replacement fixture must be genuinely unstamped'
+        assert int((lock/'pid').read_text())==pid
+        try:os.kill(pid,0)
+        except ProcessLookupError:pass
+        else:raise AssertionError('replacement holder must exit naturally')
+    finally:
+        with (home/'recheck-resume').open('w') as f:f.write('continue\n')
+        rc=child.wait()
+stdout=(home/'recheck.out').read_text();stderr=(home/'recheck.err').read_text()
+print(json.dumps(dict(rc=rc,stdout=stdout,stderr=stderr,expected_owner=str(owner))),flush=True)
+assert lock.is_symlink() and lock.readlink()==owner,'recovery recheck removed a newly unstamped dead owner'
+assert {p.name:p.read_bytes() for p in lock.iterdir()}==expected,'recovery recheck changed an unstamped owner'
+assert rc==1 and not stdout,'recovery recheck must refuse unlocked delivery'
+assert queue.read_bytes()==before,'recovery recheck consumed retained input'
+assert 'WARNING' in stderr,'recovery recheck refusal must be visible'
+assert not Path(str(lock)+'.steal').is_symlink(),'refused recovery must release its owned secondary'
+lock.rename(home/'recheck-retired-fixture')
+result=call([str(home/'bin/fm-wake-drain.sh')]);assert result.returncode==0 and 'retained-recheck-input' in result.stdout,'retiring the own fixture obstruction must permit delivery'
+PYRECHECK
+      ;;
+    steal-absent-drain|steal-absent-append|steal-dead-drain|steal-dead-append|steal-primary|steal-unknown|steal-unstamped|steal-live|steal-budget|steal-cross-drain|steal-cross-append|steal-replacement-budget|steal-unknown-pipe)
+      arm
+      drain
+      python3 - "$LAB" <<'PYROUND7'
+import json,os,subprocess,sys
+from pathlib import Path
+home=Path(sys.argv[1]);case=os.environ['FM_TRANSITION_LIFECYCLE_CASE']
+env=dict(os.environ);lib=str(home/'bin/fm-wake-lib.sh');lock=home/'state/.wake-queue.lock';steal=Path(str(lock)+'.steal')
+queue=home/'state/.wake-queue';drain=str(home/'bin/fm-wake-drain.sh');arm=str(home/'bin/fm-watch-arm.sh')
+def call(cmd,extra=None):
+    result=subprocess.run(cmd,env=dict(env,**(extra or {})),capture_output=True,text=True)
+    print(json.dumps(dict(command=cmd,rc=result.returncode,stdout=result.stdout,stderr=result.stderr)),flush=True)
+    return result
+def holder(path,extra=None):
+    result=call(['bash','-c','. "$1"; fm_lock_try_create "$2" || exit 1; printf "%s\\n" "${BASHPID:-$$}"','_',lib,str(path)],extra)
+    assert result.returncode==0,'real holder must acquire before naturally exiting'
+    pid=int(result.stdout.strip());assert int((path/'pid').read_text())==pid
+    try:os.kill(pid,0)
+    except ProcessLookupError:pass
+    else:raise AssertionError('fixture holder must have naturally exited')
+    return path.readlink()
+def snapshot(path):
+    return (str(path.readlink()),{p.name:(p.lstat().st_mode,p.read_bytes() if p.is_file() else None) for p in path.iterdir()})
+append=['bash','-ec','. "$1"; if fm_wake_append stale "$2" "$2"; then exit 0; else exit $?; fi','_',lib]
+assert call(append+['retained-r7-input']).returncode==0
+before=queue.read_bytes();primary_owner=None;secondary_owner=None;live=None
+if case.startswith('steal-dead') or case in ('steal-primary','steal-budget','steal-replacement-budget'):primary_owner=holder(lock)
+if case=='steal-primary':pass
+elif case in ('steal-unknown','steal-unknown-pipe'):
+    target=home/'unrelated-secondary';target.mkdir()
+    dead=call(['bash','-c','printf "%s\\n" "$$"']).stdout.strip()
+    if case=='steal-unknown-pipe':os.mkfifo(target/'pid')
+    else:(target/'pid').write_text(dead+'\n')
+    (target/'note').write_text('unrelated data\n');steal.symlink_to(target)
+elif case=='steal-unstamped':secondary_owner=holder(steal,dict(OMPCODE='0'))
+elif case=='steal-live':
+    for name in ('r7-ready','r7-release'):os.mkfifo(home/name)
+    live=subprocess.Popen(['bash','-c','. "$1"; fm_lock_try_create "$2" || exit 1; printf "ready\\n" > "$FM_HOME/r7-ready"; read -r _ < "$FM_HOME/r7-release"; fm_lock_release "$2"','_',lib,str(steal)],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+    with (home/'r7-ready').open() as f:assert f.readline()=='ready\n'
+else:secondary_owner=holder(steal)
+obstruction=steal
+if case=='steal-budget':
+    obstruction=Path(str(steal)+'.steal');obstruction.write_text('unknown deeper obstruction\n')
+if case.startswith('steal-cross') or case=='steal-unknown-pipe':env['OMPCODE']='0'
+protected=snapshot(steal) if steal.is_symlink() else None
+shim=home/'r7-bin';shim.mkdir()
+for name in ('r7-progress','r7-resume'):os.mkfifo(home/name)
+(shim/'perl').write_text('''#!/usr/bin/env bash
+if [ "${FM_R7_TRACE:-}" = 1 ] && [ "${4:-}" = owner-create ]; then
+  printf 'attempt\\t%s\\n' "$5" > "$FM_HOME/r7-progress"
+  read -r _ < "$FM_HOME/r7-resume"
+fi
+exec /usr/bin/perl "$@"
+''');(shim/'perl').chmod(0o755)
+(shim/'sleep').write_text('#!/usr/bin/env bash\n[ "$1" != 0.05 ] || exit 0\nexec /bin/sleep "$@"\n');(shim/'sleep').chmod(0o755)
+(shim/'mktemp').write_text('''#!/usr/bin/env bash
+if [ "${FM_R7_TRACE:-}" = 1 ] && [ "${1:-}" = -d ]; then
+  case "${2:-}" in "$FM_STATE_OVERRIDE/.wake-queue.lock"*.owner.XXXXXX)
+    printf 'attempt\\t%s\\n' "$2" > "$FM_HOME/r7-progress"
+    read -r _ < "$FM_HOME/r7-resume" ;;
+  esac
+fi
+exec /usr/bin/mktemp "$@"
+''');(shim/'mktemp').chmod(0o755)
+(shim/'cat').write_text('''#!/usr/bin/env bash
+if [ "${FM_R7_TRACE:-}" = 1 ] && [ "$#" -eq 1 ] && [ -p "$1" ]; then
+  printf 'read-pipe\\t%s\\n' "$1" > "$FM_HOME/r7-progress"
+fi
+exec /bin/cat "$@"
+''');(shim/'cat').chmod(0o755)
+
+refused=case in ('steal-unknown','steal-unstamped','steal-live','steal-budget','steal-replacement-budget','steal-unknown-pipe')
+command=append+['appended-r7-input'] if case.endswith('append') else [drain]
+extra=dict(PATH=str(shim)+':'+env['PATH'],FM_R7_TRACE='1',FM_OMP_TRANSITION_LOCK_ATTEMPTS='3' if case=='steal-budget' else '4' if case=='steal-replacement-budget' else '12')
+wrapper=['bash','-c','"$@"; rc=$?; printf "completed\\n" > "$FM_HOME/r7-progress"; exit "$rc"','_',*command]
+try:
+    with (home/'r7.out').open('w') as out,(home/'r7.err').open('w') as err,os.fdopen(os.open(home/'r7-progress',os.O_RDWR)) as progress:
+        child=subprocess.Popen(wrapper,env=dict(env,**extra),stdout=out,stderr=err)
+        attempts=[];reads=0
+        while True:
+            event=progress.readline()
+            if event=='completed\n':break
+            if event.startswith('read-pipe\t'):
+                reads+=1
+                with Path(event.rstrip('\n').split('\t')[1]).open('w') as f:f.write('unverified\n')
+                continue
+            assert event.startswith('attempt\t'),event
+            attempts.append(event.rstrip('\n').split('\t')[1])
+            # Even a removed/reset budget naturally completes: retire only this synthetic obstruction.
+            if case=='steal-budget' and len(attempts)==8:obstruction.rename(home/'r7-over-budget-obstruction')
+            with (home/'r7-resume').open('w') as f:f.write('continue\n')
+        rc=child.wait()
+    stdout=(home/'r7.out').read_text();stderr=(home/'r7.err').read_text()
+    print(json.dumps(dict(case=case,attempts=attempts,reads=reads,rc=rc,stdout=stdout,stderr=stderr)),flush=True)
+    if case=='steal-budget':assert len(attempts)==3,'primary and secondary must share exactly three acquisition attempts'
+    if case=='steal-replacement-budget':assert len(attempts)==4,'replacement creates must consume the same finite acquisition budget'
+    if refused:
+        assert reads==0,'secondary recovery read an unverified stream'
+        assert rc!=0,'unverified/live secondary must refuse consumption'
+        assert not stdout,'refused drain printed unlocked queued input'
+        assert 'WARNING' in stderr,'secondary refusal must warn visibly'
+        assert queue.read_bytes()==before,'secondary refusal changed queued input'
+        if case!='steal-replacement-budget':assert snapshot(steal)==protected,'secondary recovery changed a protected target'
+        if primary_owner is not None and case!='steal-replacement-budget':assert lock.is_symlink() and lock.readlink()==primary_owner,'blocked recovery removed its primary'
+        result=call([arm],dict(OMPCODE='1',PI_TOOL_CALL_ID='r7-unknown-arm',FM_OMP_TRANSITION_LOCK_ATTEMPTS='0' if case=='steal-replacement-budget' else '3'))
+        assert result.returncode==0 and 'WARNING' in result.stderr,'secondary refusal must allow unknown arming with warning'
+        if case!='steal-replacement-budget':assert snapshot(steal)==protected,'unknown arm changed a protected secondary'
+    else:
+        assert rc==0,'genuine dead stamped recovery must complete through the public entrypoint'
+        assert 'WARNING' not in stderr,'verified secondary recovery must stay known'
+        if case.endswith('append'):
+            assert 'appended-r7-input' in queue.read_text(),'recovered append must actually publish'
+            result=call([drain]);assert result.returncode==0 and 'appended-r7-input' in result.stdout and 'retained-r7-input' in result.stdout
+        else:assert 'retained-r7-input' in stdout,'recovered drain must deliver its queued wake'
+        assert not queue.read_bytes(),'recovered drain must consume delivered input'
+        assert not lock.is_symlink() and not steal.is_symlink(),'completed recovery must release both levels'
+        assert not list((home/'state').glob('.wake-queue.lock*')),'completed recovery left a lock artifact'
+        result=call([arm],dict(OMPCODE='1',PI_TOOL_CALL_ID='r7-clean-arm'))
+        if case.startswith('steal-cross'):
+            assert result.returncode==0 and 'WARNING' in result.stderr,'non-omp consumption must retain conservative unknown observation'
+        else:assert result.returncode==2 and 'WARNING' not in result.stderr,'recovered delivery must retain known clean refusal'
+finally:
+    if live is not None:
+        with (home/'r7-release').open('w') as f:f.write('release\n')
+        out,err=live.communicate();assert live.returncode==0,(out,err)
+if refused:
+    if case=='steal-budget':obstruction.rename(home/'r7-retired-obstruction')
+    elif live is None and case!='steal-replacement-budget':steal.rename(home/'r7-retired-obstruction')
+    assert call(append+['after-r7-release']).returncode==0,'subsequent public append must recover after owned fixture retirement'
+    result=call([drain]);assert result.returncode==0 and 'retained-r7-input' in result.stdout and 'after-r7-release' in result.stdout,'subsequent public drain must deliver retained and new wakes'
+PYROUND7
+      ;;
     caller-pid|claim-rollback|claim-foreign-pid|candidate-foreign-pid|selected-state|selected-state-link|selected-state-identity|bounded-append|bounded-non-omp|bounded-keys|legacy-release|legacy-dead|bounded-watch|bounded-procevent|bounded-procevent-start|bounded-jira)
       arm
       drain
@@ -2038,7 +2219,7 @@ if [ -z "${FM_TRANSITION_CASE:-}" ]; then
 fi
 
 if [ -z "${FM_TRANSITION_CASE:-}" ] && [ -z "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
-  for scenario in caller-pid claim-rollback claim-foreign-pid candidate-foreign-pid selected-state selected-state-link selected-state-identity bounded-append bounded-non-omp bounded-keys legacy-release legacy-dead bounded-watch bounded-procevent bounded-procevent-start bounded-jira non-omp-stamped-owner nested-queue-lock foreign-lock-owner sequence-pipe queue-read-error log-read-error publication-temp-link publication-temp-replaced lock-other-lock queue-hardlink queue-outside-home queue-parent-link queue-directory queue-owner queue-snapshot-swap queue-content-change queue-inode-change lock-wrong-identity lock-owner-link lock-child-link lock-wrong-home lock-wrong-path arm-result-link unrelated-lock-target unrelated-queue-target missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
+  for scenario in steal-recheck-unstamped steal-absent-drain steal-absent-append steal-dead-drain steal-dead-append steal-primary steal-unknown steal-unstamped steal-live steal-budget steal-cross-drain steal-cross-append steal-replacement-budget steal-unknown-pipe caller-pid claim-rollback claim-foreign-pid candidate-foreign-pid selected-state selected-state-link selected-state-identity bounded-append bounded-non-omp bounded-keys legacy-release legacy-dead bounded-watch bounded-procevent bounded-procevent-start bounded-jira non-omp-stamped-owner nested-queue-lock foreign-lock-owner sequence-pipe queue-read-error log-read-error publication-temp-link publication-temp-replaced lock-other-lock queue-hardlink queue-outside-home queue-parent-link queue-directory queue-owner queue-snapshot-swap queue-content-change queue-inode-change lock-wrong-identity lock-owner-link lock-child-link lock-wrong-home lock-wrong-path arm-result-link unrelated-lock-target unrelated-queue-target missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
     FM_TRANSITION_LIFECYCLE_CASE="$scenario" bash "$0"
   done
 fi
