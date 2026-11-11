@@ -5,7 +5,8 @@ This document is the authoritative human-readable contract for the watcher arm P
 `bin/fm-arm-pretool-check.sh` is only the stable harness transport and output renderer.
 The tracked harness adapters forward command text without classifying it.
 `bin/fm-arm-command-policy.mjs` is also the sole owner of firstmate's shell classification: it exports the tokenizer and command-position analysis that the sibling guard policies reuse instead of duplicating shell lexing.
-Sibling policies reuse those primitives: the [cd guard](cd-guard.md), [ask-user authority gate](ask-user-guard.md), and [scoped process-kill guard](process-kill-guard.md).
+Sibling policies reuse those primitives: the [cd guard](cd-guard.md) and [ask-user authority gate](ask-user-guard.md).
+The [scoped process-kill guard](process-kill-guard.md) applies its own literal word filter.
 
 ## Purpose and boundary
 

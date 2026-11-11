@@ -8,10 +8,10 @@
 // This file is the sole owner of firstmate's shell command classification.
 // The tokenizer and command-position analysis (Lexer, splitProgram,
 // commandPosition) are exported so the sibling guard policies reuse the same
-// proven parser instead of duplicating shell lexing. Consumers include:
+// proven parser instead of duplicating shell lexing. Two consumers import them
+// today, and changing an exported primitive changes both:
 //   - bin/fm-cd-command-policy.mjs      (docs/cd-guard.md)
 //   - bin/fm-ask-user-command-policy.mjs (docs/ask-user-guard.md)
-//   - bin/fm-process-command-policy.mjs  (docs/process-kill-guard.md)
 // The watcher-arm decision
 // procedure below stays private to this file. The CLI entry point at the bottom
 // runs only when this module is invoked directly, never on import.
@@ -180,22 +180,6 @@ function decodeAnsiCQuoted(source, start) {
   return null;
 }
 
-function heredocSubstitutions(body) {
-  const subs = [];
-  for (let i = 0; i < body.length; i += 1) {
-    if (body[i] === "\\") {
-      i += 1;
-      continue;
-    }
-    const found = body.startsWith("$(", i) ? extractBalanced(body, i + 2, "(", ")") : body[i] === "`" ? extractBackticks(body, i + 1) : undefined;
-    if (found === undefined) continue;
-    if (!found) return null;
-    subs.push({ kind: "command", content: found.content });
-    i = found.next - 1;
-  }
-  return subs;
-}
-
 export class Lexer {
   constructor(source) {
     this.source = source;
@@ -246,7 +230,6 @@ export class Lexer {
         this.index = balanced.next;
         continue;
       }
-      const start = this.index;
       const word = this.readWord();
       if (!word) {
         this.error = `unsupported token at byte ${this.index}`;
@@ -254,7 +237,7 @@ export class Lexer {
       }
       this.tokens.push(word);
       if (this.expectHeredoc) {
-        this.pendingHeredocs.push({ delimiter: word.value, quoted: /['"\\]/.test(this.source.slice(start, this.index)), stripTabs: this.expectHeredoc.stripTabs, token: this.expectHeredoc.token });
+        this.pendingHeredocs.push({ delimiter: word.value, stripTabs: this.expectHeredoc.stripTabs, token: this.expectHeredoc.token });
         this.expectHeredoc = null;
       }
     }
@@ -288,12 +271,6 @@ export class Lexer {
         break;
       }
       heredoc.token.heredoc = body;
-      if (heredoc.quoted) continue;
-      heredoc.token.heredocSubs = heredocSubstitutions(body);
-      if (!heredoc.token.heredocSubs) {
-        this.error = "unclosed substitution in heredoc";
-        break;
-      }
     }
     this.pendingHeredocs = [];
   }
@@ -640,7 +617,7 @@ function hasUnclassifiableProtectedExpansion(word, root) {
   return /(?:^|\/)fm-watch/.test(word.value);
 }
 
-export function shellInvocation(position) {
+function shellInvocation(position) {
   if (!position.command) return null;
   const name = basename(position.command.value);
   if (!["sh", "bash", "zsh"].includes(name)) return null;
@@ -662,13 +639,13 @@ export function shellInvocation(position) {
   return { kind: "stdin", payload: null };
 }
 
-export function shellHeredocPayloads(tokens, position) {
+function shellHeredocPayloads(tokens, position) {
   if (shellInvocation(position)?.kind !== "stdin") return [];
   const heredocs = tokens.filter((token) => token.type === "redir" && token.fd === 0 && typeof token.heredoc === "string");
   return heredocs.length === 0 ? [] : [heredocs.at(-1).heredoc];
 }
 
-export function shellHereStringPayloads(tokens, position) {
+function shellHereStringPayloads(tokens, position) {
   if (shellInvocation(position)?.kind !== "stdin") return [];
   const payloads = [];
   for (let i = 0; i < tokens.length; i += 1) {
@@ -685,7 +662,7 @@ function sourcedScript(position) {
   return position.words[position.index + 1] || null;
 }
 
-export function evalPayload(position) {
+function evalPayload(position) {
   if (!position.command || basename(position.command.value) !== "eval") return null;
   const payloads = position.words.slice(position.index + 1);
   if (payloads.length === 0 || payloads.some((payload) => !payload.literal || payload.subs.length > 0)) return null;

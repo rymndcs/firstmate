@@ -1,7 +1,7 @@
 # Scoped process-kill guard
 
 The process-kill guard prevents an agent from accidentally selecting other agents for termination.
-`bin/fm-process-command-policy.mjs` owns the decision and imports shell classification from `bin/fm-arm-command-policy.mjs`.
+`bin/fm-process-command-policy.mjs` owns the literal word-filter decision.
 `bin/fm-process-pretool-check.sh` owns scope discovery, transport, exact invocation syntax, and failure rendering; its header and `--help` describe those mechanics.
 
 ## Scope
@@ -19,19 +19,21 @@ Existing primary watcher policy and its transport remain independent and retain 
 
 ## Decisions and limits
 
-I use explicit positive PID arguments as the permitted termination form.
-For example, `kill -TERM 12345` passes, while `kill "$(pgrep -f agent)"`, `pkill -f agent -n -P 12345`, and `pgrep agent | xargs kill` are refused.
-Read-only `pgrep`, quoted documentation text, searches such as `find . -name '*pkill*'` or `rg -l killall | xargs wc -l`, and lookups such as `command -v pkill` pass.
-Signal selection and multiple explicit PIDs are supported; dynamic PID expansions, zero, negative groups, and implicit targets are refused.
-Pattern-based `pkill` and `killall` are refused even with parent or process-group selectors: the hook cannot establish that a shared group belongs exclusively to the caller, and options after a pattern do not provide portable containment.
-Inspect first in a separate read-only call, then terminate the specific observed PID.
+I refuse any command text containing the word `pkill` or `killall`, or containing both `pgrep` and `kill`, anywhere in the text.
+Quotes, comments, heredocs, configuration arguments and wrapper commands do not change that decision.
+Word boundaries distinguish these words from longer identifiers such as `skill` or `pkilling`.
+The only exceptions are whole commands consisting of a bare name lookup: `command -v pkill`, `command -V killall`, `type pkill` or `which killall`.
+Each lookup form accepts either blocked name, with no other arguments, commands or redirections.
 
-The shared lexer distinguishes executed commands from data and recursively exposes literal shell payloads, groups, substitutions, here-strings, heredocs fed to a shell, and substitutions inside unquoted-delimiter heredoc bodies.
-A termination command reaching an execution sink is refused: `xargs`, `parallel`, `find -exec`/`-execdir`/`-ok`/`-okdir`, and wrappers that run their arguments such as `nice`, `setsid`, `stdbuf`, `time`, `doas` and `watch`.
-Unsupported compound grammar that mentions a termination command is refused.
-Opaque dynamic shell payloads and malformed syntax are refused rather than guessed safe.
-This is a guard against visible shell-command mistakes, not a sandbox against deliberately hiding a kill inside an arbitrary executable, script file, interpreter program, alias, or prior-session variable.
-It does not inspect the body of every executable a worker launches, intercept operating-system signals, or retroactively install hooks into already-running workers.
+Explicit-PID kills such as `kill 12345`, `kill -TERM 12345` and `kill -- -12345` pass because they contain none of the blocked word combinations.
+The filter does not verify PID or process-group ownership.
+For text searches, split the word, for example `grep -e 'pk''ill' file`; an unsplit text search such as `rg pkill file` is deliberately refused.
+Read-only `pgrep agent` passes, while `pgrep agent | xargs kill` is refused.
+The refusal message names explicit PID arguments and the split-word search alternative.
+
+This is a literal text filter against visible broad-selection mistakes, not shell execution analysis or operating-system signal confinement.
+It does not decode split or encoded command names, inspect arbitrary executable or script bodies, resolve aliases or prior-session variables, or prove an opaque shell payload safe.
+It does not retroactively install hooks into already-running workers.
 
 ## Coverage and installation
 

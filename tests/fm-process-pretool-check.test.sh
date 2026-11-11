@@ -36,10 +36,12 @@ function expect(command, denied, options = {}) {
     const error = JSON.parse(result.stderr);
     assert.equal(error.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(error.systemMessage, /explicit.*PID/i);
+    assert.match(error.systemMessage, /grep -e 'pk''ill'/);
   } else assert.equal(result.stderr, '', `stderr: ${command}`);
   checks++;
 }
 const denied = [
+  'echo pkill',
   'pkill -f agent -n -P 123', 'pkill -f agent', '/usr/bin/pkill agent',
   'command pkill agent', 'sudo -n pkill agent', 'env X=1 pkill agent',
   'killall agent', '/usr/bin/killall -9 agent', 'command killall agent',
@@ -50,38 +52,51 @@ const denied = [
   '(pkill agent)', '{ killall agent; }', 'echo "$(pkill agent)"',
   "bash -lc 'pkill agent'", "eval 'killall agent'", "env -S 'pkill agent'",
   "bash <<'EOF'\npkill agent\nEOF\n", "bash <<< 'pkill agent'",
-  'kill $PIDS', 'kill "$pid"', 'kill -9 0', 'kill -- -123', 'kill -1',
-  'kill 123 $(pgrep agent)', 'kill 12$(pgrep agent)', 'kill 123*', 'kill -s', 'kill -s -- 123',
-  'kill -n "bad?" 123', 'sudo --unknown pkill agent', 'eval "$CMD"', 'pkill -g 999 agent', 'pkill -P 999 agent',
-  'pkill agent -g 0', 'p"kill" agent', "p$'\\x6b'ill agent",
-  'pkill \\agent', 'pkill "unterminated', 'echo "unterminated', 'for x in 1; do echo pkill; done',
+  'sudo --unknown pkill agent', 'pkill -g 999 agent', 'pkill -P 999 agent',
+  'pkill agent -g 0', 'pkill "unterminated', 'for x in 1; do echo pkill; done',
   'K=pkill; $K agent', "bash -c \"$CMD\" # pkill", 'builtin killall agent',
   'find . -exec killall agent \\;', '! pkill agent',
-  "printf pkill | sh", "xargs sh -c 'pkill agent'",
-  "for x in a; do p$'\\x6b'ill agent; done",
-  'cat > notes.md <<EOF\nUse `pkill -f agent` to stop it\nEOF\n', 'cat <<EOF\n$(pkill -f agent)\nEOF\n',
-  'git commit -F - <<EOF\nfix: `killall agent`\nEOF\n', 'cat <<-EOF\n\t$(killall agent)\n\tEOF\n',
-  'cat <<EOF\n$(echo unterminated\nEOF\n',
+  'printf pkill | sh', "xargs sh -c 'pkill agent'",
+  'cat > notes.md <<EOF\nUse `pkill -f agent` to stop it\nEOF\n',
+  'cat <<EOF\n$(pkill -f agent)\nEOF\n', 'git commit -F - <<EOF\nfix: `killall agent`\nEOF\n',
+  'cat <<-EOF\n\t$(killall agent)\n\tEOF\n',
   'nice pkill -f agent', 'setsid pkill agent', '/usr/bin/time pkill -f agent', 'stdbuf -o0 killall agent',
   'doas pkill agent', "watch -n1 'pkill agent'", 'pgrep agent | parallel kill', 'nice -n 5 sudo pkill agent',
-  'K=pkill; nice $K agent', 'command -p pkill agent', 'pgrep agent | xargs kill',
+  'command -p pkill agent', 'pgrep agent | xargs kill',
   "pgrep agent | xargs sh -c 'kill \"$@\"' _", 'echo pkill | xargs -I CMD CMD agent', 'echo pkill | xargs sh',
-  'find . -name x -exec pkill agent \\;', 'find . -execdir /usr/bin/killall agent \\;', 'find . -ok kill {} \\;',
+  'find . -name x -exec pkill agent \\;', 'find . -execdir /usr/bin/killall agent \\;',
   'K=pkill; find . -exec $K \\;',
+  'arch -arm64 pkill -f agent', 'xcrun pkill agent', 'sandbox-exec -n no-network pkill agent', 'bundle exec pkill agent',
+  'uv run pkill agent', 'npx pkill agent', 'mise exec -- pkill agent', 'screen -dm pkill agent', 'tmux new -d pkill agent',
+  'ssh localhost pkill agent', 'echo pkill | xargs arch', 'arch kill $(pgrep agent)', "watch 'kill $(pgrep agent)'",
+  'command env -v pkill agent', 'command timeout -v 5 pkill agent', 'env -u command -v pkill agent',
+  'cat <<EOF\n$\\\n(pkill agent)\nEOF\n',
+  'bash <(echo pkill agent)', 'source <(echo pkill agent)', 'sh -s -- < <(echo pkill agent)',
+  "dash -c 'pkill agent'", "ksh -c 'pkill agent'", "fish -c 'pkill agent'", 'echo pkill agent | dash',
+  'bash < pkill-steps.sh', 'CMD=pkill; bash <<EOF\n$CMD agent\nEOF\n', "bash -c '$1 agent' _ pkill",
+  "find . -name '*killall*' -exec wc -l {} +", "find . -name '*pkill*' -delete", 'rg pkill bin | sort',
+  "git commit -m 'drop pkill'", 'man -P pkill ls', 'git grep -O pkill agent', 'echo pkill | cat | sh', 'echo pkill | (sh)',
+  'pgrep agent | xargs kill 123', 'pgrep agent | xargs nice kill 123', 'rg --pre pkill agent',
+  "git --paginate -c 'core.pager=pkill -f agent' log -1",
+  "git -c 'core.pager=killall agent' --paginate show --stat",
+  "echo 'pkill -f agent'", "printf '%s\\n' 'killall agent'", 'rg pkill file', '# pkill agent\ngit status',
+  "cat <<'EOF'\npkill agent\nEOF\n", "bash -c 'echo pkill'", "find . -name '*pkill*'",
+  'rg -l killall | xargs wc -l', 'cat bin/pkill-notes.md', 'whereis pkill', 'man pkill',
+  'git log --grep pkill', 'git -C repo show HEAD:bin/pkill.sh', 'git grep killall', 'echo pkill | cat',
+  'echo pgrep; echo kill', "printf 'pgrep kill'", 'kill 123 # pgrep',
+  'command -v pkill; true', 'command -V killall && true', 'type pkill | sh', 'which killall > found',
+  'command -v pkill extra', 'type -a pkill', 'which pkill killall', 'sudo command -v pkill',
+  'command -v pkill\necho ok', 'NAME=pkill command -v pkill',
 ];
 const allowed = [
   'git status', 'kill 123', '/bin/kill -TERM 123 456', 'command kill -9 -- 123',
-  'sudo -n kill -s TERM 123', 'kill -0 123', 'kill -l',
-  'pgrep -fl agent', 'pgrep agent | cat', "echo 'pkill -f agent'",
-  "printf '%s\\n' 'killall agent'", 'rg pkill file', '# pkill agent\ngit status',
-  "cat <<'EOF'\npkill agent\nEOF\n", "bash -c 'echo pkill'",
-  'cat <<"EOF"\n$(pkill agent)\nEOF\n', 'cat <<\\EOF\n`killall agent`\nEOF\n', 'cat <<EOF\n\\$(pkill agent)\nEOF\n',
-  'cat > notes.md <<EOF\nUse pkill carefully; see `git status`\nEOF\n',
-  "find . -name '*pkill*'", "find . -name '*killall*' -exec wc -l {} +", 'rg -l killall | xargs wc -l',
-  'grep -rn pkill bin', 'command -v pkill', 'command -V killall', 'type pkill', 'which killall',
-  'cat bin/pkill-notes.md', 'nice git status', 'time git status',
+  'sudo -n kill -s TERM 123', 'kill -0 123', 'kill -l', 'kill -- -123',
+  'pgrep -fl agent', 'pgrep agent | cat', 'nice -n 5 kill -TERM 123', 'ls | xargs arch',
+  'command -v pkill', 'command -V pkill', 'command -v killall', 'command -V killall',
+  'type pkill', 'type killall', 'which pkill', 'which killall', '  command -v pkill  ',
+  "grep -e 'pk''ill' file", "rg 'kill''all' file", "grep -e 'pg''rep' -e 'ki''ll' file",
+  'echo skill', 'echo pkilling', 'echo killalligator', 'echo pgrep; echo skilled',
 ];
-denied.push('('.repeat(14) + 'true' + ')'.repeat(14));
 for (const stdin of [false, true]) {
   for (const command of denied) expect(command, true, {stdin});
   for (const command of allowed) expect(command, false, {stdin});
@@ -127,6 +142,13 @@ copyFileSync(check, `${tmp}/missing-policy/bin/fm-process-pretool-check.sh`);
 const missing = spawnSync('/bin/bash', [`${tmp}/missing-policy/bin/fm-process-pretool-check.sh`, '--home', `${tmp}/home`, '--command', 'pkill agent'], {cwd: `${tmp}/task`, encoding: 'utf8'});
 assert.equal(missing.status, 2);
 assert.match(missing.stderr, /explicit.*PID/i);
+checks++;
+const help = spawnSync('bash', [check, '--help'], {encoding: 'utf8'});
+assert.equal(help.status, 0);
+const helpLines = help.stdout.trimEnd().split('\n');
+assert.match(helpLines[0], /^Scoped process-kill PreToolUse transport/);
+assert.match(helpLines.at(-1), /^See docs\/process-kill-guard\.md/);
+assert.doesNotMatch(help.stdout, /set -u/);
 checks++;
 console.log(`ok - ${checks} process guard public-entry assertions`);
 JS

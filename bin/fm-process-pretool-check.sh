@@ -9,7 +9,7 @@
 # it explicitly. Outside scope: silent exit 0, even with malformed input.
 # Inside scope: exit 0 allows; exit 2 and stderr denies. Stdout stays empty.
 # Missing policy/runtime or invalid input denies within confirmed scope.
-# The Node policy imports the shared shell classifier; no command is executed.
+# The Node policy filters literal words; no command is parsed or executed.
 # See docs/process-kill-guard.md for the contract and coverage boundary.
 set -u
 
@@ -30,7 +30,7 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --help|-h)
-      sed -n '2,14{s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
+      sed -n '2,13{s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"
       exit 0
       ;;
     *) exit 2 ;;
