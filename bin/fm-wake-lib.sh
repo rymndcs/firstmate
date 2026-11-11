@@ -389,6 +389,26 @@ fm_lock_acquire_wait() {
   done
 }
 
+# Bounded omp transition acquisition never steals an unverified obstruction.
+fm_omp_queue_lock() {
+  local attempts=${FM_OMP_TRANSITION_LOCK_ATTEMPTS:-20} i=0 pid
+  while [ "$i" -lt "$attempts" ]; do
+    i=$((i + 1))
+    fm_lock_try_create "$FM_WAKE_QUEUE_LOCK" && return 0
+    if [ -L "$FM_WAKE_QUEUE_LOCK" ]; then
+      if [ -f "$FM_WAKE_QUEUE_LOCK/pid" ] && [ ! -L "$FM_WAKE_QUEUE_LOCK/pid" ]; then
+        pid=$(cat "$FM_WAKE_QUEUE_LOCK/pid" 2>/dev/null || true)
+        if fm_pid_alive "$pid"; then
+          [ "$i" -ge "$attempts" ] || sleep 0.05
+          continue
+        fi
+      fi
+    fi
+    if [ -e "$FM_WAKE_QUEUE_LOCK" ] || [ -L "$FM_WAKE_QUEUE_LOCK" ]; then return 1; fi
+  done
+  return 1
+}
+
 fm_lock_release() {
   local lockdir=$1 pid current ownerdir
   current=${BASHPID:-$$}

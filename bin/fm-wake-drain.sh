@@ -2,6 +2,9 @@
 # Atomically drain durable watcher wake records, optionally annotate validated
 # signal status keys after raw consumption commits, register task PRs, then assert liveness.
 # Usage: fm-wake-drain.sh [--help]
+# omp admission and bounded locking: fm-omp-watch-transition.sh --help.
+# omp retains raw queue bytes until record admission; admitted sequences make
+# replay after publication and before clearing harmless across successor arms.
 # PR discovery is best-effort through fm-pr-auto-register.sh --all, including
 # empty drains, and always runs outside the durable wake queue lock.
 # fm-jira.sh retries owed merge reminders before taking that lock, including
@@ -62,6 +65,28 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 "$SCRIPT_DIR/fm-jira.sh" retry-followups || true
+if [ "${OMPCODE:-}" = 1 ]; then
+  if ! fm_omp_queue_lock; then
+    echo 'watcher: WARNING - transition lock unavailable; wakes retained.' >&2
+    exit 1
+  fi
+  DRAIN_LOCK_HELD=true
+  RAW_ROWS=''
+  if [ -e "$FM_WAKE_QUEUE" ] || [ -L "$FM_WAKE_QUEUE" ]; then
+    RAW_ROWS=$(cat "$FM_WAKE_QUEUE") || exit 1
+  fi
+  if [ -n "$RAW_ROWS" ]; then
+    fm_wake_print_deduped "$FM_WAKE_QUEUE" || exit 1
+  fi
+  record_omp_drain || exit 1
+  : > "$FM_WAKE_QUEUE" || exit 1
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  DRAIN_LOCK_HELD=false
+  (fm_wake_print_annotations "$RAW_ROWS") || true
+  "$SCRIPT_DIR/fm-pr-auto-register.sh" --all || true
+  assert_watcher_liveness
+  exit 0
+fi
 fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
 DRAIN_LOCK_HELD=true
 

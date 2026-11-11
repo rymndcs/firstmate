@@ -44,10 +44,640 @@ assert_observed() {
   actual=$(jq -sr '.[-1].observed' "$LAB/state/.omp-watch-transitions.log")
   [ "$actual" = "$1" ] || fail "expected observed $1, got $actual"
 }
+queue_rows() {
+  local row sequence
+  while IFS= read -r row; do
+    sequence=$(cat "$LAB/state/.wake-queue.seq" 2>/dev/null || echo 0)
+    sequence=$((sequence + 1))
+    printf '%s\n' "$sequence" > "$LAB/state/.wake-queue.seq"
+    printf '%s\n' "$row" | awk -F '\t' -v OFS='\t' -v seq="$sequence" '{$2=seq;print}'
+  done
+}
 drain() {
-  printf '1\t1\theartbeat\tfixture\theartbeat: fixture\n' > "$LAB/state/.wake-queue"
+  : > "$LAB/state/.wake-queue"
+  bash -c '. "$1"; fm_wake_append heartbeat fixture "heartbeat: fixture"' _ "$LAB/bin/fm-wake-lib.sh"
   "$DRAIN" >/dev/null 2>&1
 }
+overlap_transactions() {
+python3 - "$LAB" <<'PYTEST'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+home = Path(sys.argv[1])
+shim = home / 'overlap-bin'
+shim.mkdir()
+for name in ('ready', 'release', 'contender', 'contender-resume'):
+    os.mkfifo(home / name)
+(shim / 'awk').write_text("""#!/usr/bin/env bash
+if [ "${HOLD_IDLE_DRAIN:-}" = 1 ] && [ "$#" -eq 5 ] && [ "$1" = -F ] && [ "$2" = '\\t' ] && mkdir "$FM_HOME/receipt-seen" 2>/dev/null; then
+  printf 'ready\\n' > "$FM_HOME/ready"
+  read -r _ < "$FM_HOME/release"
+fi
+exec /usr/bin/awk "$@"
+""")
+(shim / 'cat').write_text("""#!/usr/bin/env bash
+if [ "${OVERLAP_CONTENDER:-}" = 1 ]; then
+  case "$*" in *'.wake-queue.lock/pid')
+    if mkdir "$FM_HOME/contender-seen" 2>/dev/null; then
+      printf 'attempt\\n' > "$FM_HOME/contender"
+      read -r _ < "$FM_HOME/contender-resume"
+    fi
+    ;;
+  esac
+fi
+exec /bin/cat "$@"
+""")
+for path in shim.iterdir():
+    path.chmod(0o755)
+env = dict(os.environ, PATH=str(shim) + ':' + os.environ['PATH'])
+drain = str(home / 'bin/fm-wake-drain.sh')
+append = ['bash', '-c', '. "$1"; fm_wake_append stale worker "$2" "${3:-}"',
+          '_', str(home / 'bin/fm-wake-lib.sh')]
+
+def call(command, extra=None):
+    result = subprocess.run(command, env=dict(env, **(extra or {})), capture_output=True, text=True)
+    assert result.returncode == 0, (command, result.stdout, result.stderr)
+    lock = home / 'state/.wake-queue.lock'
+    assert not lock.exists() and not lock.is_symlink(), 'completed helper left its queue lock behind'
+    return result
+
+call(append + ['already reported idle', 'idle-recheck'])
+with (home / 'idle.out').open('w') as out, (home / 'idle.err').open('w') as err:
+    idle = subprocess.Popen([drain], env=dict(env, HOLD_IDLE_DRAIN='1'), stdout=out, stderr=err)
+    with (home / 'ready').open() as ready:
+        assert ready.readline() == 'ready\n'
+    serialized = (home / 'state/.wake-queue.lock').is_symlink()
+    if serialized:
+        fresh = subprocess.Popen(append + ['fresh actionable stale'],
+                                 env=dict(env, OVERLAP_CONTENDER='1'),
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        with (home / 'contender').open() as contender:
+            assert contender.readline() == 'attempt\n'
+    else:
+        call(append + ['fresh actionable stale'])
+        newer = call([drain])
+        assert 'fresh actionable stale' in newer.stdout
+        assert 'stale' == ' '.join(json.loads((home / 'state/.omp-watch-transition').read_text())['classes'])
+    with (home / 'release').open('w') as release:
+        release.write('continue\n')
+    assert idle.wait() == 0
+    if serialized:
+        with (home / 'contender-resume').open('w') as resume:
+            resume.write('continue\n')
+        stdout, stderr = fresh.communicate()
+        assert fresh.returncode == 0, (stdout, stderr)
+        newer = call([drain])
+        assert 'fresh actionable stale' in newer.stdout
+assert 'already reported idle' in (home / 'idle.out').read_text()
+assert not (home / 'state/.wake-queue').read_text()
+result = subprocess.run([str(home / 'bin/fm-watch-arm.sh')],
+                        env=dict(env, PI_TOOL_CALL_ID='overlap-next-arm'),
+                        capture_output=True, text=True)
+verdict = json.loads((home / 'state/.omp-watch-transitions.log').read_text().splitlines()[-1])
+print(json.dumps(dict(serialized=serialized, receipt=(home / 'state/.omp-watch-transition').read_text(),
+                      arm_exit=result.returncode, stdout=result.stdout, stderr=result.stderr, verdict=verdict)))
+assert result.returncode == 2, 'overlapping idle drain erased fresh evidence: expected exit 2, got ' + str(result.returncode)
+assert verdict['observed'] == 'clean', verdict
+assert 'firstmate_watch_reset' in result.stderr
+assert 'WARNING' not in result.stderr
+
+(home / 'contender-seen').rmdir()
+(home / 'receipt-seen').rmdir()
+helper = str(home / 'bin/fm-omp-watch-transition.sh')
+call([str(home / 'bin/fm-watch-arm.sh'), '--transition', 'work-pending', '--reason', 'begin cycle boundary'], {'PI_TOOL_CALL_ID': 'cycle-boundary-fixture'})
+call(append + ['idle before replacement', 'idle-recheck'])
+with (home / 'idle.out').open('w') as out, (home / 'idle.err').open('w') as err:
+    idle = subprocess.Popen([drain], env=dict(env, HOLD_IDLE_DRAIN='1'), stdout=out, stderr=err)
+    with (home / 'ready').open() as ready:
+        assert ready.readline() == 'ready\n'
+    successor = subprocess.Popen(['bash', '-c', '"$@"\nrc=$?\nif mkdir "$FM_HOME/contender-seen" 2>/dev/null; then\n  printf \'completed\\n\' > "$FM_HOME/contender"\nfi\nexit "$rc"', '_', str(home / 'bin/fm-watch-arm.sh'), '--transition', 'work-pending', '--reason', 'replacement'],
+        env=dict(env, OVERLAP_CONTENDER='1', PI_TOOL_CALL_ID='successor-cycle'),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    with (home / 'contender').open() as contender:
+        boundary = contender.readline()
+    with (home / 'release').open('w') as release:
+        release.write('continue\n')
+    assert idle.wait() == 0
+    if boundary == 'attempt\n':
+        with (home / 'contender-resume').open('w') as resume:
+            resume.write('continue\n')
+    stdout, stderr = successor.communicate()
+    assert successor.returncode == 0, (stdout, stderr)
+    print('vacated-lock successor stderr=' + repr(stderr), flush=True)
+    assert 'WARNING' not in stderr, 'a vacated owned lock was mistaken for unavailable evidence: ' + stderr
+assert boundary == 'attempt\n', 'cycle replacement crossed an in-flight receipt transaction'
+call(append + ['fresh after replacement'])
+call([drain])
+result = subprocess.run([str(home / 'bin/fm-watch-arm.sh')],
+                        env=dict(env, PI_TOOL_CALL_ID='replacement-next-arm'),
+                        capture_output=True, text=True)
+verdict = json.loads((home / 'state/.omp-watch-transitions.log').read_text().splitlines()[-1])
+assert result.returncode == 2, (result.stdout, result.stderr)
+assert verdict['observed'] == 'clean', verdict
+assert 'WARNING' not in result.stderr
+
+(home / 'contender-seen').rmdir()
+(home / 'receipt-seen').rmdir()
+call([str(home / 'bin/fm-watch-arm.sh'), '--transition', 'work-pending', '--reason', 'begin arm boundary'], {'PI_TOOL_CALL_ID': 'arm-boundary-fixture'})
+call(append + ['earlier idle receipt', 'idle-recheck'])
+call([drain])
+call(append + ['fresh event in flight'])
+with (home / 'idle.out').open('w') as out, (home / 'idle.err').open('w') as err:
+    fresh_drain = subprocess.Popen([drain], env=dict(env, HOLD_IDLE_DRAIN='1'), stdout=out, stderr=err)
+    with (home / 'ready').open() as ready:
+        assert ready.readline() == 'ready\n'
+    arm = subprocess.Popen(['bash', '-c', '"$@"\nrc=$?\nif mkdir "$FM_HOME/contender-seen" 2>/dev/null; then\n  printf \'completed\\n\' > "$FM_HOME/contender"\nfi\nexit "$rc"', '_', str(home / 'bin/fm-watch-arm.sh')],
+        env=dict(env, OVERLAP_CONTENDER='1', PI_TOOL_CALL_ID='arm-during-drain'),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    with (home / 'contender').open() as contender:
+        boundary = contender.readline()
+    with (home / 'release').open('w') as release:
+        release.write('continue\n')
+    assert fresh_drain.wait() == 0
+    if boundary == 'attempt\n':
+        with (home / 'contender-resume').open('w') as resume:
+            resume.write('continue\n')
+    stdout, stderr = arm.communicate()
+assert boundary == 'attempt\n', 'arm observed a receipt before its drain transaction committed'
+assert arm.returncode == 2, 'arm ignored committed fresh evidence: expected exit 2, got ' + str(arm.returncode)
+verdict = json.loads((home / 'state/.omp-watch-transitions.log').read_text().splitlines()[-1])
+assert verdict['observed'] == 'clean', verdict
+assert 'WARNING' not in stderr
+previous_receipt = (home / 'state/.omp-watch-transition').read_text()
+foreign = subprocess.run([helper, 'drain'], env=dict(env, PI_SESSION_ID='foreign-session'), capture_output=True, text=True)
+assert foreign.returncode != 0
+assert (home / 'state/.omp-watch-transition').read_text() == previous_receipt
+PYTEST
+}
+grant_recovery() {
+  local token
+  token=$("$LAB/bin/fm-omp-watch-transition.sh" identity "$PI_SESSION_ID")
+  "$LAB/bin/fm-omp-watch-transition.sh" recovery "$PI_SESSION_ID" "$token"
+}
+if [ -n "${FM_TRANSITION_CASE:-}" ]; then
+  arm
+  drain
+  case "$FM_TRANSITION_CASE" in
+    recovery-log|recovery-away|recovery-hold|recovery-declaration|recovery-new-wake|recovery-replay)
+      token=$("$LAB/bin/fm-omp-watch-transition.sh" identity "$PI_SESSION_ID")
+      grant_recovery
+      case "$FM_TRANSITION_CASE" in
+        recovery-log)
+          mkdir "$LAB/log-bin"
+          cat > "$LAB/log-bin/mv" <<'SH'
+#!/usr/bin/env bash
+for destination; do :; done
+if [ "$destination" = "$FM_HOME/state/.omp-watch-transitions.log" ]; then
+  echo injected >> "$FM_HOME/log-failed"
+  exit 1
+fi
+exec /bin/mv "$@"
+SH
+          chmod +x "$LAB/log-bin/mv"
+          PATH="$LAB/log-bin:$PATH" arm
+          assert_contains "$output" WARNING 'logging failure must warn'
+          assert_grep injected "$LAB/log-failed" 'logging injection reached'
+          ;;
+        recovery-away|recovery-hold)
+          flag=.afk
+          [ "$FM_TRANSITION_CASE" != recovery-hold ] || flag=.captain-hold
+          touch "$LAB/state/$flag"
+          arm
+          rm -f "${LAB:?}/state/$flag"
+          ;;
+        recovery-declaration) arm --transition work-pending --reason 'unfinished work' ;;
+        recovery-new-wake)
+          drain
+          arm
+          expect_code 2 "$rc" 'recovery cannot exempt a newer wake'
+          pass 'recovery-new-wake'
+          exit ;;
+        recovery-replay)
+          arm
+          drain
+          "$LAB/bin/fm-omp-watch-transition.sh" recovery "$PI_SESSION_ID" "$token"
+          arm
+          expect_code 2 "$rc" 'a retired callback cannot grant recovery over a successor fresh wake'
+          assert_observed clean
+          assert_not_contains "$output" WARNING 'retired recovery cannot alter current evidence'
+          pass 'recovery-replay'
+          exit ;;
+      esac
+      expect_code 0 "$rc" 'replacement arm must preserve supervision'
+      drain
+      arm
+      expect_code 2 "$rc" 'recovery cannot survive a permitted replacement arm'
+      assert_observed clean
+      assert_not_contains "$output" WARNING 'completed recovery leaves verified clean evidence'
+      ;;
+    missing-drain-identity)
+      arm --transition work-pending --reason 'begin idle receipt'
+      bash -c '. "$1"; fm_wake_append stale worker prior-idle idle-recheck' _ "$LAB/bin/fm-wake-lib.sh"
+      "$DRAIN" >/dev/null 2>&1
+      bash -c '. "$1"; fm_wake_append stale worker fresh-without-identity' _ "$LAB/bin/fm-wake-lib.sh"
+      bad=0
+      missing=$(PI_TOOL_CALL_ID='' "$DRAIN" 2>&1) || bad=$?
+      expect_code 1 "$bad" 'unidentified drain must not acknowledge admission'
+      assert_contains "$missing" WARNING 'missing drain identity warns'
+      assert_grep fresh-without-identity "$LAB/state/.wake-queue" 'unidentified drain retains raw fresh input'
+      arm
+      expect_code 0 "$rc" 'missing identity preserves arming'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'missing drain identity cannot leave a silently trusted idle record'
+      "$DRAIN" >/dev/null 2>&1
+      arm
+      expect_code 2 "$rc" 'retained fresh input still requires reset after an admitted retry'
+      ;;
+    unavailable-lock)
+      printf 'unknown obstruction\n' > "$LAB/state/.wake-queue.lock"
+      before=$(cat "$LAB/state/.omp-watch-transition")
+      FM_OMP_TRANSITION_LOCK_ATTEMPTS=1 arm
+      expect_code 0 "$rc" 'unavailable lock must warn and allow'
+      assert_contains "$output" WARNING 'unavailable lock is visible'
+      [ "$(cat "$LAB/state/.wake-queue.lock")" = 'unknown obstruction' ] || fail 'unknown obstruction was changed'
+      [ "$(cat "$LAB/state/.omp-watch-transition")" = "$before" ] || fail 'canonical state changed without its lock'
+      rm -f "${LAB:?}/state/.wake-queue.lock"
+      arm
+      expect_code 0 "$rc" 'stale record after unavailable lock must not force reset'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'later arm cannot trust stale state after unlocked launch'
+      ;;
+    held-lock-budget)
+      arm --transition work-pending --reason 'begin held lock budget'
+      bash -c '. "$1"; fm_wake_append stale worker held-idle idle-recheck' _ "$LAB/bin/fm-wake-lib.sh"
+      python3 - "$LAB" <<'PYBUDGET'
+import json,os,subprocess,sys
+from pathlib import Path
+home=Path(sys.argv[1]);shim=home/'budget-bin';shim.mkdir()
+for n in ('budget-ready','budget-release','budget-progress'):os.mkfifo(home/n)
+(shim/'awk').write_text(r'''#!/usr/bin/env bash
+if [ "${HOLD_BUDGET_DRAIN:-}" = 1 ] && [ "$#" -eq 5 ] && [ "$1" = -F ] && mkdir "$FM_HOME/budget-held" 2>/dev/null; then
+  printf 'held\n' > "$FM_HOME/budget-ready"
+  read -r _ < "$FM_HOME/budget-release"
+fi
+exec /usr/bin/awk "$@"
+''')
+(shim/'cat').write_text(r'''#!/usr/bin/env bash
+if [ "${BUDGET_PROBE:-}" = 1 ] && [ "$#" -eq 1 ] && [ "$1" = "$FM_HOME/state/.wake-queue.lock/pid" ]; then
+  owner=$(ps -p "$PPID" -o ppid= | tr -d '[:space:]')
+  n=0
+  [ ! -f "$FM_HOME/budget-count.$owner" ] || n=$(/bin/cat "$FM_HOME/budget-count.$owner")
+  n=$((n + 1))
+  printf '%s\n' "$n" > "$FM_HOME/budget-count.$owner"
+  if [ "$n" -eq 2 ]; then printf 'over-budget\n' > "$FM_HOME/budget-progress"; fi
+fi
+exec /bin/cat "$@"
+''')
+(shim/'sleep').write_text('#!/usr/bin/env bash\n[ "$1" != 0.05 ] || exit 0\nexec /bin/sleep "$@"\n')
+for f in shim.iterdir():f.chmod(0o755)
+env=dict(os.environ,PATH=str(shim)+':'+os.environ['PATH'])
+with (home/'holder.out').open('w') as out,(home/'holder.err').open('w') as err:
+    holder=subprocess.Popen([str(home/'bin/fm-wake-drain.sh')],env=dict(env,HOLD_BUDGET_DRAIN='1'),stdout=out,stderr=err)
+    with (home/'budget-ready').open() as ready:assert ready.readline()=='held\n'
+    with (home/'budget.out').open('w') as ao,(home/'budget.err').open('w') as ae:
+        arm=subprocess.Popen(['bash','-c','"$1"; rc=$?; printf "completed\\n" > "$FM_HOME/budget-progress"; exit "$rc"','_',str(home/'bin/fm-watch-arm.sh')],env=dict(env,BUDGET_PROBE='1',PI_TOOL_CALL_ID='held-budget-arm',FM_OMP_TRANSITION_LOCK_ATTEMPTS='1'),stdout=ao,stderr=ae)
+        with (home/'budget-progress').open() as progress:event=progress.readline()
+        with (home/'budget-release').open('w') as release:release.write('continue\n')
+        if event=='over-budget\n':
+            with (home/'budget-progress').open() as progress:assert progress.readline()=='completed\n'
+        rc=arm.wait()
+    holder_rc=holder.wait()
+counts={f.name:int(f.read_text()) for f in home.glob('budget-count.*')}
+assert event=='completed\n', 'a held lock exceeded the injected attempt budget before allowing arming'
+assert rc==0,(rc,(home/'budget.err').read_text())
+assert counts and all(n==1 for n in counts.values()),counts
+assert 'WARNING' in (home/'budget.err').read_text()
+assert holder_rc==0,(holder_rc,(home/'holder.err').read_text())
+print('held-lock budget counts='+json.dumps(counts),flush=True)
+PYBUDGET
+      arm
+      expect_code 0 "$rc" 'a replacement after budget exhaustion must remain unknown'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'a later arm cannot trust the unrecorded replacement'
+      ;;
+    lock-vacate)
+      arm --transition work-pending --reason 'begin controlled lock vacation'
+      overlap_transactions
+      ;;
+    batch-identity-unavailable)
+      bash -c '. "$1"; fm_wake_append stale worker unadmitted-fresh' _ "$LAB/bin/fm-wake-lib.sh"
+      mkdir "$LAB/hash-bin"
+      cat > "$LAB/hash-bin/perl" <<'SH'
+#!/usr/bin/env bash
+echo unavailable >> "$FM_HOME/hash-failed"
+exit 1
+SH
+      chmod +x "$LAB/hash-bin/perl"
+      bad=0
+      failed=$(PATH="$LAB/hash-bin:$PATH" "$DRAIN" 2>&1) || bad=$?
+      expect_code 1 "$bad" 'unavailable batch identity cannot acknowledge fresh admission'
+      assert_contains "$failed" WARNING 'unavailable batch identity warns'
+      assert_grep unavailable "$LAB/hash-failed" 'batch identity implementation was reached'
+      assert_grep unadmitted-fresh "$LAB/state/.wake-queue" 'batch identity failure retains raw input'
+      "$DRAIN" >/dev/null 2>&1
+      arm
+      expect_code 2 "$rc" 'successful batch identity retry must retain fresh eligibility'
+      ;;
+    sequence-reuse|recovery-reused-sequence)
+      arm --transition work-pending --reason 'begin sequence identity case'
+      bash -c '. "$1"; fm_wake_append stale worker old-idle idle-recheck' _ "$LAB/bin/fm-wake-lib.sh"
+      "$DRAIN" >/dev/null 2>&1
+      token=$("$LAB/bin/fm-omp-watch-transition.sh" identity "$PI_SESSION_ID")
+      sequence=$(cat "$LAB/state/.wake-queue.seq")
+      printf '%s\n' "$((sequence - 1))" > "$LAB/state/.wake-queue.seq"
+      bash -c '. "$1"; fm_wake_append stale worker fresh-reused-sequence' _ "$LAB/bin/fm-wake-lib.sh"
+      "$DRAIN" >/dev/null 2>&1
+      if [ "$FM_TRANSITION_CASE" = recovery-reused-sequence ]; then
+        late=$("$LAB/bin/fm-omp-watch-transition.sh" recovery "$PI_SESSION_ID" "$token" 2>&1)
+        assert_contains "$late" WARNING 'a recovery callback must bind the admitted batch as well as its sequence'
+      fi
+      arm
+      expect_code 0 "$rc" 'reused transport identity must preserve supervision'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'a reused sequence cannot silently certify the old idle exemption'
+      ;;
+    recovery-unknown)
+      printf '1\t1\talien\tfixture\tunknown kind\n' | queue_rows > "$LAB/state/.wake-queue"
+      "$DRAIN" >/dev/null 2>&1
+      grant_recovery
+      arm
+      expect_code 0 "$rc" 'recovery must preserve unknown-state arming'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'recovery cannot conceal unknown admitted evidence'
+      ;;
+    canonical-arm-failure)
+      grant_recovery
+      mkdir "$LAB/canonical-bin"
+      cat > "$LAB/canonical-bin/mv" <<'SH'
+#!/usr/bin/env bash
+for destination; do :; done
+if [ "$destination" = "$FM_HOME/state/.omp-watch-transition" ]; then
+  echo injected >> "$FM_HOME/canonical-failed"
+  exit 1
+fi
+exec /bin/mv "$@"
+SH
+      chmod +x "$LAB/canonical-bin/mv"
+      PATH="$LAB/canonical-bin:$PATH" arm
+      expect_code 0 "$rc" 'canonical persistence failure must preserve arming'
+      assert_contains "$output" WARNING 'canonical failure warns without claiming consumption'
+      assert_grep injected "$LAB/canonical-failed" 'canonical publication really failed'
+      arm
+      expect_code 0 "$rc" 'a failed canonical successor cannot certify old recovery'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'old recovery cannot be silently reused after failed publication'
+      drain
+      arm
+      expect_code 2 "$rc" 'old recovery cannot survive the subsequent known successor'
+      ;;
+    replay-across-arm|publication-before-consumption)
+      arm --transition work-pending --reason 'begin replay transaction'
+      bash -c '. "$1"; fm_wake_append stale worker original-fresh' _ "$LAB/bin/fm-wake-lib.sh"
+      cp "$LAB/state/.wake-queue" "$LAB/replay"
+      if [ "$FM_TRANSITION_CASE" = publication-before-consumption ]; then
+        mkdir "$LAB/crash-bin"
+        cat > "$LAB/crash-bin/mv" <<'SH'
+#!/usr/bin/env bash
+for destination; do :; done
+if [ "$destination" = "$FM_HOME/state/.omp-watch-transition" ] && jq -e '.uncertain == false' "$2" >/dev/null; then
+  /bin/mv "$@"
+  echo committed >> "$FM_HOME/commit-interval"
+  exit 1
+fi
+exec /bin/mv "$@"
+SH
+        chmod +x "$LAB/crash-bin/mv"
+        bad=0
+        PATH="$LAB/crash-bin:$PATH" "$DRAIN" >/dev/null 2>&1 || bad=$?
+        expect_code 1 "$bad" 'publication-before-consumption fault must retain raw input'
+        assert_grep committed "$LAB/commit-interval" 'fault occurred after actual canonical publication'
+        assert_grep original-fresh "$LAB/state/.wake-queue" 'raw input survives the commit interval'
+      else
+        "$DRAIN" >/dev/null 2>&1
+      fi
+      arm --transition work-pending --reason 'permitted replacement before raw replay'
+      cp "$LAB/replay" "$LAB/state/.wake-queue"
+      "$DRAIN" >/dev/null 2>&1
+      bash -c '. "$1"; fm_wake_append stale worker successor-idle idle-recheck' _ "$LAB/bin/fm-wake-lib.sh"
+      "$DRAIN" >/dev/null 2>&1
+      arm
+      expect_code 0 "$rc" 'admitted raw replay cannot certify a successor'
+      assert_observed idle-recheck
+      assert_not_contains "$output" WARNING 'verified successor idle evidence remains known after replay'
+      ;;
+    invalid-record-class|invalid-record-decision|invalid-record-recovery|invalid-record-pid|invalid-record-identity|invalid-record-verdict|invalid-record-batch)
+      case "$FM_TRANSITION_CASE" in
+        invalid-record-class) corrupt='.classes=["unsupported"]' ;;
+        invalid-record-decision) corrupt='.decision=null' ;;
+        invalid-record-recovery) corrupt='.recovery={}' ;;
+        invalid-record-pid) corrupt='.pid="unavailable"' ;;
+        invalid-record-identity) corrupt='.decision.call="retired-arm"' ;;
+        invalid-record-verdict) corrupt='.decision.verdict="refuse"' ;;
+        invalid-record-batch) corrupt='.batch="unavailable"' ;;
+      esac
+      jq "$corrupt" "$LAB/state/.omp-watch-transition" > "$LAB/invalid-record"
+      mv "$LAB/invalid-record" "$LAB/state/.omp-watch-transition"
+      arm
+      expect_code 0 "$rc" 'malformed canonical evidence cannot force reset'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'malformed canonical class must warn'
+      ;;
+    slow-evidence|slow-transport)
+      python3 - "$LAB" <<'PYSLOW'
+import json,os,subprocess,sys
+from pathlib import Path
+home=Path(sys.argv[1])
+status=home/'state/worker.status'
+status.write_text('resolved [key=x]: item\n')
+os.utime(status,ns=(1000000000000000000,1000000000000000000))
+for n in ('snapshot-ready','snapshot-release'): os.mkfifo(home/n)
+p=home/'bin/fm-fleet-snapshot.sh'
+p.write_text('''#!/usr/bin/env bash
+result=$("$FM_TRANSITION_SOURCE/bin/fm-fleet-snapshot.sh" "$@") || exit $?
+if [ "${PAUSE_SNAPSHOT:-}" = 1 ]; then
+  printf 'ready\\n' > "$FM_HOME/snapshot-ready"
+  read -r _ < "$FM_HOME/snapshot-release"
+fi
+printf '%s\\n' "$result"
+''')
+with (home/'slow.out').open('w') as out,(home/'slow.err').open('w') as err:
+    arm=subprocess.Popen([str(home/'bin/fm-watch-arm.sh')],env=dict(os.environ,PAUSE_SNAPSHOT='1',PI_TOOL_CALL_ID='slow-arm'),stdout=out,stderr=err)
+    with (home/'snapshot-ready').open() as ready: assert ready.readline()=='ready\n'
+    append=subprocess.run(['bash','-c','. "$1"; fm_wake_append heartbeat fixture during-snapshot','_',str(home/'bin/fm-wake-lib.sh')],capture_output=True,text=True)
+    assert append.returncode==0,append.stderr
+    drained=subprocess.run([str(home/'bin/fm-wake-drain.sh')],capture_output=True,text=True)
+    assert drained.returncode==0,drained.stderr
+    assert 'during-snapshot' in drained.stdout,drained.stdout
+    if os.environ['FM_TRANSITION_CASE']=='slow-evidence':
+        status.write_text('blocked  [key=x]: item\n')
+        os.utime(status,ns=(1000000000000000000,1000000000001000000))
+    with (home/'snapshot-release').open('w') as release: release.write('continue\n')
+    rc=arm.wait()
+verdict=json.loads((home/'state/.omp-watch-transitions.log').read_text().splitlines()[-1])
+if os.environ['FM_TRANSITION_CASE']=='slow-evidence':
+    assert rc==0, (rc,(home/'slow.err').read_text())
+    assert verdict['observed']=='unknown',verdict
+    assert 'WARNING' in (home/'slow.err').read_text()
+else:
+    assert rc==2, (rc,(home/'slow.err').read_text())
+    assert verdict['observed']=='clean',verdict
+    assert 'WARNING' not in (home/'slow.err').read_text()
+PYSLOW
+      ;;
+    fold-provenance)
+      arm --transition work-pending --reason 'begin provenance sequence'
+      bash -c '. "$1"; fm_wake_append stale worker idle idle-recheck' _ "$LAB/bin/fm-wake-lib.sh"
+      "$DRAIN" >/dev/null 2>&1
+      arm
+      expect_code 0 "$rc" 'producer-tagged idle must preserve arming'
+      assert_observed idle-recheck
+      assert_not_contains "$output" WARNING 'verified idle cannot be unknown'
+      bash -c '. "$1"; fm_wake_append stale worker fresh' _ "$LAB/bin/fm-wake-lib.sh"
+      "$DRAIN" >/dev/null 2>&1
+      arm
+      expect_code 2 "$rc" 'fresh producer input must require reset'
+      assert_observed clean
+      bash -c '. "$1"; fm_wake_append stale worker later-idle idle-recheck' _ "$LAB/bin/fm-wake-lib.sh"
+      "$DRAIN" >/dev/null 2>&1
+      arm
+      expect_code 2 "$rc" 'later idle cannot erase fresh provenance'
+      assert_observed clean
+      ;;
+    drain-publication-failure)
+      mkdir "$LAB/drain-failure-bin"
+      cat > "$LAB/drain-failure-bin/mv" <<'SH'
+#!/usr/bin/env bash
+for destination; do :; done
+if [ "$destination" = "$FM_HOME/state/.omp-watch-transition" ]; then
+  case "$FAIL_STAGE" in
+    checkpoint) jq -e '.uncertain == true' "$2" >/dev/null && exit 1 ;;
+    final) jq -e '.uncertain == false' "$2" >/dev/null && exit 1 ;;
+  esac
+fi
+exec /bin/mv "$@"
+SH
+      chmod +x "$LAB/drain-failure-bin/mv"
+      for stage in checkpoint final; do
+        arm --transition work-pending --reason "begin $stage publication failure"
+        bash -c '. "$1"; fm_wake_append stale worker idle idle-recheck' _ "$LAB/bin/fm-wake-lib.sh"
+        "$DRAIN" >/dev/null 2>&1
+        bash -c '. "$1"; fm_wake_append stale worker new-fresh' _ "$LAB/bin/fm-wake-lib.sh"
+        bad=0
+        failed=$(PATH="$LAB/drain-failure-bin:$PATH" FAIL_STAGE="$stage" "$DRAIN" 2>&1) || bad=$?
+        expect_code 1 "$bad" 'either failed admission stage retains raw input'
+        assert_contains "$failed" WARNING 'failed admission stage must warn'
+        assert_grep new-fresh "$LAB/state/.wake-queue" 'unadmitted fresh wake must remain queued'
+        arm
+        expect_code 0 "$rc" 'publication failure must never force reset'
+        if [ "$stage" = final ]; then
+          assert_observed unknown
+          assert_contains "$output" WARNING 'failed final publication leaves visible canonical uncertainty'
+        else
+          assert_observed queued-wakes
+        fi
+        "$DRAIN" >/dev/null 2>&1
+      done
+      ;;
+    legacy-fragments)
+      printf '%s\n' "$PI_SESSION_ID" "$PI_TOOL_CALL_ID" wake 42 legacy > "$LAB/state/.omp-watch-cycle"
+      printf '%s\n' "$PI_SESSION_ID" "$PI_TOOL_CALL_ID" idle-recheck > "$LAB/state/.omp-watch-drain"
+      printf '%s\n' "$PI_SESSION_ID" > "$LAB/state/.omp-watch-recovery"
+      rm -f "${LAB:?}/state/.omp-watch-transition"
+      arm
+      expect_code 0 "$rc" 'legacy split fragments preserve supervision'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'legacy fragments cannot combine into an exemption'
+      [ -f "$LAB/state/.omp-watch-cycle" ] && [ -f "$LAB/state/.omp-watch-drain" ] && [ -f "$LAB/state/.omp-watch-recovery" ] || fail 'migration deleted existing state'
+      drain
+      arm
+      expect_code 2 "$rc" 'complete new evidence cannot reuse legacy recovery'
+      ;;
+    log-obstruction)
+      grant_recovery
+      mv "$LAB/state/.omp-watch-transitions.log" "$LAB/prior-log"
+      mkdir "$LAB/state/.omp-watch-transitions.log"
+      arm
+      expect_code 0 "$rc" 'unavailable diagnostic destination preserves arming'
+      assert_contains "$output" WARNING 'unknown diagnostic obstruction must warn'
+      [ -d "$LAB/state/.omp-watch-transitions.log" ] || fail 'unknown diagnostic obstruction was removed'
+      rmdir "${LAB:?}/state/.omp-watch-transitions.log"
+      drain
+      arm
+      expect_code 2 "$rc" 'diagnostic destination failure cannot preserve recovery'
+      assert_observed clean
+      ;;
+    canonical-symlink)
+      mv "$LAB/state/.omp-watch-transition" "$LAB/canonical-target"
+      ln -s "$LAB/canonical-target" "$LAB/state/.omp-watch-transition"
+      arm
+      expect_code 0 "$rc" 'an unknown canonical obstruction cannot force reset'
+      assert_contains "$output" WARNING 'canonical symlink must remain visibly unknown'
+      [ -L "$LAB/state/.omp-watch-transition" ] || fail 'canonical writer replaced an unknown symlink'
+      ;;
+    unavailable-pipe|canonical-pipe)
+      python3 - "$LAB" <<'PYPIPE'
+import os,subprocess,sys
+from pathlib import Path
+home=Path(sys.argv[1]); shim=home/'pipe-bin';shim.mkdir()
+canonical=os.environ['FM_TRANSITION_CASE']=='canonical-pipe'
+if canonical:
+    obstruction=home/'state/.omp-watch-transition';obstruction.unlink();os.mkfifo(obstruction)
+    target=obstruction
+else:
+    owner=home/'unknown-lock';owner.mkdir();target=owner/'pid';os.mkfifo(target)
+    obstruction=home/'state/.wake-queue.lock';obstruction.symlink_to(owner)
+os.mkfifo(home/'pipe-progress')
+(shim/'cat').write_text('''#!/usr/bin/env bash
+if [ "$#" -eq 1 ] && [ -p "$1" ]; then
+  printf 'read-pipe\\n' > "$FM_HOME/pipe-progress"
+fi
+exec /bin/cat "$@"
+''');(shim/'cat').chmod(0o755)
+with (home/'pipe.out').open('w') as out,(home/'pipe.err').open('w') as err:
+    arm=subprocess.Popen(['bash','-c','"$1"; rc=$?; printf "completed\\n" > "$FM_HOME/pipe-progress"; exit "$rc"','_',str(home/'bin/fm-watch-arm.sh')],env=dict(os.environ,PATH=str(shim)+':'+os.environ['PATH'],PI_TOOL_CALL_ID='pipe-arm',FM_OMP_TRANSITION_LOCK_ATTEMPTS='1'),stdout=out,stderr=err)
+    reads=0
+    while True:
+        with (home/'pipe-progress').open() as progress: event=progress.readline()
+        if event=='completed\n': break
+        assert event=='read-pipe\n',event
+        reads+=1
+        with target.open('w') as release: release.write('unknown\n')
+    rc=arm.wait()
+assert reads==0, f'unknown obstruction was read as a stream {reads} times before arming'
+assert rc==0,(rc,(home/'pipe.err').read_text())
+assert 'WARNING' in (home/'pipe.err').read_text()
+assert obstruction.is_fifo() if canonical else obstruction.is_symlink()
+PYPIPE
+      ;;
+    fingerprint-unavailable)
+      mkdir "$LAB/fingerprint-bin"
+      printf '#!/usr/bin/env bash\nexit 1\n' > "$LAB/fingerprint-bin/perl"
+      chmod +x "$LAB/fingerprint-bin/perl"
+      PATH="$LAB/fingerprint-bin:$PATH" arm
+      expect_code 0 "$rc" 'unavailable freshness proof cannot force reset'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'unavailable fingerprint must warn'
+      ;;
+    duplicate-arm)
+      grant_recovery
+      before_launches=$(wc -l < "$LAB/launches" | tr -d ' ')
+      PI_TOOL_CALL_ID=duplicate "$ARM" >/dev/null 2>&1
+      PI_TOOL_CALL_ID=duplicate "$ARM" >/dev/null 2>&1
+      after_launches=$(wc -l < "$LAB/launches" | tr -d ' ')
+      [ "$after_launches" -eq "$((before_launches + 1))" ] || fail 'duplicate native arm launched twice'
+      PI_TOOL_CALL_ID=retired "$LAB/bin/fm-omp-watch-transition.sh" cycle failed 42 retired
+      drain
+      arm
+      expect_code 2 "$rc" 'duplicate command cannot consume twice or let a retired callback certify the successor'
+      ;;
+    *) fail 'unknown transition scenario' ;;
+  esac
+  pass "$FM_TRANSITION_CASE"
+  exit
+fi
 arm
 expect_code 0 "$rc" 'startup must arm'
 jq -es '.[-1].observed == "startup"' "$LAB/state/.omp-watch-transitions.log" >/dev/null || fail 'startup was not recognized from native session state'
@@ -126,15 +756,15 @@ arm
 expect_code 0 "$rc" 'a global hold must arm without resetting'
 rm -f "${LAB:?}/state/.captain-hold"
 drain
-printf '1\t2\tcheck\tlater\tcheck: waiting\n' > "$LAB/state/.wake-queue"
+printf '1\t2\tcheck\tlater\tcheck: waiting\n' | queue_rows > "$LAB/state/.wake-queue"
 arm
 expect_code 0 "$rc" 'undrained wakes must arm without resetting'
 drain
-printf 'not a cycle\n' > "$LAB/state/.omp-watch-cycle"
+printf 'not a cycle\n' > "$LAB/state/.omp-watch-transition"
 arm
 expect_code 0 "$rc" 'unreadable cycle must preserve supervision'
 assert_contains "$output" WARNING 'unreadable cycle must warn'
-printf 'not a cycle\n' > "$LAB/state/.omp-watch-cycle"
+printf 'not a cycle\n' > "$LAB/state/.omp-watch-transition"
 arm --transition work-pending --reason 'second instruction remains'
 expect_code 0 "$rc" 'an explicit work claim must still preserve unknown-state arming'
 assert_contains "$output" WARNING 'unknown evidence must warn even with a work declaration'
@@ -183,7 +813,7 @@ rmdir "${LAB:?}/state/unreadable.status"
 drain
 pass 'irrelevant completion history stays clean while unreadable evidence warns and arms'
 
-printf '1\t2\talien\tfixture\tunsupported wake\n' > "$LAB/state/.wake-queue"
+printf '1\t2\talien\tfixture\tunsupported wake\n' | queue_rows > "$LAB/state/.wake-queue"
 "$DRAIN" >/dev/null 2>&1
 arm
 expect_code 0 "$rc" 'an unknown wake kind must not require reset'
@@ -191,12 +821,16 @@ assert_contains "$output" WARNING 'an unknown wake kind must warn'
 drain
 
 stale_row() {
-  printf '1\t3\tstale\tworker\t%s' "$1"
+  local sequence
+  sequence=$(cat "$LAB/state/.wake-queue.seq" 2>/dev/null || echo 0)
+  sequence=$((sequence + 1))
+  printf '%s\n' "$sequence" > "$LAB/state/.wake-queue.seq"
+  printf '1\t%s\tstale\tworker\t%s' "$sequence" "$1"
   [ -z "${2:-}" ] || printf '\t%s' "$2"
   printf '\n'
 }
 arm --transition work-pending --reason 'begin unsupported event-kind case'
-printf '1\t3\tidle-recheck\tworker\tunsupported kind named like an internal class\n' > "$LAB/state/.wake-queue"
+printf '1\t3\tidle-recheck\tworker\tunsupported kind named like an internal class\n' | queue_rows > "$LAB/state/.wake-queue"
 "$DRAIN" >/dev/null 2>&1
 arm
 expect_code 0 "$rc" 'unsupported event kind must preserve unknown-state arming'
@@ -381,149 +1015,7 @@ expect_code 2 "$rc" 'declared watching-only must use reset'
 pass 'fresh events dominate duplicate and successive idle drains'
 
 arm --transition work-pending --reason 'begin overlapping drains case'
-python3 - "$LAB" <<'PYTEST'
-import json
-import os
-from pathlib import Path
-import subprocess
-import sys
-
-home = Path(sys.argv[1])
-shim = home / 'overlap-bin'
-shim.mkdir()
-for name in ('ready', 'release', 'contender'):
-    os.mkfifo(home / name)
-(shim / 'awk').write_text("""#!/usr/bin/env bash
-if [ "${HOLD_IDLE_DRAIN:-}" = 1 ] && [ "$#" -eq 3 ] && [ "$1" = -F ] && [ "$2" = '\\t' ] && mkdir "$FM_HOME/receipt-seen" 2>/dev/null; then
-  printf 'ready\\n' > "$FM_HOME/ready"
-  read -r _ < "$FM_HOME/release"
-fi
-exec /usr/bin/awk "$@"
-""")
-(shim / 'cat').write_text("""#!/usr/bin/env bash
-if [ "${OVERLAP_CONTENDER:-}" = 1 ]; then
-  case "$*" in *'.wake-queue.lock/pid')
-    if mkdir "$FM_HOME/contender-seen" 2>/dev/null; then
-      printf 'attempt\\n' > "$FM_HOME/contender"
-    fi
-    ;;
-  esac
-fi
-exec /bin/cat "$@"
-""")
-for path in shim.iterdir():
-    path.chmod(0o755)
-env = dict(os.environ, PATH=str(shim) + ':' + os.environ['PATH'])
-drain = str(home / 'bin/fm-wake-drain.sh')
-append = ['bash', '-c', '. "$1"; fm_wake_append stale worker "$2" "${3:-}"',
-          '_', str(home / 'bin/fm-wake-lib.sh')]
-
-def call(command, extra=None):
-    result = subprocess.run(command, env=dict(env, **(extra or {})), capture_output=True, text=True)
-    assert result.returncode == 0, (command, result.stdout, result.stderr)
-    lock = home / 'state/.wake-queue.lock'
-    assert not lock.exists() and not lock.is_symlink(), 'completed helper left its queue lock behind'
-    return result
-
-call(append + ['already reported idle', 'idle-recheck'])
-with (home / 'idle.out').open('w') as out, (home / 'idle.err').open('w') as err:
-    idle = subprocess.Popen([drain], env=dict(env, HOLD_IDLE_DRAIN='1'), stdout=out, stderr=err)
-    with (home / 'ready').open() as ready:
-        assert ready.readline() == 'ready\n'
-    serialized = (home / 'state/.wake-queue.lock').is_symlink()
-    if serialized:
-        fresh = subprocess.Popen(append + ['fresh actionable stale'],
-                                 env=dict(env, OVERLAP_CONTENDER='1'),
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        with (home / 'contender').open() as contender:
-            assert contender.readline() == 'attempt\n'
-    else:
-        call(append + ['fresh actionable stale'])
-        newer = call([drain])
-        assert 'fresh actionable stale' in newer.stdout
-        assert 'stale' == (home / 'state/.omp-watch-drain').read_text().splitlines()[2]
-    with (home / 'release').open('w') as release:
-        release.write('continue\n')
-    assert idle.wait() == 0
-    if serialized:
-        stdout, stderr = fresh.communicate()
-        assert fresh.returncode == 0, (stdout, stderr)
-        newer = call([drain])
-        assert 'fresh actionable stale' in newer.stdout
-assert 'already reported idle' in (home / 'idle.out').read_text()
-assert not (home / 'state/.wake-queue').read_text()
-result = subprocess.run([str(home / 'bin/fm-watch-arm.sh')],
-                        env=dict(env, PI_TOOL_CALL_ID='overlap-next-arm'),
-                        capture_output=True, text=True)
-verdict = json.loads((home / 'state/.omp-watch-transitions.log').read_text().splitlines()[-1])
-print(json.dumps(dict(serialized=serialized, receipt=(home / 'state/.omp-watch-drain').read_text(),
-                      arm_exit=result.returncode, stdout=result.stdout, stderr=result.stderr, verdict=verdict)))
-assert result.returncode == 2, 'overlapping idle drain erased fresh evidence: expected exit 2, got ' + str(result.returncode)
-assert verdict['observed'] == 'clean', verdict
-assert 'firstmate_watch_reset' in result.stderr
-assert 'WARNING' not in result.stderr
-
-(home / 'contender-seen').rmdir()
-(home / 'receipt-seen').rmdir()
-helper = str(home / 'bin/fm-omp-watch-transition.sh')
-call([helper, 'cycle', 'starting', '999999', 'cycle-boundary-fixture'])
-call([helper, 'cycle', 'wake', '999999', 'actionable-stale'])
-call(append + ['idle before replacement', 'idle-recheck'])
-with (home / 'idle.out').open('w') as out, (home / 'idle.err').open('w') as err:
-    idle = subprocess.Popen([drain], env=dict(env, HOLD_IDLE_DRAIN='1'), stdout=out, stderr=err)
-    with (home / 'ready').open() as ready:
-        assert ready.readline() == 'ready\n'
-    successor = subprocess.Popen(['bash', '-c', '"$@"\nrc=$?\nif mkdir "$FM_HOME/contender-seen" 2>/dev/null; then\n  printf \'completed\\n\' > "$FM_HOME/contender"\nfi\nexit "$rc"', '_', helper, 'cycle', 'starting', '999999', 'replacement'],
-        env=dict(env, OVERLAP_CONTENDER='1', PI_TOOL_CALL_ID='successor-cycle'),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    with (home / 'contender').open() as contender:
-        boundary = contender.readline()
-    with (home / 'release').open('w') as release:
-        release.write('continue\n')
-    assert idle.wait() == 0
-    stdout, stderr = successor.communicate()
-    assert successor.returncode == 0, (stdout, stderr)
-assert boundary == 'attempt\n', 'cycle replacement crossed an in-flight receipt transaction'
-call([helper, 'cycle', 'wake', '999999', 'actionable-stale'], {'PI_TOOL_CALL_ID': 'successor-cycle'})
-call(append + ['fresh after replacement'])
-call([drain])
-result = subprocess.run([str(home / 'bin/fm-watch-arm.sh')],
-                        env=dict(env, PI_TOOL_CALL_ID='replacement-next-arm'),
-                        capture_output=True, text=True)
-verdict = json.loads((home / 'state/.omp-watch-transitions.log').read_text().splitlines()[-1])
-assert result.returncode == 2, (result.stdout, result.stderr)
-assert verdict['observed'] == 'clean', verdict
-assert 'WARNING' not in result.stderr
-
-(home / 'contender-seen').rmdir()
-(home / 'receipt-seen').rmdir()
-call([helper, 'cycle', 'starting', '999999', 'arm-boundary-fixture'])
-call([helper, 'cycle', 'wake', '999999', 'actionable-stale'])
-call(append + ['earlier idle receipt', 'idle-recheck'])
-call([drain])
-call(append + ['fresh event in flight'])
-with (home / 'idle.out').open('w') as out, (home / 'idle.err').open('w') as err:
-    fresh_drain = subprocess.Popen([drain], env=dict(env, HOLD_IDLE_DRAIN='1'), stdout=out, stderr=err)
-    with (home / 'ready').open() as ready:
-        assert ready.readline() == 'ready\n'
-    arm = subprocess.Popen(['bash', '-c', '"$@"\nrc=$?\nif mkdir "$FM_HOME/contender-seen" 2>/dev/null; then\n  printf \'completed\\n\' > "$FM_HOME/contender"\nfi\nexit "$rc"', '_', str(home / 'bin/fm-watch-arm.sh')],
-        env=dict(env, OVERLAP_CONTENDER='1', PI_TOOL_CALL_ID='arm-during-drain'),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    with (home / 'contender').open() as contender:
-        boundary = contender.readline()
-    with (home / 'release').open('w') as release:
-        release.write('continue\n')
-    assert fresh_drain.wait() == 0
-    stdout, stderr = arm.communicate()
-assert boundary == 'attempt\n', 'arm observed a receipt before its drain transaction committed'
-assert arm.returncode == 2, 'arm ignored committed fresh evidence: expected exit 2, got ' + str(arm.returncode)
-verdict = json.loads((home / 'state/.omp-watch-transitions.log').read_text().splitlines()[-1])
-assert verdict['observed'] == 'clean', verdict
-assert 'WARNING' not in stderr
-previous_receipt = (home / 'state/.omp-watch-drain').read_text()
-call([helper, 'drain'], {'PI_SESSION_ID': 'foreign-session'})
-assert (home / 'state/.omp-watch-drain').read_text() == previous_receipt
-PYTEST
+overlap_transactions
 pass 'overlapping real drains cannot replace fresh evidence with an older idle receipt'
 
 arm --transition work-pending --reason 'begin failed receipt publication case'
@@ -533,7 +1025,7 @@ mkdir "$LAB/failure-bin"
 cat > "$LAB/failure-bin/mv" <<'SH'
 #!/usr/bin/env bash
 for destination; do :; done
-if [ "$destination" = "$FM_HOME/state/.omp-watch-drain" ] && { [ "${FAIL_RECEIPT_STAGE:-}" = all ] || [ "$(sed -n '3p' "$2")" != unknown ]; }; then
+if [ "$destination" = "$FM_HOME/state/.omp-watch-transition" ] && { [ "${FAIL_RECEIPT_STAGE:-}" = all ] || jq -e ' .uncertain == false ' "$2" >/dev/null; }; then
   printf 'failed receipt publication\n' >> "$FM_HOME/publication-failures"
   exit 1
 fi
@@ -541,21 +1033,23 @@ exec /bin/mv "$@"
 SH
 chmod +x "$LAB/failure-bin/mv"
 stale_row 'newly consumed fresh event' > "$LAB/state/.wake-queue"
-failure_output=$(PATH="$LAB/failure-bin:$PATH" "$DRAIN" 2>&1)
+failure_rc=0
+failure_output=$(PATH="$LAB/failure-bin:$PATH" "$DRAIN" 2>&1) || failure_rc=$?
+expect_code 1 "$failure_rc" 'failed canonical admission must retain raw wakes'
 assert_grep 'failed receipt publication' "$LAB/publication-failures" 'the receipt write must actually fail'
 assert_contains "$failure_output" 'newly consumed fresh event' 'fresh row must be printed despite failed receipt publication'
 assert_contains "$failure_output" WARNING 'drain must report failed receipt publication'
-[ ! -s "$LAB/state/.wake-queue" ] || fail 'publication failure must not silently leave the printed fresh event queued'
-failure_verdict=$("$LAB/bin/fm-omp-watch-transition.sh" arm '' '' 2>&1)
+assert_grep 'newly consumed fresh event' "$LAB/state/.wake-queue" 'failed admission retains printed raw input'
+arm
 assert_observed unknown
-assert_contains "$failure_verdict" WARNING 'failed publication must be unknown before another drain'
+assert_contains "$output" WARNING 'failed publication must be unknown before another drain'
 "$DRAIN" >/dev/null 2>&1
 stale_row 'later idle cannot repair lost fresh evidence' idle-recheck > "$LAB/state/.wake-queue"
 "$DRAIN" >/dev/null 2>&1
 arm
-expect_code 0 "$rc" 'failed receipt persistence must preserve supervision'
-assert_observed unknown
-assert_contains "$output" WARNING 'previous idle receipt cannot conceal failed fresh publication'
+expect_code 2 "$rc" 'admitted retry of retained fresh evidence must require reset'
+assert_observed clean
+assert_not_contains "$output" WARNING 'retained fresh evidence was verified'
 pass 'failed fresh receipt publication warns and cannot reuse an older idle exemption'
 
 arm --transition work-pending --reason 'begin failed uncertainty publication case'
@@ -584,12 +1078,13 @@ arm
 expect_code 0 "$rc" 'failed watcher must repair without reset'
 jq -es '.[-1].observed == "repair"' "$LAB/state/.omp-watch-transitions.log" >/dev/null || fail 'failed cycle was not recognized as repair'
 drain
-printf '%s\n' "$PI_SESSION_ID" previous running 999999 fixture > "$LAB/state/.omp-watch-cycle"
+jq '.phase="running" | .pid="999999"' "$LAB/state/.omp-watch-transition" > "$LAB/state/fixture-record"
+mv "$LAB/state/fixture-record" "$LAB/state/.omp-watch-transition"
 arm
 expect_code 0 "$rc" 'missing watcher must repair without reset'
 jq -es '.[-1].observed == "repair"' "$LAB/state/.omp-watch-transitions.log" >/dev/null || fail 'missing watcher was not recognized as repair'
 drain
-"$LAB/bin/fm-omp-watch-transition.sh" recovery "$PI_SESSION_ID"
+grant_recovery
 arm
 expect_code 0 "$rc" 'reset recovery must arm'
 drain
@@ -614,3 +1109,9 @@ import pathlib,sys
 assert pathlib.Path(sys.argv[1]).stat().st_mode & 0o777 == 0o600
 PY
 pass 'unknown native identities warn and the private transition ledger stays bounded'
+
+if [ -z "${FM_TRANSITION_CASE:-}" ]; then
+  for scenario in recovery-log recovery-away recovery-hold recovery-declaration recovery-new-wake recovery-replay missing-drain-identity unavailable-lock fingerprint-unavailable duplicate-arm canonical-arm-failure sequence-reuse recovery-reused-sequence recovery-unknown batch-identity-unavailable replay-across-arm publication-before-consumption invalid-record-class invalid-record-decision invalid-record-recovery invalid-record-pid invalid-record-identity invalid-record-verdict invalid-record-batch slow-evidence slow-transport fold-provenance drain-publication-failure lock-vacate held-lock-budget legacy-fragments canonical-symlink unavailable-pipe canonical-pipe log-obstruction; do
+    FM_TRANSITION_CASE="$scenario" bash "$0"
+  done
+fi

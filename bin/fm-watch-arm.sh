@@ -419,8 +419,16 @@ if [ "${OMPCODE:-}" = 1 ]; then
   transition_rc=0
   "$SCRIPT_DIR/fm-omp-watch-transition.sh" arm "$transition" "$transition_reason" || transition_rc=$?
   [ "$transition_rc" -ne 2 ] || exit 2
+  [ "$transition_rc" -ne 3 ] || exit 0
   if [ "$transition_rc" -ne 0 ]; then
     echo 'watcher: WARNING - transition verification unavailable; arming without reset.' >&2
+  fi
+fi
+if [ "${OMPCODE:-}" = 1 ] && [ -n "${PI_SESSION_ID:-}" ] && [ -n "${PI_TOOL_CALL_ID:-}" ]; then
+  result="$STATE/.omp-watch-arm-result"
+  tmp="$STATE/.omp-watch-arm-result.$ARM_PID"
+  if ! (umask 077; printf '%s\n' "$PI_SESSION_ID" "$PI_TOOL_CALL_ID" 'watcher: pending confirmation' > "$tmp" && mv -f "$tmp" "$result"); then
+    echo 'watcher: WARNING - native arm observation unavailable; preserve supervision.' >&2
   fi
 fi
 omp_transition_record cycle starting "$ARM_PID" launch
