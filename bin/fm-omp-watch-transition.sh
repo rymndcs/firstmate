@@ -9,7 +9,8 @@
 # Sole authority: state/.omp-watch-transition, private atomic regular JSON v1.
 # Special-file/symlink obstructions are unknown and are never read or replaced.
 # session/arm/generation identify the current transition; phase/pid describe its
-# cycle. classes fold typed producer provenance monotonically. watermark is the
+# cycle; startup is pre-arm admission with no decision or recovery. classes fold
+# typed producer provenance monotonically. watermark is the
 # highest admitted transport sequence, retained across successors. batch is the
 # SHA-256 identity of the latest admitted raw batch; only matching replay at or
 # below the watermark is ignored, while changed replay identity is unknown.
@@ -18,7 +19,8 @@
 # decision records the command/declaration/verdict consumed to create this arm;
 # attempt is the latest refused command and grants no permission.
 # Diagnostic .omp-watch-transitions.log and native .omp-watch-arm-result are
-# observations, never permission stores. Legacy split fragments grant nothing.
+# observations, never permission stores. A current-session arm observation rules
+# out startup when the canonical record is lost. Legacy split fragments grant nothing.
 #
 # Internal commands (OMPCODE=1):
 #   arm <claim> <detail> - atomically consume and reserve successor before launch
@@ -30,7 +32,9 @@
 # The sole implementation writer is this script. All record operations share
 # .wake-queue.lock; parent-owned drain calls verify its PID and symlink owner.
 # Lock creation is bounded by FM_OMP_TRANSITION_LOCK_ATTEMPTS (default 20),
-# retrying every 0.05s without stealing unknown obstructions.
+# retrying every 0.05s; verified dead owners reuse bounded stale-lock recovery.
+# Unknown obstructions are never stolen. Public startup drains initialize this
+# same record before the first arm, retaining replay identity across sessions.
 # Slow evidence is gathered outside the lock and its local input fingerprint
 # revalidated inside. Changed evidence is unknown. Both drain publication stages
 # update this same record; either failure retains raw wakes. Publication precedes
@@ -75,12 +79,12 @@ load_record() {
     and (.watermark | type == "number" and . >= 0 and floor == .)
     and ((.batch == "" and .watermark == 0) or (.batch | type == "string" and test("^[a-f0-9]{64}$")))
     and (.uncertain | type == "boolean") and (.classes | type == "array" and all(.[]; IN("check","heartbeat","signal","stale","idle-recheck","unknown")))
-    and (.phase | IN("starting","running","wake","failed"))
+    and (.phase | IN("startup","starting","running","wake","failed"))
     and (.pid | type == "string" and test("^[0-9]+$"))
-    and (.decision | type == "object" and .verdict == "allow"
-      and (.claim | type == "string") and (.detail | type == "string")
-      and (.observed | type == "string"))
-    and (.decision.call == .arm)
+    and (if .phase == "startup" then .decision == null and .recovery == null and .pid == "0"
+      else (.decision | type == "object" and .verdict == "allow"
+        and (.claim | type == "string") and (.detail | type == "string")
+        and (.observed | type == "string")) and (.decision.call == .arm) end)
     and (.recovery == null or .recovery == {session,arm,generation,watermark,batch})' >/dev/null 2>&1
 }
 new_record() {
@@ -160,17 +164,52 @@ record_verdict() {
   return 1
 }
 
+session_unarmed() {
+  local result_session result_call result="$STATE/.omp-watch-arm-result"
+  if [ -e "$result" ] || [ -L "$result" ]; then
+    [ -f "$result" ] && [ ! -L "$result" ] || return 1
+    { IFS= read -r result_session; IFS= read -r result_call; } < "$result" || return 1
+    [ -n "$result_session" ] && [ -n "$result_call" ] && [ "$result_session" != "$SESSION" ]
+  fi
+}
+startup_evidence() {
+  session_unarmed || return 1
+  [ ! -e "$STATE/.omp-watch-cycle" ] && [ ! -e "$STATE/.omp-watch-drain" ] && [ ! -e "$STATE/.omp-watch-recovery" ]
+}
+initialize_drain() {
+  local generation=1 watermark=0 batch='' uncertain=false
+  if load_record; then
+    [ "$(printf '%s' "$record" | jq -r .session)" != "$SESSION" ] || return 0
+    generation=$(printf '%s' "$record" | jq '.generation + 1')
+    watermark=$(printf '%s' "$record" | jq .watermark)
+    batch=$(printf '%s' "$record" | jq -r .batch)
+    session_unarmed || uncertain=true
+  elif [ -e "$RECORD" ] || [ -L "$RECORD" ]; then
+    uncertain=true
+  else
+    startup_evidence || uncertain=true
+  fi
+  new_record "$generation" "$watermark" "$batch" | jq --argjson uncertain "$uncertain" \
+    '.phase="startup" | .uncertain=$uncertain' | publish
+}
 observe() {
   local result_session result_call sequence
   OBSERVED=unknown
   if [ -e "$STATE/.afk" ] || [ -e "$STATE/.afk-daemon-terminal" ]; then OBSERVED=away; return; fi
   if [ -e "$STATE/.captain-hold" ]; then OBSERVED=hold; return; fi
-  if [ ! -e "$RECORD" ]; then
-    if [ -e "$STATE/.omp-watch-cycle" ] || [ -e "$STATE/.omp-watch-drain" ] || [ -e "$STATE/.omp-watch-recovery" ]; then return; fi
+  if [ ! -e "$RECORD" ] && [ ! -L "$RECORD" ]; then
+    startup_evidence || return
     OBSERVED=startup; return
   fi
   load_record || return
-  [ "$(printf '%s' "$record" | jq -r .session)" = "$SESSION" ] || { OBSERVED=startup; return; }
+  if [ "$(printf '%s' "$record" | jq -r .session)" != "$SESSION" ]; then
+    session_unarmed && OBSERVED=startup
+    return
+  fi
+  if [ "$(printf '%s' "$record" | jq -r .phase)" = startup ]; then
+    [ "$(printf '%s' "$record" | jq -r .uncertain)" = false ] && session_unarmed && OBSERVED=startup
+    return
+  fi
   if [ -f "$STATE/.omp-watch-arm-result" ]; then
     { IFS= read -r result_session; IFS= read -r result_call; } < "$STATE/.omp-watch-arm-result" || return
     [ "$result_session" != "$SESSION" ] || [ "$result_call" = "$(printf '%s' "$record" | jq -r .arm)" ] || return
@@ -196,6 +235,7 @@ observe() {
 record_cycle() {
   local phase=$1 pid=$2
   load_record || return 1
+  [ "$(printf '%s' "$record" | jq -r .phase)" != startup ] || return 0
   printf '%s' "$record" | jq -e --arg session "$SESSION" --arg arm "$CALL" \
     '.session == $session and .arm == $arm' >/dev/null || return 0
   case "$phase" in starting|running|wake|failed) ;; *) return 1 ;; esac
@@ -304,17 +344,22 @@ case "${1:-}" in
       invalidate || true
       warn 'native omp drain identity is unavailable; wakes retained'; exit 1
     fi
+    if [ "${2:-}" = --queue-lock-held ]; then
+      initialize_drain || { warn 'startup drain admission failed; wakes retained'; exit 1; }
+    fi
     record_drain "$rows" || { warn 'canonical drain admission failed; wakes retained'; exit 1; }
     ;;
   identity)
     acquire_queue_lock || exit 1
     load_record && [ "$(printf '%s' "$record" | jq -r .session)" = "${2:-}" ] || exit 1
+    [ "$(printf '%s' "$record" | jq -r .phase)" != startup ] || exit 1
     token
     ;;
   recovery)
     acquire_queue_lock || exit 1
     load_record || { warn 'recovery has no canonical transition'; exit 1; }
     [ "$(printf '%s' "$record" | jq -r .session)" = "${2:-}" ] || exit 1
+    [ "$(printf '%s' "$record" | jq -r .phase)" != startup ] || { warn 'recovery has no admitted arm'; exit 1; }
     [ "$(token)" = "${3:-}" ] || { warn 'retired recovery callback ignored'; exit 0; }
     [ "$(queue_sequence)" = "$(printf '%s' "$record" | jq -r .watermark)" ] || { warn 'recovery evidence has changed'; exit 0; }
     printf '%s' "$record" | jq '.recovery={session,arm,generation,watermark,batch}' | publish

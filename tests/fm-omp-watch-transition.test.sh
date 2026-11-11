@@ -217,6 +217,294 @@ grant_recovery() {
   token=$("$LAB/bin/fm-omp-watch-transition.sh" identity "$PI_SESSION_ID")
   "$LAB/bin/fm-omp-watch-transition.sh" recovery "$PI_SESSION_ID" "$token"
 }
+if [ -n "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
+  case "$FM_TRANSITION_LIFECYCLE_CASE" in
+    missing-current-record|missing-before-drain)
+      arm
+      drain
+      rm -f "${LAB:?}/state/.omp-watch-transition"
+      if [ "$FM_TRANSITION_LIFECYCLE_CASE" = missing-before-drain ]; then
+        "$DRAIN" >/dev/null 2>&1
+        rm -f "${LAB:?}/state/.omp-watch-arm-result"
+      fi
+      arm
+      expect_code 0 "$rc" 'missing state must preserve arming'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'missing current-session record must warn'
+      ;;
+    dead-lock-owner)
+      arm
+      drain
+      bash -c '. "$1"; fm_wake_append stale worker fresh-before-abandoned-lock' _ "$LAB/bin/fm-wake-lib.sh"
+      bash -c '. "$1"; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK"; printf "owner=%s\n" "${BASHPID:-$$}"; cat "$FM_WAKE_QUEUE_LOCK/pid"' _ "$LAB/bin/fm-wake-lib.sh"
+      first=0
+      first_out=$("$DRAIN" 2>&1) || first=$?
+      second=0
+      second_out=$("$DRAIN" 2>&1) || second=$?
+      printf 'first rc=%s output=%s\nsecond rc=%s output=%s\n' "$first" "$first_out" "$second" "$second_out"
+      expect_code 0 "$first" 'a drain retry must recover a verified dead owner'
+      expect_code 0 "$second" 'empty drain after owner recovery must complete'
+      assert_contains "$first_out" fresh-before-abandoned-lock 'recovered drain prints the pending wake'
+      assert_not_contains "$first_out$second_out" WARNING 'verified dead owner recovery must remain known'
+      [ ! -s "$LAB/state/.wake-queue" ] || fail 'recovered drain retained the pending wake'
+      assert_absent "$LAB/state/.wake-queue.lock" 'recovered queue lock must be released'
+      arm
+      expect_code 2 "$rc" 'recovered drain must retain fresh reset enforcement'
+      assert_observed clean
+      ;;
+    fresh-empty|fresh-queued|replacement-empty|replacement-queued|replacement-replay)
+      case "$FM_TRANSITION_LIFECYCLE_CASE" in replacement-*)
+        arm
+        bash -c '. "$1"; fm_wake_append heartbeat startup prior-session-wake' _ "$LAB/bin/fm-wake-lib.sh"
+        cp "$LAB/state/.wake-queue" "$LAB/prior-session-replay"
+        "$DRAIN" >/dev/null 2>&1
+        grant_recovery
+        PI_SESSION_ID=replacement-startup
+        PI_TOOL_CALL_ID=startup-drain
+        ;;
+      esac
+      case "$FM_TRANSITION_LIFECYCLE_CASE" in *queued)
+        bash -c '. "$1"; fm_wake_append heartbeat startup startup-pending-wake' _ "$LAB/bin/fm-wake-lib.sh"
+        ;;
+      esac
+      cat > "$LAB/bin/fm-pr-auto-register.sh" <<'SH'
+#!/usr/bin/env bash
+printf registered >> "$FM_HOME/registration"
+SH
+      : > "$LAB/startup-replay"
+      [ ! -f "$LAB/state/.wake-queue" ] || cp "$LAB/state/.wake-queue" "$LAB/startup-replay"
+      startup_rc=0
+      startup_out=$("$DRAIN" 2>&1) || startup_rc=$?
+      retained=''
+      [ ! -f "$LAB/state/.wake-queue" ] || retained=$(cat "$LAB/state/.wake-queue")
+      if [ "$startup_rc" -eq 0 ]; then
+        repeat_out=$("$DRAIN" 2>&1) || fail 'repeated pre-arm drain failed'
+        assert_not_contains "$repeat_out" WARNING 'repeated verified startup admission remains known'
+        denied=0
+        "$LAB/bin/fm-omp-watch-transition.sh" identity "$PI_SESSION_ID" >/dev/null 2>&1 || denied=$?
+        expect_code 1 "$denied" 'pre-arm admission must not expose a recovery identity'
+        startup_token=$(jq -c '{session,arm,generation,watermark,batch}' "$LAB/state/.omp-watch-transition")
+        denied=0
+        "$LAB/bin/fm-omp-watch-transition.sh" recovery "$PI_SESSION_ID" "$startup_token" >/dev/null 2>&1 || denied=$?
+        expect_code 1 "$denied" 'pre-arm admission must not grant recovery'
+      fi
+      arm
+      printf 'startup drain rc=%s output=%s\nretained=%s\nfirst arm rc=%s output=%s\n' "$startup_rc" "$startup_out" "$retained" "$rc" "$output"
+      expect_code 0 "$startup_rc" 'startup drain before first arm must complete'
+      [ -z "$retained" ] || fail 'startup retained already printed wake'
+      assert_present "$LAB/registration" 'startup PR registration must run'
+      expect_code 0 "$rc" 'first arm after startup admission must launch'
+      assert_observed startup
+      assert_not_contains "$output" WARNING 'verified first startup stays known'
+      if [ "$FM_TRANSITION_LIFECYCLE_CASE" = replacement-replay ]; then
+        cp "$LAB/prior-session-replay" "$LAB/startup-replay"
+      fi
+      cp "$LAB/startup-replay" "$LAB/state/.wake-queue"
+      "$DRAIN" >/dev/null 2>&1
+      bash -c '. "$1"; fm_wake_append stale worker after-startup-idle idle-recheck' _ "$LAB/bin/fm-wake-lib.sh"
+      "$DRAIN" >/dev/null 2>&1
+      arm
+      expect_code 0 "$rc" 'replayed startup rows must not become successor fresh evidence'
+      assert_observed idle-recheck
+      assert_not_contains "$output" WARNING 'startup replay retains verifiable idle evidence'
+      drain
+      arm
+      expect_code 2 "$rc" 'fresh post-startup wake must require reset without old recovery'
+      assert_observed clean
+      assert_not_contains "$output" WARNING 'later clean enforcement remains verifiable'
+      ;;
+    startup-same-call)
+      "$DRAIN" >/dev/null 2>&1
+      output=$("$ARM" 2>&1) || fail 'first arm sharing the drain call must launch'
+      assert_present "$LAB/launches" 'a drain call must not impersonate a consumed arm'
+      [ "$(wc -l < "$LAB/launches" | tr -d ' ')" = 1 ] || fail 'first same-call arm did not launch exactly once'
+      output=$("$ARM" 2>&1) || fail 'duplicate arm must be idempotent'
+      [ "$(wc -l < "$LAB/launches" | tr -d ' ')" = 1 ] || fail 'duplicate same-call arm launched twice'
+      ;;
+    startup-cycle)
+      "$DRAIN" >/dev/null 2>&1
+      "$LAB/bin/fm-omp-watch-transition.sh" cycle failed 42 before-arm
+      arm
+      expect_code 0 "$rc" 'pre-arm callback must preserve first startup'
+      assert_observed startup
+      assert_not_contains "$output" WARNING 'callback without an admitted arm cannot corrupt startup'
+      ;;
+    startup-unknown)
+      printf '1\t1\talien\tfixture\tunknown startup row\n' | queue_rows > "$LAB/state/.wake-queue"
+      "$DRAIN" >/dev/null 2>&1
+      arm
+      expect_code 0 "$rc" 'unknown startup input preserves arming'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'pre-arm uncertainty must remain visible'
+      ;;
+    startup-failed-publication)
+      bash -c '. "$1"; fm_wake_append heartbeat startup unadmitted-startup' _ "$LAB/bin/fm-wake-lib.sh"
+      mkdir "$LAB/startup-bin"
+      cat > "$LAB/startup-bin/mv" <<'SH'
+#!/usr/bin/env bash
+for destination; do :; done
+if [ "$destination" = "$FM_HOME/state/.omp-watch-transition" ]; then exit 1; fi
+exec /bin/mv "$@"
+SH
+      chmod +x "$LAB/startup-bin/mv"
+      denied=0
+      failed=$(PATH="$LAB/startup-bin:$PATH" "$DRAIN" 2>&1) || denied=$?
+      expect_code 1 "$denied" 'failed pre-arm publication must retain raw input'
+      assert_contains "$failed" WARNING 'failed startup admission must warn'
+      assert_grep unadmitted-startup "$LAB/state/.wake-queue" 'failed startup publication cannot consume input'
+      "$DRAIN" >/dev/null 2>&1
+      [ ! -s "$LAB/state/.wake-queue" ] || fail 'retried startup did not consume raw input'
+      arm
+      assert_observed startup
+      ;;
+    startup-missing-identity)
+      bash -c '. "$1"; fm_wake_append heartbeat startup unidentified-startup' _ "$LAB/bin/fm-wake-lib.sh"
+      denied=0
+      failed=$(PI_TOOL_CALL_ID='' "$DRAIN" 2>&1) || denied=$?
+      expect_code 1 "$denied" 'identity-less startup drain cannot admit input'
+      assert_contains "$failed" WARNING 'identity-less startup warns'
+      assert_grep unidentified-startup "$LAB/state/.wake-queue" 'identity-less startup retains raw input'
+      "$DRAIN" >/dev/null 2>&1
+      arm
+      assert_observed startup
+      ;;
+    startup-invalid-record|startup-contradiction|startup-contradiction-arm|missing-malformed-observation|missing-observation-symlink)
+      arm
+      drain
+      case "$FM_TRANSITION_LIFECYCLE_CASE" in
+        startup-invalid-record) printf 'invalid\n' > "$LAB/state/.omp-watch-transition" ;;
+        startup-contradiction|startup-contradiction-arm)
+          jq '.session="prior-session"' "$LAB/state/.omp-watch-transition" > "$LAB/foreign-record"
+          mv "$LAB/foreign-record" "$LAB/state/.omp-watch-transition"
+          ;;
+        missing-malformed-observation)
+          rm -f "${LAB:?}/state/.omp-watch-transition"
+          printf 'previous-session\nold-call' > "$LAB/state/.omp-watch-arm-result"
+          ;;
+        missing-observation-symlink)
+          rm -f "${LAB:?}/state/.omp-watch-transition"
+          mv "$LAB/state/.omp-watch-arm-result" "$LAB/arm-observation"
+          printf 'previous-session\nold-call\n' > "$LAB/arm-observation"
+          ln -s "$LAB/arm-observation" "$LAB/state/.omp-watch-arm-result"
+          ;;
+      esac
+      if [ "$FM_TRANSITION_LIFECYCLE_CASE" != startup-contradiction-arm ]; then
+        "$DRAIN" >/dev/null 2>&1
+      fi
+      if [ "$FM_TRANSITION_LIFECYCLE_CASE" = startup-contradiction ]; then
+        rm -f "${LAB:?}/state/.omp-watch-arm-result"
+      fi
+      arm
+      expect_code 0 "$rc" 'unavailable startup evidence must preserve arming'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'unavailable startup evidence cannot silently become first startup'
+      ;;
+    dead-lock-obstruction|unknown-lock-owner)
+      arm
+      drain
+      bash -c '. "$1"; fm_wake_append stale worker pending-behind-obstruction' _ "$LAB/bin/fm-wake-lib.sh"
+      bash -c '. "$1"; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK"' _ "$LAB/bin/fm-wake-lib.sh"
+      if [ "$FM_TRANSITION_LIFECYCLE_CASE" = dead-lock-obstruction ]; then
+        printf 'unknown steal obstruction\n' > "$LAB/state/.wake-queue.lock.steal"
+      else
+        printf 'unverifiable\n' > "$LAB/state/.wake-queue.lock/pid"
+        python3 - "$LAB/state/.wake-queue.lock" <<'PYAGE'
+import os,sys
+os.utime(os.path.realpath(sys.argv[1]),(1,1))
+os.utime(sys.argv[1],(1,1),follow_symlinks=False)
+PYAGE
+      fi
+      prior=$(readlink "$LAB/state/.wake-queue.lock")
+      denied=0
+      failed=$(FM_OMP_TRANSITION_LOCK_ATTEMPTS=1 "$DRAIN" 2>&1) || denied=$?
+      expect_code 1 "$denied" 'unverified obstruction must refuse drain admission'
+      assert_contains "$failed" WARNING 'unverified recovery obstruction must warn'
+      [ "$(readlink "$LAB/state/.wake-queue.lock")" = "$prior" ] || fail 'unverified owner was replaced'
+      assert_grep pending-behind-obstruction "$LAB/state/.wake-queue" 'blocked lock recovery retains raw input'
+      ;;
+    startup-invalid-decision|startup-invalid-recovery|startup-invalid-pid|startup-observation-changed)
+      "$DRAIN" >/dev/null 2>&1
+      case "$FM_TRANSITION_LIFECYCLE_CASE" in
+        startup-invalid-decision) corrupt='.decision={call:.arm,claim:"",detail:"",observed:"startup",verdict:"allow"}' ;;
+        startup-invalid-recovery) corrupt='.recovery={session,arm,generation,watermark,batch}' ;;
+        startup-invalid-pid) corrupt='.pid="42"' ;;
+        startup-observation-changed)
+          printf '%s\n' "$PI_SESSION_ID" prior-arm 'watcher: pending confirmation' > "$LAB/state/.omp-watch-arm-result"
+          corrupt='.'
+          ;;
+      esac
+      jq "$corrupt" "$LAB/state/.omp-watch-transition" > "$LAB/corrupt-startup"
+      mv "$LAB/corrupt-startup" "$LAB/state/.omp-watch-transition"
+      arm
+      expect_code 0 "$rc" 'incomplete startup evidence must preserve arming'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'incomplete pre-arm evidence cannot certify startup'
+      ;;
+    startup-legacy|startup-blank-session|startup-blank-call)
+      case "$FM_TRANSITION_LIFECYCLE_CASE" in
+        startup-legacy) printf 'legacy\n' > "$LAB/state/.omp-watch-cycle" ;;
+        startup-blank-session) printf '\nold-call\n' > "$LAB/state/.omp-watch-arm-result" ;;
+        startup-blank-call) printf 'prior-session\n\n' > "$LAB/state/.omp-watch-arm-result" ;;
+      esac
+      "$DRAIN" >/dev/null 2>&1
+      arm
+      expect_code 0 "$rc" 'unavailable history must preserve arming'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'legacy or incomplete observational history cannot certify startup'
+      ;;
+    dead-lock-steal-pipe)
+      arm
+      drain
+      bash -c '. "$1"; fm_wake_append stale worker pending-behind-steal' _ "$LAB/bin/fm-wake-lib.sh"
+      bash -c '. "$1"; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK"' _ "$LAB/bin/fm-wake-lib.sh"
+      python3 - "$LAB" <<'PYSTEAL'
+import os,subprocess,sys
+from pathlib import Path
+home=Path(sys.argv[1]); shim=home/'steal-bin';shim.mkdir()
+owner=home/'unknown-steal';owner.mkdir();target=owner/'pid';os.mkfifo(target)
+obstruction=home/'state/.wake-queue.lock.steal';obstruction.symlink_to(owner)
+os.mkfifo(home/'steal-progress')
+(shim/'cat').write_text("""#!/usr/bin/env bash
+if [ "$#" -eq 1 ] && [ -p "$1" ]; then printf 'read-pipe\n' > "$FM_HOME/steal-progress"; fi
+exec /bin/cat "$@"
+""");(shim/'cat').chmod(0o755)
+with (home/'steal.out').open('w') as out,(home/'steal.err').open('w') as err:
+    child=subprocess.Popen(['bash','-c','"$1"; rc=$?; printf "completed\\n" > "$FM_HOME/steal-progress"; exit "$rc"','_',str(home/'bin/fm-wake-drain.sh')],env=dict(os.environ,PATH=str(shim)+':'+os.environ['PATH'],FM_OMP_TRANSITION_LOCK_ATTEMPTS='1'),stdout=out,stderr=err)
+    reads=0
+    while True:
+        with (home/'steal-progress').open() as progress: event=progress.readline()
+        if event=='completed\n': break
+        assert event=='read-pipe\n',event
+        reads+=1
+        with target.open('w') as release: release.write('unknown\n')
+    rc=child.wait()
+assert reads==0, f'bounded recovery read an unknown steal obstruction {reads} times'
+assert rc==1,(rc,(home/'steal.err').read_text())
+assert 'WARNING' in (home/'steal.err').read_text()
+assert obstruction.is_symlink() and target.is_fifo()
+assert 'pending-behind-steal' in (home/'state/.wake-queue').read_text()
+PYSTEAL
+      ;;
+    startup-dangling-canonical)
+      ln -s "$LAB/missing-canonical" "$LAB/state/.omp-watch-transition"
+      arm
+      expect_code 0 "$rc" 'a dangling canonical destination preserves arming'
+      assert_contains "$output" 'transition evidence is unknown' 'a dangling record cannot certify startup'
+      [ -L "$LAB/state/.omp-watch-transition" ] || fail 'dangling canonical obstruction was replaced'
+      ;;
+    startup-corrupt-first)
+      printf 'invalid canonical evidence\n' > "$LAB/state/.omp-watch-transition"
+      "$DRAIN" >/dev/null 2>&1
+      arm
+      expect_code 0 "$rc" 'corrupt pre-arm evidence preserves supervision'
+      assert_observed unknown
+      assert_contains "$output" WARNING 'corrupt pre-arm evidence cannot become startup'
+      ;;
+    *) fail 'unknown lifecycle scenario' ;;
+  esac
+  pass "$FM_TRANSITION_LIFECYCLE_CASE"
+  exit
+fi
 if [ -n "${FM_TRANSITION_CASE:-}" ]; then
   arm
   drain
@@ -337,12 +625,13 @@ env=dict(os.environ,PATH=str(shim)+':'+os.environ['PATH'])
 with (home/'holder.out').open('w') as out,(home/'holder.err').open('w') as err:
     holder=subprocess.Popen([str(home/'bin/fm-wake-drain.sh')],env=dict(env,HOLD_BUDGET_DRAIN='1'),stdout=out,stderr=err)
     with (home/'budget-ready').open() as ready:assert ready.readline()=='held\n'
-    with (home/'budget.out').open('w') as ao,(home/'budget.err').open('w') as ae:
+    with (home/'budget.out').open('w') as ao,(home/'budget.err').open('w') as ae, os.fdopen(os.open(home/'budget-progress',os.O_RDWR)) as progress:
         arm=subprocess.Popen(['bash','-c','"$1"; rc=$?; printf "completed\\n" > "$FM_HOME/budget-progress"; exit "$rc"','_',str(home/'bin/fm-watch-arm.sh')],env=dict(env,BUDGET_PROBE='1',PI_TOOL_CALL_ID='held-budget-arm',FM_OMP_TRANSITION_LOCK_ATTEMPTS='1'),stdout=ao,stderr=ae)
-        with (home/'budget-progress').open() as progress:event=progress.readline()
+        event=progress.readline()
         with (home/'budget-release').open('w') as release:release.write('continue\n')
-        if event=='over-budget\n':
-            with (home/'budget-progress').open() as progress:assert progress.readline()=='completed\n'
+        if event!='completed\n':
+            while progress.readline()!='completed\n':
+                pass
         rc=arm.wait()
     holder_rc=holder.wait()
 counts={f.name:int(f.read_text()) for f in home.glob('budget-count.*')}
@@ -1113,5 +1402,11 @@ pass 'unknown native identities warn and the private transition ledger stays bou
 if [ -z "${FM_TRANSITION_CASE:-}" ]; then
   for scenario in recovery-log recovery-away recovery-hold recovery-declaration recovery-new-wake recovery-replay missing-drain-identity unavailable-lock fingerprint-unavailable duplicate-arm canonical-arm-failure sequence-reuse recovery-reused-sequence recovery-unknown batch-identity-unavailable replay-across-arm publication-before-consumption invalid-record-class invalid-record-decision invalid-record-recovery invalid-record-pid invalid-record-identity invalid-record-verdict invalid-record-batch slow-evidence slow-transport fold-provenance drain-publication-failure lock-vacate held-lock-budget legacy-fragments canonical-symlink unavailable-pipe canonical-pipe log-obstruction; do
     FM_TRANSITION_CASE="$scenario" bash "$0"
+  done
+fi
+
+if [ -z "${FM_TRANSITION_CASE:-}" ] && [ -z "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
+  for scenario in missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
+    FM_TRANSITION_LIFECYCLE_CASE="$scenario" bash "$0"
   done
 fi

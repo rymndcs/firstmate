@@ -310,7 +310,7 @@ fm_lock_recheck_stale_owner() {
 }
 
 fm_lock_try_acquire() {
-  local lockdir=$1 pid steal cur rc steal_owner primary_owner
+  local lockdir=$1 mode=${2:-generic} pid steal cur rc steal_owner primary_owner
   FM_LOCK_HELD_PID=
   FM_LOCK_OWNER_DIR=
 
@@ -318,7 +318,13 @@ fm_lock_try_acquire() {
     return 0
   fi
 
+  if [ "$mode" = bounded ]; then
+    [ -L "$lockdir" ] && [ -f "$lockdir/pid" ] && [ ! -L "$lockdir/pid" ] || return 1
+  fi
   pid=$(cat "$lockdir/pid" 2>/dev/null || true)
+  if [ "$mode" = bounded ]; then
+    case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  fi
   if fm_pid_alive "$pid"; then
     FM_LOCK_HELD_PID=$pid
     return 1
@@ -329,7 +335,8 @@ fm_lock_try_acquire() {
   fi
 
   steal="$lockdir.steal"
-  if ! fm_lock_try_acquire "$steal"; then
+  if { [ "$mode" = bounded ] && ! fm_lock_try_create "$steal"; } \
+    || { [ "$mode" != bounded ] && ! fm_lock_try_acquire "$steal"; }; then
     FM_LOCK_HELD_PID=$(cat "$lockdir/pid" 2>/dev/null || true)
     FM_LOCK_OWNER_DIR=
     return 1
@@ -391,20 +398,14 @@ fm_lock_acquire_wait() {
 
 # Bounded omp transition acquisition never steals an unverified obstruction.
 fm_omp_queue_lock() {
-  local attempts=${FM_OMP_TRANSITION_LOCK_ATTEMPTS:-20} i=0 pid
+  local attempts=${FM_OMP_TRANSITION_LOCK_ATTEMPTS:-20} i=0
   while [ "$i" -lt "$attempts" ]; do
     i=$((i + 1))
-    fm_lock_try_create "$FM_WAKE_QUEUE_LOCK" && return 0
-    if [ -L "$FM_WAKE_QUEUE_LOCK" ]; then
-      if [ -f "$FM_WAKE_QUEUE_LOCK/pid" ] && [ ! -L "$FM_WAKE_QUEUE_LOCK/pid" ]; then
-        pid=$(cat "$FM_WAKE_QUEUE_LOCK/pid" 2>/dev/null || true)
-        if fm_pid_alive "$pid"; then
-          [ "$i" -ge "$attempts" ] || sleep 0.05
-          continue
-        fi
-      fi
+    fm_lock_try_acquire "$FM_WAKE_QUEUE_LOCK" bounded && return 0
+    if [ -e "$FM_WAKE_QUEUE_LOCK" ] || [ -L "$FM_WAKE_QUEUE_LOCK" ]; then
+      [ -n "${FM_LOCK_HELD_PID:-}" ] || return 1
+      [ "$i" -ge "$attempts" ] || sleep 0.05
     fi
-    if [ -e "$FM_WAKE_QUEUE_LOCK" ] || [ -L "$FM_WAKE_QUEUE_LOCK" ]; then return 1; fi
   done
   return 1
 }
