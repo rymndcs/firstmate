@@ -4080,13 +4080,14 @@ test_nested_private() {
       git -C "$inner" update-index "--$variant" tracked
       printf 'unpublished tracked bytes\n' > "$inner/tracked"
       ;;
-    env|notes|rails-key|dependency)
+    env|notes|rails-key|dependency|empty-dependency)
       printf '%s\n' '.env' '.claude/' 'config/' 'node_modules/' >> "$(git -C "$inner" rev-parse --git-path info/exclude)"
       case "$variant" in
         env) printf 'private fixture\n' > "$inner/.env" ;;
         notes) mkdir -p "$inner/apps/web/.claude"; printf 'private fixture\n' > "$inner/apps/web/.claude/notes.md" ;;
         rails-key) mkdir -p "$inner/config/credentials"; printf 'private fixture\n' > "$inner/config/credentials/development.key" ;;
         dependency) mkdir -p "$inner/node_modules/pkg"; printf 'private fixture\n' > "$inner/node_modules/pkg/index.js" ;;
+        empty-dependency) mkdir -p "$inner/node_modules/pkg" ;;
       esac
       ;;
     status-unreadable|flags-unreadable|ignored-unreadable|head-unreadable)
@@ -4114,6 +4115,7 @@ SH
     notes) [ "$(cat "$inner/apps/web/.claude/notes.md")" = 'private fixture' ] || fail 'private notes changed' ;;
     rails-key) [ "$(cat "$inner/config/credentials/development.key")" = 'private fixture' ] || fail 'private key changed' ;;
     dependency) [ "$(cat "$inner/node_modules/pkg/index.js")" = 'private fixture' ] || fail 'dependency changed' ;;
+    empty-dependency) [ -d "$inner/node_modules/pkg" ] || fail 'empty retained directory changed' ;;
   esac
   pass "nested $variant refuses and preserves unpublished or uninspectable copy"
 }
@@ -4124,9 +4126,14 @@ test_nested_disposable() {
   inner="$c/wt/.claude/worktrees/inner copy"
   printf '*.log\n' >> "$(git -C "$inner" rev-parse --git-path info/exclude)"
   printf 'discardable\n' > "$inner/build.log"
+  git init -q "$c/linked-repository"
+  printf 'private linked data\n' > "$c/linked-repository/.env"
+  ln -s "$c/linked-repository" "$inner/tmp-link"
+  printf 'tmp-link\n' >> "$(git -C "$inner" rev-parse --git-path info/exclude)"
   NESTED_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'disposable ignored output blocked nested cleanup'
   [ ! -e "$inner" ] && [ -s "$c/returns" ] || fail 'disposable ignored output prevented return'
-  pass 'nested disposable ignored output follows existing retention contract'
+  [ "$(cat "$c/linked-repository/.env")" = 'private linked data' ] || fail 'nested inspection followed or changed a symlink target'
+  pass 'nested disposable ignored output follows existing retention contract without following links'
 }
 
 test_nested_changed() {
@@ -4154,6 +4161,14 @@ if [ "${2:-}" = "$inner" ] && [ "${3:-} ${4:-}" = 'merge-tree --write-tree' ] &&
       printf 'late unpublished content\n' > "$inner/tracked"
       ;;
     ignored) printf 'late unpublished content\n' > "$inner/.env" ;;
+    hidden-untracked)
+      "$REAL_GIT_FOR_TEST" -C "$inner" config status.showUntrackedFiles no
+      printf 'late unpublished content\n' > "$inner/notes.txt"
+      ;;
+    repository)
+      "$REAL_GIT_FOR_TEST" init -q "$inner/tmp/foreign"
+      printf 'late unpublished content\n' > "$inner/tmp/foreign/data"
+      ;;
   esac
   "$REAL_GIT_FOR_TEST" -C "$inner" rev-parse HEAD > "$NESTED_CASE/late-head"
   touch "$NESTED_CASE/interleaved"
@@ -4181,19 +4196,152 @@ SH
       ;;
     dirty|skip-worktree|assume-unchanged) [ "$(cat "$inner/tracked")" = 'late unpublished content' ] || fail 'late tracked bytes lost' ;;
     ignored) [ "$(cat "$inner/.env")" = 'late unpublished content' ] || fail 'late ignored bytes lost' ;;
+    hidden-untracked) [ "$(cat "$inner/notes.txt")" = 'late unpublished content' ] || fail 'late hidden untracked bytes lost' ;;
+    repository) [ "$(cat "$inner/tmp/foreign/data")" = 'late unpublished content' ] || fail 'late repository bytes lost' ;;
   esac
   pass "nested changed $variant refuses after controlled proof/removal interleaving"
 }
 
+test_nested_recreated_candidate() {
+  local c inner deep rc=0
+  c=$(nested_fixture recreated-candidate)
+  inner="$c/wt/.claude/worktrees/inner copy"
+  deep="$inner/tmp/deeper"
+  git -C "$c/project" worktree add -q --detach "$deep" main
+  cat > "$c/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+deep="$NESTED_CASE/wt/.claude/worktrees/inner copy/tmp/deeper"
+if [ "${3:-} ${4:-}" = 'worktree remove' ] && [ "${6:-}" = "$deep" ]; then
+  "$REAL_GIT_FOR_TEST" "$@" || exit $?
+  mkdir -p "$deep"
+  printf 'new retained data\n' > "$deep/.env"
+  exit 0
+fi
+exec "$REAL_GIT_FOR_TEST" "$@"
+SH
+  chmod +x "$c/fakebin/git"
+  NESTED_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || rc=$?
+  [ "$rc" -ne 0 ] || fail 'a removed candidate path hid new retained data from final inspection'
+  [ ! -e "$deep/.git" ] || fail 'recreated fixture never removed the proven descendant'
+  [ -f "$inner/.git" ] && [ "$(cat "$deep/.env")" = 'new retained data' ] || fail 'new data in removed candidate path was lost'
+  [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] || fail 'recreated candidate changed task or returned slot'
+  grep -F "$deep/.env" "$c/err" >/dev/null || fail 'final retention refusal did not name new data'
+  pass 'final parent inspection retains new data at an already removed candidate path'
+}
+
+test_nested_repository_retention() {
+  local variant=$1 c inner foreign foreign_head rc=0
+  c=$(nested_fixture "repository-$variant")
+  inner="$c/wt/.claude/worktrees/inner copy"
+  foreign="$inner/tmp/foreign"
+  if [ "$variant" = standalone ]; then
+    git init -q "$foreign"
+    git -C "$foreign" commit -qm baseline --allow-empty
+  else
+    git init -q "$c/foreign-primary"
+    git -C "$c/foreign-primary" commit -qm baseline --allow-empty
+    git -C "$c/foreign-primary" worktree add -q --detach "$foreign"
+  fi
+  printf 'unique foreign data\n' > "$foreign/unlanded"
+  git -C "$foreign" add unlanded
+  git -C "$foreign" commit -qm unique
+  foreign_head=$(git -C "$foreign" rev-parse HEAD)
+  printf 'unique unpublished foreign edits\n' > "$foreign/unlanded"
+  "$ROOT/bin/fm-worktree-cleanup.sh" --worktree "$inner" "" > "$c/cleanup-out" 2> "$c/cleanup-err" \
+    || fail 'existing cleanup failed on repository fixture'
+  [ "$(cat "$foreign/unlanded")" = 'unique unpublished foreign edits' ] || fail 'outer cleanup removed retained repository'
+  [ -z "$(git -C "$inner" status --porcelain)" ] || fail 'foreign repository fixture is visibly dirty'
+  NESTED_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "nested $variant repository unexpectedly allowed return"
+  [ -f "$inner/.git" ] && [ -e "$foreign/.git" ] || fail 'retained repository was discarded'
+  [ "$(git -C "$foreign" rev-parse HEAD)" = "$foreign_head" ] || fail 'retained repository HEAD changed'
+  [ "$(cat "$foreign/unlanded")" = 'unique unpublished foreign edits' ] || fail 'retained repository dirty bytes changed'
+  [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] || fail 'repository refusal changed task or returned slot'
+  grep -F "$inner" "$c/err" >/dev/null || fail 'repository refusal did not name nested copy'
+  grep -F "$foreign" "$c/err" >/dev/null || fail 'repository refusal did not name retained item'
+  pass "nested $variant repository follows shared cleanup retention and preserves HEAD and dirty bytes"
+}
+
+test_nested_hidden_untracked() {
+  local c inner rc=0
+  c=$(nested_fixture hidden-untracked)
+  inner="$c/wt/.claude/worktrees/inner copy"
+  git -C "$inner" config status.showUntrackedFiles no
+  printf 'unique unpublished untracked work\n' > "$inner/notes.txt"
+  [ -z "$(git -C "$inner" status --porcelain)" ] || fail 'hidden untracked fixture is visibly dirty'
+  [ "$(git -C "$inner" status --porcelain --untracked-files=all)" = '?? notes.txt' ] || fail 'explicit status did not expose fixture'
+  NESTED_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || rc=$?
+  [ "$rc" -ne 0 ] || fail 'hidden untracked work unexpectedly allowed return'
+  [ -f "$inner/.git" ] && [ "$(cat "$inner/notes.txt")" = 'unique unpublished untracked work' ] || fail 'hidden untracked bytes lost'
+  [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] || fail 'hidden untracked refusal changed task or returned slot'
+  grep -F "REFUSED: nested worktree $inner has uncommitted changes." "$c/err" >/dev/null || fail 'hidden untracked work missed early refusal'
+  pass 'nested status inspects all untracked files independent of Git configuration'
+}
+
+test_nested_plan_retention() {
+  local variant=$1 c inner deep safe='' rc=0
+  c=$(nested_fixture "plan-$variant")
+  inner="$c/wt/.claude/worktrees/inner copy"
+  deep="$inner/tmp/deeper"
+  git -C "$c/project" worktree add -q --detach "$deep" main
+  case "$variant" in
+    unlanded|kept-child)
+      safe="$inner/tmp/a-landed-longer"
+      git -C "$c/project" worktree add -q --detach "$safe" main
+      ;;
+  esac
+  case "$variant" in
+    unlanded)
+      printf 'unlanded descendant\n' > "$deep/unique"
+      git -C "$deep" add unique
+      git -C "$deep" commit -qm 'unlanded descendant'
+      ;;
+    kept-child) printf 'private descendant\n' > "$deep/.env"; printf '.env\n' >> "$(git -C "$deep" rev-parse --git-path info/exclude)" ;;
+    kept-sibling) mkdir -p "$inner/tmp/deeper-other"; printf 'private sibling\n' > "$inner/tmp/deeper-other/.env" ;;
+    out-of-plan)
+      cat > "$c/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+if [ "${3:-} ${4:-} ${5:-} ${6:-}" = 'worktree list --porcelain -z' ]; then
+  "$REAL_GIT_FOR_TEST" "$@" | python3 -c 'import os, sys
+excluded = os.fsencode(os.environ["NESTED_CASE"] + "/wt/.claude/worktrees/inner copy/tmp/deeper")
+for record in sys.stdin.buffer.read().split(b"\0\0"):
+    if record and record.split(b"\0")[0] != b"worktree " + excluded:
+        sys.stdout.buffer.write(record + b"\0\0")'
+  exit "${PIPESTATUS[0]}"
+fi
+exec "$REAL_GIT_FOR_TEST" "$@"
+SH
+      chmod +x "$c/fakebin/git"
+      ;;
+  esac
+  NESTED_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "nested plan $variant unexpectedly allowed return"
+  [ -z "$safe" ] || [ -f "$safe/.git" ] || fail "nested plan $variant removed a safe peer before all proofs passed"
+  [ -f "$inner/.git" ] && [ -f "$deep/.git" ] || fail "nested plan $variant removed a candidate before all proofs passed"
+  [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] || fail "nested plan $variant changed task or returned slot"
+  case "$variant" in
+    unlanded) [ "$(cat "$deep/unique")" = 'unlanded descendant' ] || fail 'unlanded descendant bytes changed' ;;
+    kept-child) [ "$(cat "$deep/.env")" = 'private descendant' ] || fail 'kept descendant bytes changed' ;;
+    kept-sibling) [ "$(cat "$inner/tmp/deeper-other/.env")" = 'private sibling' ] || fail 'kept sibling bytes changed' ;;
+    out-of-plan) grep -F "$deep" "$c/err" >/dev/null || fail 'out-of-plan repository was not named by retention refusal' ;;
+  esac
+  pass "nested plan $variant preserves every candidate and retained item before removal"
+}
+
 run_nested_tests() {
+  local variant
   test_nested_landed
   test_nested_squash
   test_nested_disposable
-  local variant
-  for variant in skip-worktree assume-unchanged env notes rails-key dependency status-unreadable flags-unreadable ignored-unreadable head-unreadable; do
+  test_nested_repository_retention standalone
+  test_nested_repository_retention foreign-worktree
+  test_nested_hidden_untracked
+  test_nested_recreated_candidate
+  for variant in unlanded kept-child kept-sibling out-of-plan; do test_nested_plan_retention "$variant"; done
+  for variant in skip-worktree assume-unchanged env notes rails-key dependency empty-dependency status-unreadable flags-unreadable ignored-unreadable head-unreadable; do
     test_nested_private "$variant"
   done
-  for variant in head dirty skip-worktree assume-unchanged ignored head-unreadable; do
+  for variant in head dirty skip-worktree assume-unchanged ignored head-unreadable hidden-untracked repository; do
     test_nested_changed "$variant"
   done
   for variant in unlanded pushed forced dirty agent-dirty unknown locked missing mixed inventory; do
@@ -4205,6 +4353,10 @@ if [ "${1:-}" = nested ]; then
   if [ "$#" -gt 1 ]; then
     case "$2" in
       landed|squash|disposable) "test_nested_$2" ;;
+      repository) test_nested_repository_retention "$3" ;;
+      plan) test_nested_plan_retention "$3" ;;
+      hidden-untracked) test_nested_hidden_untracked ;;
+      recreated) test_nested_recreated_candidate ;;
       private) test_nested_private "$3" ;;
       changed) test_nested_changed "$3" ;;
       *) test_nested_refusal "$2" ;;

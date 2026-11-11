@@ -1043,7 +1043,7 @@ teardown_treehouse_return() {
 
 validate_nested_worktree_files() {
   local dirty
-  if ! dirty=$(git -C "$WT" status --porcelain 2>/dev/null); then
+  if ! dirty=$(git -C "$WT" status --porcelain --untracked-files=all 2>/dev/null); then
     echo "REFUSED: nested worktree $WT cannot be inspected for uncommitted changes." >&2
     return 1
   fi
@@ -1055,7 +1055,7 @@ validate_nested_worktree_files() {
     echo "REFUSED: nested worktree $WT has hidden index flags or cannot be inspected for them." >&2
     return 1
   fi
-  if ! "$SCRIPT_DIR/fm-worktree-cleanup.sh" --check-retained-ignored "$WT"; then
+  if ! "$SCRIPT_DIR/fm-worktree-cleanup.sh" --check-retained-ignored "$WT" "$@"; then
     echo "REFUSED: nested worktree $WT has retained ignored files or cannot be inspected for them." >&2
     return 1
   fi
@@ -1071,7 +1071,7 @@ validate_worktree_teardown_safety() {
   esac
 
   if [ "$scope" = default-only ]; then
-    validate_nested_worktree_files || return 1
+    validate_nested_worktree_files "${@:2}" || return 1
     work_landed_verdict "$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)" default-only
     case "$LANDED_VERDICT" in
       landed) return 0 ;;
@@ -1188,7 +1188,7 @@ remove_nested_ship_worktrees() {
     heads+=("$(git -C "$path" rev-parse --verify HEAD 2>/dev/null || true)")
     WT=$path
     FORCE=
-    validate_worktree_teardown_safety default-only || return 1
+    validate_worktree_teardown_safety default-only "${nested[@]}" || return 1
   done
   for ((i=0; i<${#nested[@]}; i++)); do
     for ((j=i+1; j<${#nested[@]}; j++)); do
