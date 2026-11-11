@@ -40,8 +40,10 @@
 # never learn. Each batch
 # registers one learn-<key>-<batch> process-to-event source before its wake is
 # queued, retired again if queueing fails, so the poll never runs the hook.
-# The source records the task's project= clone as the helper's repository, and
-# as --evidence every review-loop folder named <task-id>.XXXXXX or
+# The source records the task's project= clone as the helper's repository.
+# advisorfirst/help-center PRs use FM_HOME/projects/help-center instead, and
+# skip learning if that clone has no matching GitHub remote.
+# It records as --evidence every review-loop folder named <task-id>.XXXXXX or
 # <branch>.XXXXXX (fm-review-round.sh --init names them) under that clone's Git
 # directories, except those the helper already finds by PR number in the
 # folder name or the first three lines of its report.md.
@@ -135,7 +137,7 @@ review_evidence() (  # <task-id> <repo>: review-loop folders the helper cannot f
 
 publish_one() (
   local id=$1 batch mergeable=$OBSERVED_MERGEABLE message='' snapshot='' key mode link text note
-  local hook source='' learn=() evidence=() repo dir
+  local hook source='' learn=() evidence=() repo dir skip_learning=0
   fm_lock_try_acquire "$STATE/$id.pr-registration.lock" || return 1
   trap 'fm_lock_release "$STATE/$id.pr-registration.lock"' EXIT
   fm_pr_metadata_identity_parse "$STATE/$id.meta" && [ "$FM_PR_META_URL" = "$URL" ] || return 1
@@ -241,9 +243,15 @@ publish_one() (
       [ "$mode" != learn ] || learn+=("$key" "$link")
     done < "$WORK/new"
   fi
-  if [ "${#learn[@]}" -gt 0 ]; then
+  repo=$(grep '^project=' "$STATE/$id.meta" | tail -1 | cut -d= -f2-)
+  if [ "$(printf '%s' "$PROJECT" | tr '[:upper:]' '[:lower:]')" = advisorfirst/help-center ]; then
+    repo="$FM_HOME/projects/help-center"
+    git -C "$repo" config --get-regexp '^remote\..*\.url$' 2>/dev/null \
+      | perl -ne '$matched = 1 if m{github\.com[:/]advisorfirst/help-center(?:\.git)?/?\s*$}i; END { exit($matched ? 0 : 1) }' \
+      || skip_learning=1
+  fi
+  if [ "${#learn[@]}" -gt 0 ] && [ "$skip_learning" -eq 0 ]; then
     source="learn-${KEY:0:16}-$batch"
-    repo=$(grep '^project=' "$STATE/$id.meta" | tail -1 | cut -d= -f2-)
     while IFS= read -r dir; do evidence+=(--evidence "$dir"); done < <(review_evidence "$id" "$repo")
     FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-procevent.sh" register learn "$source" -- \
       "$SCRIPT_DIR/fm-procevent-learn.sh" run "${FM_PR_LEARN_TIMEOUT:-120}" "$URL" \
@@ -257,6 +265,7 @@ publish_one() (
       unverified) note= ;;
       alert) note=' [learn-from-review: untrusted author]' ;;
       *) if [ ! -x "$hook" ]; then note=' [learn-from-review: not installed]'
+        elif [ "$skip_learning" -eq 1 ]; then note=' [learn-from-review: skipped repository unavailable]'
         elif [ -n "$source" ]; then note=" [learn-from-review: queued $source]"
         else note=' [learn-from-review: not queued]'
         fi ;;

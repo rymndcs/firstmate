@@ -146,6 +146,7 @@ publish_followups_bounded() {
 publish_followups() {
   url=$1 action=${2:-publish}
   fm_pr_url_parse "$url" || exit 1
+  [ "$FM_PR_PROVIDER" = github ] && [ "$(printf '%s' "$FM_PR_PATH" | tr '[:upper:]' '[:lower:]')" = advisorfirst/thanos ] || return 0
   dir="$STATE/jira/$FM_PR_HOST/$FM_PR_PATH/$FM_PR_NUMBER"
   mkdir -p "$dir"
   lock="$dir/followups.lock"
