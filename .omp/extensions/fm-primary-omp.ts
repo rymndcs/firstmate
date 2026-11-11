@@ -123,6 +123,7 @@ type Request = {
   scheduled?: boolean;
   resolved?: boolean;
   switching?: boolean;
+  transition?: string;
 };
 
 function resetTrigger(nonce: string): string {
@@ -165,6 +166,10 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     if (request === ready) request = undefined;
     if (spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["recover-check", String(process.pid)], { env }).status !== 0) return "refused";
     const switched = sessionId(ctx) !== ready.session;
+    if (!switched) {
+      const recovery = spawnSync(`${root}/bin/fm-omp-watch-transition.sh`, ["recovery", sessionId(ctx), ready.transition ?? ""], { env });
+      if (recovery.status !== 0 || recovery.stderr?.length) ctx.ui.notify("Watcher recovery declaration could not be saved; re-arm with an explicit unknown transition and keep its warning visible.", "error");
+    }
     try {
       pi.sendMessage({ customType: switched ? "firstmate-reset-start" : "firstmate-reset-recovery", display: false,
         content: switched ? seed(ready) : operationalInput("watcher", `Automatic reset deferred: ${reason}. Follow the current supervision protocol; re-arm if required. Do not repeat already-reported outcomes.`),
@@ -267,7 +272,8 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
         return result("Reset unavailable: remain in normal mode, finish startup and arm supervision, or handle pending input/work first. Continue supervision in this session.", true);
       }
       if (params.action === "prepare") {
-        request = { nonce: randomUUID(), session: sessionId(ctx) };
+        const identity = spawnSync(`${root}/bin/fm-omp-watch-transition.sh`, ["identity", sessionId(ctx)], { env, encoding: "utf8" });
+        request = { nonce: randomUUID(), session: sessionId(ctx), transition: identity.status === 0 ? identity.stdout.trim() : undefined };
         return result(`Readiness nonce: ${request.nonce}. Complete this stow skill now. Report its full Completion receipt; only then call ready with that stowReceipt as defined by the tool schema, the nonce and a short handoff containing durable open-thread pointers, already-reported outcomes, and the next supervision action.\n\n${readFileSync(`${root}/.agents/skills/stow/SKILL.md`, "utf8")}`, undefined, request.nonce);
       }
       const prepared = request;

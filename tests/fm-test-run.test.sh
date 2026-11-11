@@ -719,7 +719,7 @@ test_portable_shard_union_and_coverage_guard() {
 }
 
 test_portable_serial_shards_partition_the_serial_lane() {
-  local lanes count serial shard listed union dups shard_lane total cap
+  local lanes count serial shard listed union dups shard_lane total cap heavy heavy_shards
   lanes=$("$RUNNER" --list-lanes)
   count=$(printf '%s\n' "$lanes" | grep -c '^portable-serial-[0-9]*of[0-9]*$')
   [ "$count" -ge 2 ] || fail "expected at least two portable serial shard lanes, got $count"
@@ -745,17 +745,31 @@ test_portable_serial_shards_partition_the_serial_lane() {
 
   # Every shard carries a real share of the lane, so no degenerate partition
   # leaves one runner doing nearly all of the work the split exists to spread.
+  # The one exception is the indivisible omp watch-transition script, the
+  # longest serial script: its shard holds nothing else, so a script joining it
+  # means every other shard has outgrown it and the shard count needs revisiting.
   total=$(printf '%s\n' "$serial" | wc -l | tr -d ' ')
   cap=$((total * 6 / 10))
+  heavy=tests/fm-omp-watch-transition.test.sh
+  heavy_shards=0
   shard=1
   while [ "$shard" -le "$count" ]; do
-    listed=$("$RUNNER" --list --lane "portable-serial-${shard}of${count}" | wc -l | tr -d ' ')
-    [ "$listed" -ge 2 ] \
-      || fail "portable-serial-${shard}of${count} holds only $listed script(s)"
-    [ "$listed" -le "$cap" ] \
-      || fail "portable-serial-${shard}of${count} holds $listed of $total scripts"
+    shard_lane="portable-serial-${shard}of${count}"
+    listed=$("$RUNNER" --list --lane "$shard_lane")
+    if printf '%s\n' "$listed" | grep -Fxq "$heavy"; then
+      heavy_shards=$((heavy_shards + 1))
+      [ "$listed" = "$heavy" ] \
+        || fail "$shard_lane shares $heavy with $(($(printf '%s\n' "$listed" | wc -l) - 1)) other script(s): $(printf '%s\n' "$listed" | grep -Fxv "$heavy" | tr '\n' ' ')"
+    else
+      [ "$(printf '%s\n' "$listed" | wc -l | tr -d ' ')" -ge 2 ] \
+        || fail "$shard_lane holds only one script: $listed"
+    fi
+    [ "$(printf '%s\n' "$listed" | wc -l | tr -d ' ')" -le "$cap" ] \
+      || fail "$shard_lane holds more than $cap of $total scripts"
     shard=$((shard + 1))
   done
+  [ "$heavy_shards" -eq 1 ] \
+    || fail "$heavy must run in exactly one portable serial shard, found $heavy_shards"
 
   # Assignment is deterministic across invocations.
   [ "$("$RUNNER" --list --lane "portable-serial-1of${count}")" = \

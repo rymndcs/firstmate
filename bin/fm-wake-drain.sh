@@ -2,6 +2,9 @@
 # Atomically drain durable watcher wake records, optionally annotate validated
 # signal status keys after raw consumption commits, register task PRs, then assert liveness.
 # Usage: fm-wake-drain.sh [--help]
+# omp admission and bounded locking: fm-omp-watch-transition.sh --help.
+# omp retains raw queue bytes until record admission; admitted sequences make
+# replay after publication and before clearing harmless across successor arms.
 # PR discovery is best-effort through fm-pr-auto-register.sh --all, including
 # empty drains, and always runs outside the durable wake queue lock.
 # fm-jira.sh retries owed merge reminders before taking that lock, including
@@ -36,6 +39,15 @@ assert_watcher_liveness() {
   "$SCRIPT_DIR/fm-guard.sh" || true
 }
 
+record_omp_drain() {
+  [ "${OMPCODE:-}" = 1 ] || return 0
+  if printf '%s\n' "${RAW_ROWS:-}" | "$SCRIPT_DIR/fm-omp-watch-transition.sh" drain --queue-lock-held; then
+    return 0
+  fi
+  echo 'watcher: WARNING - could not record the drained omp transition; retaining wakes to preserve supervision.' >&2
+  return 1
+}
+
 # shellcheck disable=SC2317,SC2329 # Invoked by trap handlers below.
 cleanup() {
   local status=$?
@@ -53,11 +65,35 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 "$SCRIPT_DIR/fm-jira.sh" retry-followups || true
-fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+if [ "${OMPCODE:-}" = 1 ]; then
+  if ! fm_omp_queue_lock; then
+    echo 'watcher: WARNING - transition lock unavailable; wakes retained.' >&2
+    exit 1
+  fi
+  DRAIN_LOCK_HELD=true
+  RAW_ROWS=''
+  snapshot=$(fm_state_path snapshot "$FM_WAKE_QUEUE") || exit 1
+  queue_identity=${snapshot%%$'\n'*}
+  RAW_ROWS=${snapshot#*$'\n'}
+  if [ "$snapshot" = "$queue_identity" ]; then RAW_ROWS=''; fi
+  if [ -n "$RAW_ROWS" ]; then
+    printf '%s\n' "$RAW_ROWS" | fm_wake_print_deduped /dev/stdin || exit 1
+  fi
+  record_omp_drain || exit 1
+  fm_state_path clear "$FM_WAKE_QUEUE" "$queue_identity" || exit 1
+  fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+  DRAIN_LOCK_HELD=false
+  (fm_wake_print_annotations "$RAW_ROWS") || true
+  "$SCRIPT_DIR/fm-pr-auto-register.sh" --all || true
+  assert_watcher_liveness
+  exit 0
+fi
+fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || exit 1
 DRAIN_LOCK_HELD=true
 
 if [ ! -s "$FM_WAKE_QUEUE" ]; then
   : > "$FM_WAKE_QUEUE"
+  record_omp_drain || exit 1
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
   "$SCRIPT_DIR/fm-pr-auto-register.sh" --all || true
@@ -81,6 +117,7 @@ if [ -n "$RAW_ROWS" ]; then
   # crash in this micro-gap may replay a wake, and annotations stay outside it.
   printf '%s\n' "$RAW_ROWS" || exit "$?"
 fi
+record_omp_drain || exit 1
 rm -f "$DRAIN_TMP" || exit "$?"
 DRAIN_TMP=
 fm_lock_release "$FM_WAKE_QUEUE_LOCK"

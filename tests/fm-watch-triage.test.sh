@@ -1815,6 +1815,52 @@ test_afk_paused_changed_pane_hands_off_plain_stale() {
   pass "AFK changed paused panes hand off plain stale identities for daemon-owned pause triage"
 }
 
+# Homes sharing one selected state recover each other's dead queue owners, while
+# a stamp naming an unrelated home is refused intact. A symlinked state is used
+# only when it resolves inside FM_HOME.
+test_queue_owner_shared_state_and_state_alias() {
+  local dir state lock owner out rc outside lib="$ROOT/bin/fm-wake-lib.sh"
+  dir=$(make_case shared-state-owner); state="$dir/state"; lock="$state/.wake-queue.lock"
+  append_wake "$state" check "shared:1" "check: shared state 1"
+  FM_HOME="$dir" bash -c '. "$1"; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK"' _ "$lib" \
+    || fail "fixture could not stamp a queue owner from the state's home"
+  [ -L "$lock" ] || fail "fixture left no stamped queue owner"
+  rc=0; out=$(FM_STATE_OVERRIDE="$state" "$DRAIN" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "another home's drain could not recover a dead owner stamped by the state's home: $out"
+  grep -F "shared:1" <<<"$out" >/dev/null || fail "the shared-state drain lost the queued record"
+  [ ! -e "$lock" ] && [ ! -L "$lock" ] || fail "the shared-state drain left the dead owner's lock"
+
+  dir=$(make_case foreign-home-owner); state="$dir/state"; lock="$state/.wake-queue.lock"
+  append_wake "$state" check "foreign:1" "check: foreign stamp 1"
+  FM_HOME="$dir" bash -c '. "$1"; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK"' _ "$lib" \
+    || fail "fixture could not stamp a queue owner"
+  owner=$(readlink "$lock")
+  printf 'v1\n/another-home\n%s\n' "$(sed -n '3,4p' "$owner/lock-identity")" > "$owner/lock-identity"
+  cp -R "$owner/" "$dir/expected-owner"
+  rc=0; out=$(FM_STATE_OVERRIDE="$state" "$DRAIN" 2>&1) || rc=$?
+  [ "$rc" -eq 1 ] || fail "a stamp naming an unrelated home did not refuse recovery (rc=$rc): $out"
+  grep -F WARNING <<<"$out" >/dev/null || fail "the unrelated-home stamp refusal did not warn"
+  diff -r "$dir/expected-owner" "$owner/" >/dev/null || fail "the unrelated-home stamp refusal changed the owner"
+  [ "$(readlink "$lock")" = "$owner" ] || fail "the unrelated-home stamp refusal removed the lock"
+  [ -s "$state/.wake-queue" ] || fail "the unrelated-home stamp refusal consumed the queue"
+
+  dir=$(make_case inside-state-alias)
+  mv "$dir/state" "$dir/real-state"; ln -s "$dir/real-state" "$dir/state"
+  FM_HOME="$dir" bash -c '. "$1"; fm_wake_append check alias:1 "check: inside alias 1"' _ "$lib" \
+    || fail "a state symlinked inside FM_HOME refused the append"
+  rc=0; out=$(FM_HOME="$dir" "$DRAIN" 2>&1) || rc=$?
+  [ "$rc" -eq 0 ] || fail "a state symlinked inside FM_HOME refused the drain: $out"
+  grep -F "alias:1" <<<"$out" >/dev/null || fail "the inside-alias drain lost the queued record"
+
+  dir=$(make_case outside-state-alias); outside="$TMP_ROOT/outside-state-alias-target"
+  mkdir "$outside"; rmdir "$dir/state"; ln -s "$outside" "$dir/state"
+  rc=0; out=$(FM_HOME="$dir" bash -c '. "$1"; fm_wake_append check outside:1 "check: outside alias 1"' _ "$lib" 2>&1) || rc=$?
+  [ "$rc" -ne 0 ] || fail "a state symlinked outside FM_HOME accepted the append"
+  grep -F WARNING <<<"$out" >/dev/null || fail "the outside-alias refusal did not warn"
+  [ -z "$(ls -A "$outside")" ] || fail "the outside-alias refusal modified the target"
+  pass "homes sharing a state recover each other's owners; unrelated stamps and outside state aliases are refused"
+}
+
 test_procevent_wake_counts_failed_runs
 test_signal_reason_is_actionable_classifier
 test_stale_is_terminal_classifier
@@ -1855,6 +1901,7 @@ test_procevent_captured_result_surfaces_proactively
 test_procevent_surfaced_result_does_not_rewake
 test_procevent_marker_keys_are_injective
 test_procevent_surface_serializes_with_drain
+test_queue_owner_shared_state_and_state_alias
 test_procevent_surface_crash_boundaries
 test_procevent_marker_failure_exits_and_replays
 test_heartbeat_no_change_absorbed

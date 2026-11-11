@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync, writeFileSync, unlinkSync, existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const home = process.env.FM_HOME;
@@ -45,6 +46,10 @@ assert.ok(commands.has('fm-reset'), 'primary extension must register fm-reset');
 const call = params => tool.execute('tool-id', params, undefined, undefined, ctx);
 await emit('session_start');
 async function arm() {
+  const seeded = spawnSync(`${home}/bin/fm-omp-watch-transition.sh`, ['arm', 'work-pending', 'registered transition fixture'], {
+    env: { ...process.env, OMPCODE: '1', PI_SESSION_ID: session, PI_TOOL_CALL_ID: 'arm-call' }, encoding: 'utf8',
+  });
+  assert.ok(seeded.status === 0 || seeded.status === 3, seeded.stderr);
   jobs = {running:[{id:'watcher',command:'exec bin/fm-watch-arm.sh'}],recent:[],delivery:{queued:0,delivering:false,pendingJobIds:[]}};
   await emit('tool_result',{toolName:'bash',toolCallId:'arm-call',input:{},details:{async:{state:'running',jobId:'watcher',type:'bash'}},isError:false,content:[]});
   writeFileSync(`${home}/state/.omp-watch-arm-result`, `${session}\narm-call\nwatcher: started pid=42 (beacon fresh)\n`);

@@ -66,22 +66,24 @@ Each shard is still strictly serial in itself, and separate runners mean no two 
 Assignment is longest-processing-time bin packing over per-script duration hints embedded in `bin/fm-test-run.sh`.
 The hints came from the `fm-test-timing-portable-serial-*` artifacts of CI run [40911490582](https://github.com/rymndcs/firstmate/actions/runs/40911490582) on 2026-10-29, where the lane ran 109 scripts in 2837394 ms of serial work on `ubuntu-26.04`.
 Only `tests/fm-tmux-agent-liveness.test.sh` failed there, so its 11272 ms hint is its failure-path duration.
+The hints for `tests/fm-omp-watch-transition.test.sh`, `tests/fm-pr-activity.test.sh`, `tests/fm-jira.test.sh`, and `tests/fm-omp-reset.test.sh` came from the completed `FM_TEST_END` markers of the portable serial jobs in CI run [43090065755](https://github.com/rymndcs/firstmate/actions/runs/43090065755) on 2026-11-11, where each of those four scripts exited 0.
 A script with no hint gets the conservative `PORTABLE_SERIAL_DEFAULT_WEIGHT_MS` default.
 Hints only affect balance: the coverage guard keeps the partition complete and disjoint whatever they say, so a stale hint costs a slower shard rather than lost coverage.
 
 | Lane | Script count | Estimated duration |
 |---|---:|---:|
-| `portable-serial-1of7` | 9 | 405310 ms (~405.3 s) |
-| `portable-serial-2of7` | 15 | 405315 ms (~405.3 s) |
-| `portable-serial-3of7` | 12 | 405526 ms (~405.5 s) |
-| `portable-serial-4of7` | 20 | 405310 ms (~405.3 s) |
-| `portable-serial-5of7` | 19 | 405314 ms (~405.3 s) |
-| `portable-serial-6of7` | 17 | 405311 ms (~405.3 s) |
-| `portable-serial-7of7` | 17 | 405308 ms (~405.3 s) |
-| imbalance | | 218 ms |
+| `portable-serial-1of7` | 1 | 563124 ms (~563.1 s) |
+| `portable-serial-2of7` | 17 | 541967 ms (~542.0 s) |
+| `portable-serial-3of7` | 18 | 541967 ms (~542.0 s) |
+| `portable-serial-4of7` | 18 | 541971 ms (~542.0 s) |
+| `portable-serial-5of7` | 21 | 541965 ms (~542.0 s) |
+| `portable-serial-6of7` | 21 | 541966 ms (~542.0 s) |
+| `portable-serial-7of7` | 19 | 541961 ms (~542.0 s) |
+| imbalance | | 21163 ms |
 
-The single longest script, `tests/fm-pr-check-security.test.sh` at 372062 ms, is the floor for any shard count.
-Eight shards would reach that floor but leave it alone in one shard, which the shard-partition test refuses, so seven is the largest useful count.
+The single longest script, `tests/fm-omp-watch-transition.test.sh` at 563124 ms, is indivisible and is the floor for any shard count.
+Longest-processing-time assignment places it first and adds nothing to its shard while every other shard's estimate stays below it.
+The shard-partition test requires that shard to hold only this script, so the test fails once every other shard has outgrown the floor, which is the signal to revisit the shard count.
 
 Refresh the hints by downloading the per-shard timing artifacts from a green CI run, replacing the `portable_serial_weight_hints` table in `bin/fm-test-run.sh` with the measured `path`/`duration_ms` pairs, and updating the table above:
 
@@ -113,7 +115,7 @@ Portable shards, each portable serial shard, and the Herdr lane upload runner-ge
 | Job | timeout-minutes | Rationale |
 |---|---:|---|
 | portable parallel 1/2 | 10 | The measured shard sums are about three minutes and the timeout is a hang tripwire. |
-| portable serial 1-7 | 15 | Each balanced shard is about seven minutes, leaving roughly 2x hang-tripwire margin. |
+| portable serial 1-7 | 15 | The longest shard is about nine and a half minutes, leaving roughly 1.6x hang-tripwire margin. |
 | Herdr | 40 | The real-Herdr lane keeps its dedicated timeout. |
 
 Timeouts are hang tripwires rather than expected healthy durations.

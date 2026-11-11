@@ -406,7 +406,7 @@ idle_recheck_turn_surfaced() {  # <signal-file> <seen-file>
 # Bounded idle rechecks share status-age anchoring and per-window throttling.
 # Death surfaces immediately once; subsequent rechecks use the long cadence.
 handle_bounded_stale() {  # <window> <task> <hash> <paused|parked|done|dead>
-  local win=$1 task=$2 h=$3 class=$4 key statusf mtime age rf rf_age reason group
+  local win=$1 task=$2 h=$3 class=$4 key statusf mtime age rf rf_age reason group provenance=''
   case "$class" in
     paused) group=paused ;;
     dead) group=dead ;;
@@ -435,7 +435,8 @@ handle_bounded_stale() {  # <window> <task> <hash> <paused|parked|done|dead>
       dead) reason="stale: $win (agent exited or endpoint gone; rechecked on a long cadence)" ;;
       *) reason="stale: $win ($class ${age}s; healthy idle agent, rechecked on a long cadence)" ;;
     esac
-    fm_wake_append stale "$win" "$reason" || exit 1
+    [ "$group" = dead ] || provenance=idle-recheck
+    fm_wake_append stale "$win" "$reason" "$provenance" || exit 1
     if [ "$group" = dead ]; then date +%s > "$rf"
     else idle_recheck_record "$rf" "$win" "$task"; fi
     wake "$reason"
@@ -636,7 +637,7 @@ procevent_surface_queued() {
   local key reason summary='' id seq counts failed total
   PROCEVENT_SURFACED=
   [ -s "$FM_WAKE_QUEUE" ] || return 0
-  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
   while IFS= read -r key; do
     case "$key" in procevent:*) ;; *) continue ;; esac
     [ -e "$(procevent_surfaced_marker "$key")" ] && continue
@@ -949,7 +950,7 @@ while :; do
   fi
   # Then deliver any queued-but-unsurfaced result, including one a runner
   # published while this watcher was between cycles.
-  procevent_surface_queued
+  procevent_surface_queued || exit 1
 
   # Slow per-task checks (firstmate writes these, e.g. a merged-PR poll).
   # Time-based via .last-check mtime so the cadence survives watcher restarts.

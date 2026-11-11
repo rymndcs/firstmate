@@ -87,6 +87,10 @@ async function arm({ command = 'exec bin/fm-watch-arm.sh', status = 'watcher: st
   if (receipt) writeFileSync(`${home}/state/.omp-watch-arm-result`, `${receiptSession}\n${receiptCall}\n${status}\n`);
   else if (existsSync(`${home}/state/.omp-watch-arm-result`)) unlinkSync(`${home}/state/.omp-watch-arm-result`);
   await emit('tool_result', {toolName:'read',input:{path:'proc://watcher'},content:[{type:'text',text:outputStatus}],isError:false});
+  const seeded = spawnSync(`${home}/bin/fm-omp-watch-transition.sh`, ['arm', 'work-pending', 'registered extension fixture'], {
+    env: { ...process.env, OMPCODE: '1', PI_SESSION_ID: session, PI_TOOL_CALL_ID: 'arm-call' }, encoding: 'utf8',
+  });
+  assert.ok(seeded.status === 0 || seeded.status === 3, seeded.stderr);
   jobs = null;
 }
 const stowReceipt = () => ({effectiveBudgetTokens:'4800',totalTokensBefore:'0',totalTokensAfter:'0',actions:{
@@ -204,6 +208,14 @@ if (scenario.startsWith('questions-')) {
   }, `${scenario}: recovery must report delivery failure rather than throw it out of the callback`);
   assert.equal(switches, startup && !refused ? 1 : 0, 'fault must reach the intended switch boundary');
   assert.equal(checks(), checksBefore + 1, `${scenario}: delivery failure must reach the independent recovery check`);
+  if (!refused) {
+    const continuation = spawnSync(`${home}/bin/fm-watch-arm.sh`, [], {
+      env: { ...process.env, OMPCODE: '1', PI_SESSION_ID: session, PI_TOOL_CALL_ID: 'recovery-continuation' }, encoding: 'utf8',
+    });
+    assert.equal(continuation.status, 0, continuation.stderr);
+    const verdict = JSON.parse(readFileSync(`${home}/state/.omp-watch-transitions.log`, 'utf8').trim().split('\n').at(-1));
+    assert.equal(verdict.observed, startup ? 'startup' : 'recovery', 'actual receiving session must arm through its verified exemption');
+  }
   const turns = messages.filter(x => x.options?.triggerTurn);
   assert.equal(turns.length, recoveryFails ? 0 : 1, `${scenario}: queue exactly one continuation when recovery succeeds`);
   assert.equal(enqueueCalls, scenario.endsWith('enqueue') ? startup ? 2 : 1 : recoveryFails ? 0 : 1,
@@ -288,6 +300,21 @@ if (scenario.startsWith('questions-')) {
   }
   unlinkSync(presence);
   if (existsSync(`${home}/state/budget-takeover`)) unlinkSync(`${home}/state/budget-takeover`);
+} else if (scenario === 'retired-recovery') {
+  await arm();
+  await ready();
+  const env = { ...process.env, OMPCODE: '1', PI_SESSION_ID: session, PI_TOOL_CALL_ID: 'intervening-arm' };
+  const replaced = spawnSync(`${home}/bin/fm-watch-arm.sh`, ['--transition', 'work-pending', '--reason', 'intervening work'], { env, encoding: 'utf8' });
+  assert.equal(replaced.status, 0, replaced.stderr);
+  input('Wai');
+  await runSubmit();
+  assert.equal(recoveries().length, 1, 'retired recovery still queues supervision continuation');
+  assert.ok(errors.some(x => x.text.includes('recovery declaration could not be saved')), 'retired recovery warning must reach the native visible UI');
+  const resumed = spawnSync(`${home}/bin/fm-watch-arm.sh`, [], { env: { ...env, PI_TOOL_CALL_ID: 'after-retired-recovery' }, encoding: 'utf8' });
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.match(resumed.stderr, /WARNING/, 'old callback cannot silently grant recovery for the successor');
+  const verdict = JSON.parse(readFileSync(`${home}/state/.omp-watch-transitions.log`, 'utf8').trim().split('\n').at(-1));
+  assert.equal(verdict.observed, 'unknown');
 } else if (scenario === 'normal-seed') {
   await arm();
   const n = await ready();
