@@ -272,7 +272,7 @@ printf '# trusted reviewers\nrymndcs\nJosh\n' > "$FM_HOME/config/pr-learning-tru
 test_cross_repository_learning() {
   local FM_HOME="$PR_TMP/routing-home" FM_STATE_OVERRIDE="$PR_TMP/routing-home/state"
   local FM_TEST_ACTIVITY="$PR_TMP/routing-activity" FM_TEST_LEARN_EXIT=0
-  local thanos help_center scenario repo_path number clone pr out source_id
+  local thanos help_center scenario repo_path number clone pr out source_id evidence
   export FM_HOME FM_STATE_OVERRIDE FM_TEST_ACTIVITY FM_TEST_LEARN_EXIT
   mkdir -p "$FM_STATE_OVERRIDE" "$FM_HOME/config" "$FM_TEST_ACTIVITY" "$FM_HOME/projects"
   printf 'josh\n' > "$FM_HOME/config/pr-learning-trust"
@@ -282,6 +282,9 @@ test_cross_repository_learning() {
   git -C "$thanos" remote add origin https://github.com/advisorfirst/thanos.git
   git init -q "$help_center"
   git -C "$help_center" remote add origin git@github.com:AdvisorFirst/Help-Center.git
+  evidence="$(git -C "$thanos" rev-parse --path-format=absolute --git-common-dir)/adv-review-loop/route-help-center.Ab12Cd"
+  mkdir -p "$evidence"
+  printf 'reviewed head %s\n' "$FM_TEST_GH_HEAD" > "$evidence/round-1-reviewer.out"
   for scenario in help-center thanos missing wrong-remote; do
     case "$scenario" in
       thanos) repo_path=advisorfirst/thanos; number=288; clone=$thanos ;;
@@ -296,6 +299,9 @@ test_cross_repository_learning() {
         git -C "$help_center" remote set-url origin https://github.com/elsewhere/help-center.git ;;
     esac
     pr="https://github.com/$repo_path/pull/$number"
+    if [ "$scenario" = help-center ]; then
+      printf '%s\n' "$FM_TEST_GH_HEAD" > "$FM_TEST_ACTIVITY/head"
+    fi
     write_pr_task "route-$scenario" "project=$thanos"
     "$PR_CODE/bin/fm-pr-check.sh" "route-$scenario" "$pr" > /dev/null 2>&1 || fail 'routing registration failed'
     set_items "$number" reviews "$(review "$number" josh 'Approved' "$pr#pullrequestreview-$number" APPROVED)"
@@ -306,6 +312,11 @@ test_cross_repository_learning() {
         source_id=$(learn_sources)
         [ -n "$source_id" ] || fail 'an available repository must queue learning'
         start_learning
+        if [ "$scenario" = help-center ]; then
+          grep -qxF -- "$pr $pr#pullrequestreview-$number --repo $clone --evidence $evidence" "$FM_TEST_ACTIVITY/learned" \
+            || fail 'help-center learning must pass project-clone review evidence with the help-center repository'
+          rm -f "${FM_TEST_ACTIVITY:?}/head"
+        fi
         assert_contains "$(cat "$FM_STATE_OVERRIDE/procevent-inbox/$source_id".*.result)" 'exit=0 output=' 'learning must pass repository validation'
         assert_grep "$pr $pr#pullrequestreview-$number --repo $clone" "$FM_TEST_ACTIVITY/learned" 'learning must receive the PR repository clone' ;;
       *)
