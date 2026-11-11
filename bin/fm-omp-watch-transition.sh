@@ -22,10 +22,15 @@
 #   cycle <starting|running|wake|failed> <watcher-pid> <cause>
 #     owns .omp-watch-cycle: five lines, session/call/phase/pid/cause.
 #     Terminal updates apply only to the current arm, never its successor.
-#   drain  # drained canonical wake TSV on stdin, after queue consumption commits
+#   drain [--queue-lock-held]  # canonical wake TSV on stdin
 #     owns .omp-watch-drain: session/call/space-separated wake classes.
 #     Stale rows tagged idle-recheck use that class; other stale rows use stale.
 #     Empty repeated drains retain the current cycle's earlier wake classes.
+#     Receipt accumulation, cycle updates and arm observations share the queue
+#     lock. fm-wake-drain.sh passes its verified parent lock before committing
+#     consumption. An unknown receipt precedes replacement; if that cannot be
+#     saved, consumption fails and restores the queue. Failed replacement leaves
+#     unknown evidence and warns without forcing reset.
 #   recovery <session>  # one replacement arm, consumed at the arm boundary
 #   arm <declaration-or-empty> <description-or-empty>
 # Recovery records are session-bound. A new session always starts by arming.
@@ -88,7 +93,14 @@ record_drain() {
   if [ "$previous_session" = "$SESSION" ] && [ "$previous_call" = "$cycle_call" ]; then
     kinds=$(printf '%s\n%s\n' "$kinds" "$previous_kinds" | tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort -u | paste -sd' ' -)
   fi
-  printf '%s\n' "$SESSION" "$cycle_call" "$kinds" | publish "$DRAIN"
+  printf '%s\n' "$SESSION" "$cycle_call" unknown | publish "$DRAIN" || return 1
+  if ! printf '%s\n' "$SESSION" "$cycle_call" "$kinds" | publish "$DRAIN"; then
+    warn 'could not persist drained wake classes; transition evidence remains unknown'
+  fi
+}
+acquire_queue_lock() {
+  fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK"
+  trap 'fm_lock_release "$FM_WAKE_QUEUE_LOCK"' EXIT
 }
 record_verdict() {
   local claim=$1 detail=$2 verdict=$3 observed=$4 tmp
@@ -200,9 +212,16 @@ case "${1:-}" in
   *)
     if [ -z "$SESSION" ] || [ -z "$CALL" ]; then warn 'native omp session or tool identity is unavailable'; exit 0; fi
     case "${1:-}" in
-      cycle) record_cycle "$2" "$3" "$4" ;;
-      drain) record_drain ;;
-      arm) arm_transition "${2:-}" "${3:-}" ;;
+      cycle) acquire_queue_lock; record_cycle "$2" "$3" "$4" ;;
+      drain)
+        if [ "${2:-}" = --queue-lock-held ]; then
+          [ "$(cat "$FM_WAKE_QUEUE_LOCK/pid" 2>/dev/null)" = "$PPID" ] || exit 1
+        else
+          acquire_queue_lock
+        fi
+        record_drain
+        ;;
+      arm) acquire_queue_lock; arm_transition "${2:-}" "${3:-}" ;;
       *) exit 2 ;;
     esac
     ;;

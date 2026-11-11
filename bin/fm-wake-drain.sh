@@ -38,8 +38,11 @@ assert_watcher_liveness() {
 
 record_omp_drain() {
   [ "${OMPCODE:-}" = 1 ] || return 0
-  printf '%s\n' "${RAW_ROWS:-}" | "$SCRIPT_DIR/fm-omp-watch-transition.sh" drain || \
-    echo 'watcher: WARNING - could not record the drained omp transition; preserve supervision.' >&2
+  if printf '%s\n' "${RAW_ROWS:-}" | "$SCRIPT_DIR/fm-omp-watch-transition.sh" drain --queue-lock-held; then
+    return 0
+  fi
+  echo 'watcher: WARNING - could not record the drained omp transition; retaining wakes to preserve supervision.' >&2
+  return 1
 }
 
 # shellcheck disable=SC2317,SC2329 # Invoked by trap handlers below.
@@ -64,9 +67,9 @@ DRAIN_LOCK_HELD=true
 
 if [ ! -s "$FM_WAKE_QUEUE" ]; then
   : > "$FM_WAKE_QUEUE"
+  record_omp_drain || exit 1
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
-  record_omp_drain
   "$SCRIPT_DIR/fm-pr-auto-register.sh" --all || true
   assert_watcher_liveness
   exit 0
@@ -88,11 +91,11 @@ if [ -n "$RAW_ROWS" ]; then
   # crash in this micro-gap may replay a wake, and annotations stay outside it.
   printf '%s\n' "$RAW_ROWS" || exit "$?"
 fi
+record_omp_drain || exit 1
 rm -f "$DRAIN_TMP" || exit "$?"
 DRAIN_TMP=
 fm_lock_release "$FM_WAKE_QUEUE_LOCK"
 DRAIN_LOCK_HELD=false
-record_omp_drain
 
 # Raw output and queue deletion are authoritative. Everything below is
 # best-effort and cannot restore, duplicate, hide, or fail the consumed rows.
