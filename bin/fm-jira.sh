@@ -152,6 +152,10 @@ publish_followups() {
   trap 'fm_lock_release "$lock"' EXIT
   trap 'exit 1' HUP INT TERM
   fm_lock_acquire_wait "$lock"
+  if ! { [ "$FM_PR_PROVIDER" = github ] && [ "$(printf '%s' "$FM_PR_PATH" | tr '[:upper:]' '[:lower:]')" = advisorfirst/thanos ]; }; then
+    printf '%s\n' "$url" > "$dir/followups" || exit 1
+    return 0
+  fi
   if [ "$action" = owe ]; then
     if ! followups_published "$url"; then
       printf '%s\n' "$url" > "$dir/followups.owed" || exit 1
