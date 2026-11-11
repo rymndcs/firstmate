@@ -7,7 +7,7 @@ LAB=$(fm_test_tmproot fm-omp-watch-transition)
 FM_TEST_CLEANUP_DIRS+=("$LAB")
 trap fm_test_cleanup EXIT
 mkdir -p "$LAB/bin" "$LAB/state" "$LAB/data" "$LAB/config"
-for file in fm-watch-arm.sh fm-wake-drain.sh fm-wake-lib.sh fm-classify-lib.sh; do
+for file in fm-watch-arm.sh fm-wake-drain.sh fm-wake-lib.sh fm-state-path.pl fm-classify-lib.sh; do
   cp "$ROOT/bin/$file" "$LAB/bin/"
 done
 if [ -f "$ROOT/bin/fm-omp-watch-transition.sh" ]; then
@@ -78,9 +78,9 @@ if [ "${HOLD_IDLE_DRAIN:-}" = 1 ] && [ "$#" -eq 5 ] && [ "$1" = -F ] && [ "$2" =
 fi
 exec /usr/bin/awk "$@"
 """)
-(shim / 'cat').write_text("""#!/usr/bin/env bash
+(shim / 'perl').write_text("""#!/usr/bin/env bash
 if [ "${OVERLAP_CONTENDER:-}" = 1 ]; then
-  case "$*" in *'.wake-queue.lock/pid')
+  case "${4:-}:${5:-}" in lock-pid:*'.wake-queue.lock')
     if mkdir "$FM_HOME/contender-seen" 2>/dev/null; then
       printf 'attempt\\n' > "$FM_HOME/contender"
       read -r _ < "$FM_HOME/contender-resume"
@@ -88,7 +88,7 @@ if [ "${OVERLAP_CONTENDER:-}" = 1 ]; then
     ;;
   esac
 fi
-exec /bin/cat "$@"
+exec /usr/bin/perl "$@"
 """)
 for path in shim.iterdir():
     path.chmod(0o755)
@@ -219,6 +219,389 @@ grant_recovery() {
 }
 if [ -n "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
   case "$FM_TRANSITION_LIFECYCLE_CASE" in
+    non-omp-stamped-owner)
+      arm
+      drain
+      bash -c '. "$1"; fm_wake_append stale worker cross-harness-pending; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK"' _ "$LAB/bin/fm-wake-lib.sh"
+      got=$(OMPCODE=0 "$DRAIN" 2>&1) || fail 'a non-omp drain could not recover a genuine stamped owner'
+      assert_contains "$got" cross-harness-pending 'non-omp drain retains normal queue delivery'
+      assert_not_contains "$got" WARNING 'verified cross-harness owner recovery stays known'
+      [ ! -e "$LAB/state/.wake-queue.lock" ] && [ ! -L "$LAB/state/.wake-queue.lock" ] || fail 'non-omp drain did not release its queue lock'
+      [ -z "$(find "$LAB/state" -name '.wake-queue.lock.owner.*' -print)" ] || fail 'non-omp recovery left the stamped owner directory behind'
+      ;;
+    nested-queue-lock)
+      arm
+      drain
+      mkdir "$LAB/state/nested"
+      export FM_WAKE_QUEUE_LOCK="$LAB/state/nested/.wake-queue.lock"
+      denied=0
+      got=$("$DRAIN" 2>&1) || denied=$?
+      printf 'nested drain rc=%s output=%s\n' "$denied" "$got"
+      expect_code 0 "$denied" 'a home-owned nested queue lock must preserve normal drain'
+      assert_not_contains "$got" WARNING 'a genuine nested lock remains known'
+      bash -c '. "$1"; fm_wake_append stale nested nested-pending-wake; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK"' _ "$LAB/bin/fm-wake-lib.sh"
+      got=$("$DRAIN" 2>&1) || fail 'nested abandoned owner was not recovered'
+      assert_contains "$got" nested-pending-wake 'nested recovery prints pending input'
+      assert_not_contains "$got" WARNING 'nested abandoned owner identity is verifiable'
+      [ ! -e "$FM_WAKE_QUEUE_LOCK" ] && [ ! -L "$FM_WAKE_QUEUE_LOCK" ] || fail 'nested queue lock was not released'
+      [ -z "$(find "$LAB/state/nested" -mindepth 1 -print)" ] || fail 'nested candidate cleanup left an owned artifact'
+      arm
+      expect_code 2 "$rc" 'nested recovery retains fresh reset enforcement'
+      assert_observed clean
+      ;;
+    foreign-lock-owner)
+      arm
+      drain
+      python3 - "$LAB" <<'PYFOREIGN'
+import os,subprocess,sys
+from pathlib import Path
+home=Path(sys.argv[1])
+for name in ('foreign-ready','foreign-release'):os.mkfifo(home/name)
+command=['bash','-c','. "$1"; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK" || exit 1; printf "ready\\n" > "$FM_HOME/foreign-ready"; read -r _ < "$FM_HOME/foreign-release"; fm_lock_release "$FM_WAKE_QUEUE_LOCK"','_',str(home/'bin/fm-wake-lib.sh')]
+with (home/'foreign-holder.out').open('w') as out,(home/'foreign-holder.err').open('w') as err:
+    holder=subprocess.Popen(command,stdout=out,stderr=err)
+    with (home/'foreign-ready').open() as ready:assert ready.readline()=='ready\n'
+    before=(home/'state/.omp-watch-transition').read_bytes()
+    try:
+        forged=subprocess.run([str(home/'bin/fm-omp-watch-transition.sh'),'drain','--queue-lock-held'],input='1\t2\tstale\tforeign\tunowned-admission\n',text=True,capture_output=True)
+    finally:
+        with (home/'foreign-release').open('w') as release:release.write('continue\n')
+        holder_rc=holder.wait()
+assert holder_rc==0,(home/'foreign-holder.err').read_text()
+assert forged.returncode==1, 'another process claimed a genuine lock: expected exit 1, got '+str(forged.returncode)
+assert (home/'state/.omp-watch-transition').read_bytes()==before, 'unowned admission changed the transition'
+print('foreign owner refused with rc='+str(forged.returncode),flush=True)
+PYFOREIGN
+      ;;
+    sequence-pipe)
+      arm
+      drain
+      python3 - "$LAB" <<'PYSEQUENCE'
+import os,subprocess,sys
+from pathlib import Path
+home=Path(sys.argv[1]); seq=home/'state/.wake-queue.seq';seq.unlink();os.mkfifo(seq)
+os.mkfifo(home/'sequence-progress')
+shim=home/'sequence-bin';shim.mkdir()
+(shim/'cat').write_text('''#!/usr/bin/env bash
+if [ "${1:-}" = "$FM_HOME/state/.wake-queue.seq" ]; then printf 'read-pipe\\n' > "$FM_HOME/sequence-progress"; fi
+exec /bin/cat "$@"
+''');(shim/'cat').chmod(0o755)
+with os.fdopen(os.open(home/'sequence-progress',os.O_RDWR)) as progress, (home/'sequence.out').open('w') as out, (home/'sequence.err').open('w') as err:
+    child=subprocess.Popen(['bash','-c','"$1"; rc=$?; printf "completed\\n" > "$FM_HOME/sequence-progress"; exit "$rc"','_',str(home/'bin/fm-watch-arm.sh')], env=dict(os.environ,PATH=str(shim)+':'+os.environ['PATH'],PI_TOOL_CALL_ID='sequence-pipe-arm'),stdout=out,stderr=err)
+    reads=0
+    while True:
+        event=progress.readline()
+        if event=='completed\n':break
+        assert event=='read-pipe\n',event
+        reads+=1
+        with seq.open('w') as release:release.write('1\n')
+    rc=child.wait()
+print('sequence reads='+str(reads)+' rc='+str(rc)+' output='+(home/'sequence.err').read_text(),flush=True)
+assert reads==0, 'unknown sequence was read as a stream'
+assert rc==0,rc
+assert 'WARNING' in (home/'sequence.err').read_text()
+assert seq.is_fifo()
+PYSEQUENCE
+      ;;
+    queue-read-error|log-read-error)
+      arm
+      drain
+      bash -c '. "$1"; fm_wake_append stale worker unreadable-queue-fresh' _ "$LAB/bin/fm-wake-lib.sh"
+      cp "$LAB/state/.wake-queue" "$LAB/expected-queue"
+      cp "$LAB/state/.omp-watch-transitions.log" "$LAB/expected-log"
+      mkdir "$LAB/read-injection"
+      cat > "$LAB/read-injection/FixtureRead.pm" <<'PM'
+package FixtureRead;
+BEGIN {
+  *CORE::GLOBAL::readline = sub (*) {
+    if ($ENV{FM_TRANSITION_LIFECYCLE_CASE} eq 'queue-read-error' && $ARGV[2] =~ /\A(?:snapshot|clear)\z/) {
+      open my $proof, '>>', "$ENV{FM_HOME}/read-injected" or die $!;
+      print {$proof} "queue read error\n";
+      close $proof;
+      $! = 5;
+      return undef;
+    }
+    return CORE::readline($_[0]);
+  };
+  *CORE::GLOBAL::read = sub (*\$$;$) {
+    if ($ENV{FM_TRANSITION_LIFECYCLE_CASE} eq 'log-read-error' && $ARGV[2] eq 'read' && $ARGV[3] =~ /\.omp-watch-transitions.log\z/) {
+      open my $proof, '>>', "$ENV{FM_HOME}/read-injected" or die $!;
+      print {$proof} "log read error\n";
+      close $proof;
+      $! = 5;
+      return undef;
+    }
+    return @_ == 4 ? CORE::read($_[0], ${$_[1]}, $_[2], $_[3]) : CORE::read($_[0], ${$_[1]}, $_[2]);
+  };
+}
+1;
+PM
+      if [ "$FM_TRANSITION_LIFECYCLE_CASE" = queue-read-error ]; then
+        denied=0
+        got=$(PERL5LIB="$LAB/read-injection" PERL5OPT=-MFixtureRead "$DRAIN" 2>&1) || denied=$?
+        printf 'drain rc=%s output=%s\n' "$denied" "$got"
+        assert_grep 'queue read error' "$LAB/read-injected" 'queue read error must execute'
+        cmp "$LAB/expected-queue" "$LAB/state/.wake-queue" || fail 'a failed read cleared the unread queue'
+        expect_code 1 "$denied" 'unreadable queue must refuse consumption'
+      else
+        PERL5LIB="$LAB/read-injection" PERL5OPT=-MFixtureRead arm --transition work-pending --reason 'preserve an unread diagnostic log'
+        got=$output
+        expect_code 0 "$rc" 'unreadable diagnostics preserve arming'
+        assert_grep 'log read error' "$LAB/read-injected" 'log read error must execute'
+        cmp "$LAB/expected-log" "$LAB/state/.omp-watch-transitions.log" || fail 'a failed read rewrote an unread diagnostic log'
+      fi
+      assert_contains "$got" WARNING 'read failure must warn visibly'
+      ;;
+    publication-temp-link|publication-temp-replaced)
+      arm
+      drain
+      bash -c '. "$1"; fm_wake_append stale worker temporary-publication-fresh' _ "$LAB/bin/fm-wake-lib.sh"
+      cp "$LAB/state/.omp-watch-transition" "$LAB/expected-record"
+      printf 'unrelated publication sentinel\n' > "$LAB/unrelated-temp-data"
+      cp "$LAB/unrelated-temp-data" "$LAB/expected-temp-data"
+      mkdir "$LAB/temp-injection"
+      cat > "$LAB/temp-injection/FixtureTemporary.pm" <<'PM'
+package FixtureTemporary;
+BEGIN {
+  *CORE::GLOBAL::close = sub (*) {
+    my ($handle)=@_;
+    my @before=CORE::stat($handle);
+    my $ok=CORE::close($handle);
+    if ($ok && @before && $ARGV[2] eq 'replace' && $ARGV[3] =~ /\.omp-watch-transition\z/ && !-e "$ENV{FM_HOME}/temp-substituted") {
+      for my $path (glob '.omp-state.*') {
+        my @s=CORE::lstat($path);
+        next unless @s && $s[0]==$before[0] && $s[1]==$before[1];
+        rename($path, "$ENV{FM_HOME}/original-temporary") or die $!;
+        if ($ENV{FM_TRANSITION_LIFECYCLE_CASE} eq 'publication-temp-link') {
+          symlink("$ENV{FM_HOME}/unrelated-temp-data", $path) or die $!;
+        } else {
+          open my $replacement, '>', $path or die $!;
+          print {$replacement} "unrelated replacement contents\n";
+          CORE::close($replacement);
+        }
+        open my $proof, '>', "$ENV{FM_HOME}/temp-substituted" or die $!;
+        print {$proof} "substituted\n";
+        CORE::close($proof);
+        last;
+      }
+    }
+    return $ok;
+  };
+}
+1;
+PM
+      denied=0
+      got=$(PERL5LIB="$LAB/temp-injection" PERL5OPT=-MFixtureTemporary "$DRAIN" 2>&1) || denied=$?
+      printf 'drain rc=%s output=%s\n' "$denied" "$got"
+      assert_grep substituted "$LAB/temp-substituted" 'temporary substitution must execute'
+      cmp "$LAB/expected-record" "$LAB/state/.omp-watch-transition" || fail 'publication accepted an unverified temporary source'
+      [ ! -L "$LAB/state/.omp-watch-transition" ] || fail 'publication installed an unverified temporary link'
+      cmp "$LAB/expected-temp-data" "$LAB/unrelated-temp-data" || fail 'publication changed unrelated temporary target'
+      expect_code 1 "$denied" 'temporary identity change must refuse admission'
+      assert_contains "$got" WARNING 'temporary identity change must warn'
+      ;;
+    lock-other-lock)
+      arm
+      drain
+      bash -c '. "$1"; fm_wake_append stale worker different-lock-owner; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK.steal"' _ "$LAB/bin/fm-wake-lib.sh"
+      owner=$(readlink "$LAB/state/.wake-queue.lock.steal")
+      rm -f "${LAB:?}/state/.wake-queue.lock.steal"
+      ln -s "$owner" "$LAB/state/.wake-queue.lock"
+      cp -R "$owner/" "$LAB/expected-owner"
+      denied=0
+      got=$("$DRAIN" 2>&1) || denied=$?
+      diff -r "$LAB/expected-owner" "$owner/" || fail 'a different generated lock lost its owner files'
+      expect_code 1 "$denied" 'generated owner must belong to this exact lock'
+      assert_contains "$got" WARNING 'a different generated lock must warn'
+      ;;
+    queue-hardlink|queue-outside-home|queue-parent-link|queue-directory|queue-owner|queue-snapshot-swap|queue-content-change|queue-inode-change)
+      arm
+      drain
+      bash -c '. "$1"; fm_wake_append stale worker path-identity-fresh' _ "$LAB/bin/fm-wake-lib.sh"
+      cp "$LAB/state/.wake-queue" "$LAB/expected-target"
+      case "$FM_TRANSITION_LIFECYCLE_CASE" in
+        queue-hardlink)
+          mv "$LAB/state/.wake-queue" "$LAB/unrelated-target"
+          ln "$LAB/unrelated-target" "$LAB/state/.wake-queue"
+          ;;
+        queue-outside-home)
+          cp "$LAB/expected-target" "$LAB/unrelated-target"
+          export FM_WAKE_QUEUE="$LAB/unrelated-target"
+          ;;
+        queue-parent-link)
+          mkdir "$LAB/unrelated-dir"
+          cp "$LAB/expected-target" "$LAB/unrelated-dir/queue"
+          ln -s "$LAB/unrelated-dir" "$LAB/state/redirected"
+          export FM_WAKE_QUEUE="$LAB/state/redirected/queue"
+          ;;
+        queue-directory)
+          mv "$LAB/state/.wake-queue" "$LAB/unrelated-target"
+          mkdir "$LAB/state/.wake-queue"
+          ;;
+        queue-owner)
+          mkdir "$LAB/perl-modules"
+          cat > "$LAB/perl-modules/FixtureOwnership.pm" <<'PM'
+package FixtureOwnership;
+BEGIN {
+  *CORE::GLOBAL::lstat = sub {
+    my @s = CORE::lstat($_[0]);
+    if (@s && $_[0] eq '.wake-queue') {
+      $s[4] = $> + 1;
+      open my $proof, '>>', "$ENV{FM_HOME}/ownership-injected" or die $!;
+      print {$proof} "foreign UID\n";
+    }
+    return wantarray ? @s : scalar @s;
+  };
+}
+1;
+PM
+          export PERL5LIB="$LAB/perl-modules" PERL5OPT=-MFixtureOwnership
+          ;;
+        queue-snapshot-swap|queue-content-change|queue-inode-change)
+          mkdir "$LAB/swap-bin"
+          cat > "$LAB/swap-bin/perl" <<'SH'
+#!/usr/bin/env bash
+if [ "${4:-}" != replace ]; then exec /usr/bin/perl "$@"; fi
+original=("$@")
+injection_input=$(mktemp "$FM_HOME/injected-input.XXXXXX")
+trap 'rm -f "${injection_input:?}"' EXIT
+cat > "$injection_input"
+set -- -f "$injection_input" "$5"
+for destination; do :; done
+if [ "$destination" = "$FM_HOME/state/.omp-watch-transition" ] && jq -e '.uncertain == false and (.classes | index("stale") != null)' "$2" >/dev/null; then
+  if [ "$FM_TRANSITION_LIFECYCLE_CASE" = queue-content-change ]; then
+    printf '2\t999\tstale\treplacement\tnew content must survive\n' > "$FM_HOME/state/.wake-queue"
+    cp "$FM_HOME/state/.wake-queue" "$FM_HOME/expected-target"
+  elif [ "$FM_TRANSITION_LIFECYCLE_CASE" = queue-inode-change ]; then
+    /bin/mv "$FM_HOME/state/.wake-queue" "$FM_HOME/admitted-queue"
+    cp "$FM_HOME/expected-target" "$FM_HOME/state/.wake-queue"
+  else
+    cp "$FM_HOME/expected-target" "$FM_HOME/unrelated-target"
+    /bin/mv "$FM_HOME/state/.wake-queue" "$FM_HOME/admitted-queue"
+    ln -s "$FM_HOME/unrelated-target" "$FM_HOME/state/.wake-queue"
+  fi
+fi
+exec /usr/bin/perl "${original[@]}" < "$injection_input"
+SH
+          chmod +x "$LAB/swap-bin/perl"
+          export PATH="$LAB/swap-bin:$PATH"
+          ;;
+      esac
+      denied=0
+      got=$("$DRAIN" 2>&1) || denied=$?
+      printf 'drain rc=%s output=%s\n' "$denied" "$got"
+      if [ "$FM_TRANSITION_LIFECYCLE_CASE" = queue-parent-link ]; then
+        cmp "$LAB/expected-target" "$LAB/unrelated-dir/queue" || fail 'queue parent link target changed'
+      elif [ "$FM_TRANSITION_LIFECYCLE_CASE" = queue-content-change ] || [ "$FM_TRANSITION_LIFECYCLE_CASE" = queue-inode-change ]; then
+        cmp "$LAB/expected-target" "$LAB/state/.wake-queue" || fail 'new queue content was cleared after admission'
+      elif [ -f "$LAB/unrelated-target" ]; then
+        cmp "$LAB/expected-target" "$LAB/unrelated-target" || fail 'unverified queue object was changed'
+      fi
+      expect_code 1 "$denied" 'unverified or changed queue must refuse consumption'
+      assert_contains "$got" WARNING 'unverified or changed queue must warn'
+      if [ "$FM_TRANSITION_LIFECYCLE_CASE" = queue-owner ]; then
+        assert_grep 'foreign UID' "$LAB/ownership-injected" 'foreign ownership injection must execute'
+      fi
+      if [ "$FM_TRANSITION_LIFECYCLE_CASE" != queue-content-change ] && [ "$FM_TRANSITION_LIFECYCLE_CASE" != queue-inode-change ]; then
+        arm
+        expect_code 0 "$rc" 'unverified queue preserves arming'
+        assert_contains "$output" WARNING 'unverified queue arm must remain visible'
+      fi
+      ;;
+    lock-wrong-identity|lock-owner-link|lock-child-link|lock-wrong-home|lock-wrong-path)
+      arm
+      drain
+      bash -c '. "$1"; fm_wake_append stale worker lock-identity-fresh; fm_lock_try_create "$FM_WAKE_QUEUE_LOCK"' _ "$LAB/bin/fm-wake-lib.sh"
+      owner=$(readlink "$LAB/state/.wake-queue.lock")
+      case "$FM_TRANSITION_LIFECYCLE_CASE" in
+        lock-wrong-identity|lock-wrong-home|lock-wrong-path)
+          python3 - "$owner" "$FM_TRANSITION_LIFECYCLE_CASE" "$LAB" <<'PYIDENTITY'
+from pathlib import Path
+import sys
+owner=Path(sys.argv[1]); scenario=sys.argv[2]; home=sys.argv[3]
+identity=owner.stat()
+recorded_home='/another-home' if scenario=='lock-wrong-home' else home
+recorded_lock=home+'/state/another.lock' if scenario=='lock-wrong-path' else home+'/state/.wake-queue.lock'
+stamp='0:0' if scenario=='lock-wrong-identity' else f'{identity.st_dev}:{identity.st_ino}'
+(owner/'lock-identity').write_text(f'v1\n{recorded_home}\n{recorded_lock}\n{stamp}\n')
+PYIDENTITY
+          ;;
+        lock-owner-link)
+          mv "$owner" "$LAB/unrelated-owner"
+          ln -s "$LAB/unrelated-owner" "$owner"
+          ;;
+        lock-child-link)
+          printf 'unrelated role\n' > "$LAB/unrelated-role"
+          ln -s "$LAB/unrelated-role" "$owner/role"
+          ;;
+      esac
+      cp -R "$owner/" "$LAB/expected-owner"
+      denied=0
+      got=$("$DRAIN" 2>&1) || denied=$?
+      printf 'drain rc=%s output=%s\n' "$denied" "$got"
+      diff -r "$LAB/expected-owner" "$owner/" || fail 'unverified lock identity lost files'
+      expect_code 1 "$denied" 'unverified lock identity must refuse recovery'
+      assert_contains "$got" WARNING 'unverified lock identity must warn'
+      [ "$(readlink "$LAB/state/.wake-queue.lock")" = "$owner" ] || fail 'unverified owner link was removed'
+      arm
+      expect_code 0 "$rc" 'unverified owner must allow arming'
+      assert_contains "$output" WARNING 'unverified owner arm warns'
+      ;;
+    arm-result-link)
+      arm
+      drain
+      mv "$LAB/state/.omp-watch-arm-result" "$LAB/unrelated-observation"
+      cp "$LAB/unrelated-observation" "$LAB/expected-observation"
+      ln -s "$LAB/unrelated-observation" "$LAB/state/.omp-watch-arm-result"
+      arm --transition work-pending --reason 'preserve an unknown observation'
+      expect_code 0 "$rc" 'unknown observation must preserve arming'
+      [ -L "$LAB/state/.omp-watch-arm-result" ] || fail 'arm replaced an unverified observation link'
+      cmp "$LAB/unrelated-observation" "$LAB/expected-observation" || fail 'arm rewrote an unverified observation target'
+      assert_contains "$output" WARNING 'refused observation publication must warn'
+      ;;
+    unrelated-lock-target)
+      arm
+      drain
+      bash -c '. "$1"; fm_wake_append stale worker pending-safety-probe' _ "$LAB/bin/fm-wake-lib.sh"
+      mkdir "$LAB/unrelated"
+      exited=$(bash -c 'printf "%s\n" "$$"')
+      printf '%s\n' "$exited" > "$LAB/unrelated/pid"
+      for name in fm-home pid-identity role watcher-path; do printf 'unrelated sentinel %s\n' "$name" > "$LAB/unrelated/$name"; done
+      printf 'retained unrelated note\n' > "$LAB/unrelated/note"
+      cp -R "$LAB/unrelated" "$LAB/expected-unrelated"
+      ln -s "$LAB/unrelated" "$LAB/state/.wake-queue.lock"
+      denied=0
+      got=$("$DRAIN" 2>&1) || denied=$?
+      printf 'drain rc=%s output=%s\n' "$denied" "$got"
+      diff -r "$LAB/expected-unrelated" "$LAB/unrelated" || fail 'unverified lock target lost unrelated files'
+      expect_code 1 "$denied" 'unverified lock target must retain queued wakes'
+      assert_contains "$got" WARNING 'unverified lock target must warn'
+      [ "$(readlink "$LAB/state/.wake-queue.lock")" = "$LAB/unrelated" ] || fail 'unknown lock link changed'
+      assert_grep pending-safety-probe "$LAB/state/.wake-queue" 'unverified lock retains input'
+      arm
+      expect_code 0 "$rc" 'unverified lock must allow arming'
+      assert_contains "$output" WARNING 'unverified lock arm must warn'
+      diff -r "$LAB/expected-unrelated" "$LAB/unrelated" || fail 'arm changed the unverified lock target'
+      ;;
+    unrelated-queue-target)
+      arm
+      drain
+      printf '1\t1\theartbeat\tfixture\tunrelated-target-row\n' > "$LAB/unrelated-queue-data"
+      cp "$LAB/unrelated-queue-data" "$LAB/expected-queue-data"
+      rm -f "${LAB:?}/state/.wake-queue"
+      ln -s "$LAB/unrelated-queue-data" "$LAB/state/.wake-queue"
+      denied=0
+      got=$("$DRAIN" 2>&1) || denied=$?
+      printf 'drain rc=%s output=%s\ntarget bytes=%s\n' "$denied" "$got" "$(wc -c < "$LAB/unrelated-queue-data")"
+      cmp "$LAB/unrelated-queue-data" "$LAB/expected-queue-data" || fail 'unverified queue symlink target was truncated'
+      expect_code 1 "$denied" 'unverified queue must refuse admission'
+      assert_contains "$got" WARNING 'unverified queue must warn'
+      [ -L "$LAB/state/.wake-queue" ] || fail 'unknown queue link changed'
+      arm
+      expect_code 0 "$rc" 'unverified queue must allow arming'
+      assert_contains "$output" WARNING 'unverified queue arm must warn'
+      cmp "$LAB/unrelated-queue-data" "$LAB/expected-queue-data" || fail 'arm changed the unverified queue target'
+      ;;
     missing-current-record|missing-before-drain)
       arm
       drain
@@ -340,13 +723,19 @@ SH
     startup-failed-publication)
       bash -c '. "$1"; fm_wake_append heartbeat startup unadmitted-startup' _ "$LAB/bin/fm-wake-lib.sh"
       mkdir "$LAB/startup-bin"
-      cat > "$LAB/startup-bin/mv" <<'SH'
+      cat > "$LAB/startup-bin/perl" <<'SH'
 #!/usr/bin/env bash
+if [ "${4:-}" != replace ]; then exec /usr/bin/perl "$@"; fi
+original=("$@")
+injection_input=$(mktemp "$FM_HOME/injected-input.XXXXXX")
+trap 'rm -f "${injection_input:?}"' EXIT
+cat > "$injection_input"
+set -- -f "$injection_input" "$5"
 for destination; do :; done
 if [ "$destination" = "$FM_HOME/state/.omp-watch-transition" ]; then exit 1; fi
-exec /bin/mv "$@"
+exec /usr/bin/perl "${original[@]}" < "$injection_input"
 SH
-      chmod +x "$LAB/startup-bin/mv"
+      chmod +x "$LAB/startup-bin/perl"
       denied=0
       failed=$(PATH="$LAB/startup-bin:$PATH" "$DRAIN" 2>&1) || denied=$?
       expect_code 1 "$denied" 'failed pre-arm publication must retain raw input'
@@ -515,16 +904,22 @@ if [ -n "${FM_TRANSITION_CASE:-}" ]; then
       case "$FM_TRANSITION_CASE" in
         recovery-log)
           mkdir "$LAB/log-bin"
-          cat > "$LAB/log-bin/mv" <<'SH'
+          cat > "$LAB/log-bin/perl" <<'SH'
 #!/usr/bin/env bash
+if [ "${4:-}" != replace ]; then exec /usr/bin/perl "$@"; fi
+original=("$@")
+injection_input=$(mktemp "$FM_HOME/injected-input.XXXXXX")
+trap 'rm -f "${injection_input:?}"' EXIT
+cat > "$injection_input"
+set -- -f "$injection_input" "$5"
 for destination; do :; done
 if [ "$destination" = "$FM_HOME/state/.omp-watch-transitions.log" ]; then
   echo injected >> "$FM_HOME/log-failed"
   exit 1
 fi
-exec /bin/mv "$@"
+exec /usr/bin/perl "${original[@]}" < "$injection_input"
 SH
-          chmod +x "$LAB/log-bin/mv"
+          chmod +x "$LAB/log-bin/perl"
           PATH="$LAB/log-bin:$PATH" arm
           assert_contains "$output" WARNING 'logging failure must warn'
           assert_grep injected "$LAB/log-failed" 'logging injection reached'
@@ -608,8 +1003,8 @@ if [ "${HOLD_BUDGET_DRAIN:-}" = 1 ] && [ "$#" -eq 5 ] && [ "$1" = -F ] && mkdir 
 fi
 exec /usr/bin/awk "$@"
 ''')
-(shim/'cat').write_text(r'''#!/usr/bin/env bash
-if [ "${BUDGET_PROBE:-}" = 1 ] && [ "$#" -eq 1 ] && [ "$1" = "$FM_HOME/state/.wake-queue.lock/pid" ]; then
+(shim/'perl').write_text(r'''#!/usr/bin/env bash
+if [ "${BUDGET_PROBE:-}" = 1 ] && [ "${4:-}" = lock-pid ] && [ "${5:-}" = "$FM_HOME/state/.wake-queue.lock" ]; then
   owner=$(ps -p "$PPID" -o ppid= | tr -d '[:space:]')
   n=0
   [ ! -f "$FM_HOME/budget-count.$owner" ] || n=$(/bin/cat "$FM_HOME/budget-count.$owner")
@@ -617,7 +1012,7 @@ if [ "${BUDGET_PROBE:-}" = 1 ] && [ "$#" -eq 1 ] && [ "$1" = "$FM_HOME/state/.wa
   printf '%s\n' "$n" > "$FM_HOME/budget-count.$owner"
   if [ "$n" -eq 2 ]; then printf 'over-budget\n' > "$FM_HOME/budget-progress"; fi
 fi
-exec /bin/cat "$@"
+exec /usr/bin/perl "$@"
 ''')
 (shim/'sleep').write_text('#!/usr/bin/env bash\n[ "$1" != 0.05 ] || exit 0\nexec /bin/sleep "$@"\n')
 for f in shim.iterdir():f.chmod(0o755)
@@ -656,8 +1051,11 @@ PYBUDGET
       mkdir "$LAB/hash-bin"
       cat > "$LAB/hash-bin/perl" <<'SH'
 #!/usr/bin/env bash
-echo unavailable >> "$FM_HOME/hash-failed"
-exit 1
+if [ "${1:-}" = -MDigest::SHA=sha256_hex ]; then
+  echo unavailable >> "$FM_HOME/hash-failed"
+  exit 1
+fi
+exec /usr/bin/perl "$@"
 SH
       chmod +x "$LAB/hash-bin/perl"
       bad=0
@@ -700,16 +1098,22 @@ SH
     canonical-arm-failure)
       grant_recovery
       mkdir "$LAB/canonical-bin"
-      cat > "$LAB/canonical-bin/mv" <<'SH'
+      cat > "$LAB/canonical-bin/perl" <<'SH'
 #!/usr/bin/env bash
+if [ "${4:-}" != replace ]; then exec /usr/bin/perl "$@"; fi
+original=("$@")
+injection_input=$(mktemp "$FM_HOME/injected-input.XXXXXX")
+trap 'rm -f "${injection_input:?}"' EXIT
+cat > "$injection_input"
+set -- -f "$injection_input" "$5"
 for destination; do :; done
 if [ "$destination" = "$FM_HOME/state/.omp-watch-transition" ]; then
   echo injected >> "$FM_HOME/canonical-failed"
   exit 1
 fi
-exec /bin/mv "$@"
+exec /usr/bin/perl "${original[@]}" < "$injection_input"
 SH
-      chmod +x "$LAB/canonical-bin/mv"
+      chmod +x "$LAB/canonical-bin/perl"
       PATH="$LAB/canonical-bin:$PATH" arm
       expect_code 0 "$rc" 'canonical persistence failure must preserve arming'
       assert_contains "$output" WARNING 'canonical failure warns without claiming consumption'
@@ -728,17 +1132,23 @@ SH
       cp "$LAB/state/.wake-queue" "$LAB/replay"
       if [ "$FM_TRANSITION_CASE" = publication-before-consumption ]; then
         mkdir "$LAB/crash-bin"
-        cat > "$LAB/crash-bin/mv" <<'SH'
+        cat > "$LAB/crash-bin/perl" <<'SH'
 #!/usr/bin/env bash
+if [ "${4:-}" != replace ]; then exec /usr/bin/perl "$@"; fi
+original=("$@")
+injection_input=$(mktemp "$FM_HOME/injected-input.XXXXXX")
+trap 'rm -f "${injection_input:?}"' EXIT
+cat > "$injection_input"
+set -- -f "$injection_input" "$5"
 for destination; do :; done
 if [ "$destination" = "$FM_HOME/state/.omp-watch-transition" ] && jq -e '.uncertain == false' "$2" >/dev/null; then
-  /bin/mv "$@"
+  /usr/bin/perl "${original[@]}" < "$injection_input"
   echo committed >> "$FM_HOME/commit-interval"
   exit 1
 fi
-exec /bin/mv "$@"
+exec /usr/bin/perl "${original[@]}" < "$injection_input"
 SH
-        chmod +x "$LAB/crash-bin/mv"
+        chmod +x "$LAB/crash-bin/perl"
         bad=0
         PATH="$LAB/crash-bin:$PATH" "$DRAIN" >/dev/null 2>&1 || bad=$?
         expect_code 1 "$bad" 'publication-before-consumption fault must retain raw input'
@@ -837,8 +1247,14 @@ PYSLOW
       ;;
     drain-publication-failure)
       mkdir "$LAB/drain-failure-bin"
-      cat > "$LAB/drain-failure-bin/mv" <<'SH'
+      cat > "$LAB/drain-failure-bin/perl" <<'SH'
 #!/usr/bin/env bash
+if [ "${4:-}" != replace ]; then exec /usr/bin/perl "$@"; fi
+original=("$@")
+injection_input=$(mktemp "$FM_HOME/injected-input.XXXXXX")
+trap 'rm -f "${injection_input:?}"' EXIT
+cat > "$injection_input"
+set -- -f "$injection_input" "$5"
 for destination; do :; done
 if [ "$destination" = "$FM_HOME/state/.omp-watch-transition" ]; then
   case "$FAIL_STAGE" in
@@ -846,9 +1262,9 @@ if [ "$destination" = "$FM_HOME/state/.omp-watch-transition" ]; then
     final) jq -e '.uncertain == false' "$2" >/dev/null && exit 1 ;;
   esac
 fi
-exec /bin/mv "$@"
+exec /usr/bin/perl "${original[@]}" < "$injection_input"
 SH
-      chmod +x "$LAB/drain-failure-bin/mv"
+      chmod +x "$LAB/drain-failure-bin/perl"
       for stage in checkpoint final; do
         arm --transition work-pending --reason "begin $stage publication failure"
         bash -c '. "$1"; fm_wake_append stale worker idle idle-recheck' _ "$LAB/bin/fm-wake-lib.sh"
@@ -943,7 +1359,11 @@ PYPIPE
       ;;
     fingerprint-unavailable)
       mkdir "$LAB/fingerprint-bin"
-      printf '#!/usr/bin/env bash\nexit 1\n' > "$LAB/fingerprint-bin/perl"
+      cat > "$LAB/fingerprint-bin/perl" <<'SH'
+#!/usr/bin/env bash
+[ "${1:-}" != -MTime::HiRes=stat ] || exit 1
+exec /usr/bin/perl "$@"
+SH
       chmod +x "$LAB/fingerprint-bin/perl"
       PATH="$LAB/fingerprint-bin:$PATH" arm
       expect_code 0 "$rc" 'unavailable freshness proof cannot force reset'
@@ -1311,16 +1731,22 @@ arm --transition work-pending --reason 'begin failed receipt publication case'
 stale_row 'previous idle recheck' idle-recheck > "$LAB/state/.wake-queue"
 "$DRAIN" >/dev/null 2>&1
 mkdir "$LAB/failure-bin"
-cat > "$LAB/failure-bin/mv" <<'SH'
+cat > "$LAB/failure-bin/perl" <<'SH'
 #!/usr/bin/env bash
+if [ "${4:-}" != replace ]; then exec /usr/bin/perl "$@"; fi
+original=("$@")
+injection_input=$(mktemp "$FM_HOME/injected-input.XXXXXX")
+trap 'rm -f "${injection_input:?}"' EXIT
+cat > "$injection_input"
+set -- -f "$injection_input" "$5"
 for destination; do :; done
 if [ "$destination" = "$FM_HOME/state/.omp-watch-transition" ] && { [ "${FAIL_RECEIPT_STAGE:-}" = all ] || jq -e ' .uncertain == false ' "$2" >/dev/null; }; then
   printf 'failed receipt publication\n' >> "$FM_HOME/publication-failures"
   exit 1
 fi
-exec /bin/mv "$@"
+exec /usr/bin/perl "${original[@]}" < "$injection_input"
 SH
-chmod +x "$LAB/failure-bin/mv"
+chmod +x "$LAB/failure-bin/perl"
 stale_row 'newly consumed fresh event' > "$LAB/state/.wake-queue"
 failure_rc=0
 failure_output=$(PATH="$LAB/failure-bin:$PATH" "$DRAIN" 2>&1) || failure_rc=$?
@@ -1406,7 +1832,7 @@ if [ -z "${FM_TRANSITION_CASE:-}" ]; then
 fi
 
 if [ -z "${FM_TRANSITION_CASE:-}" ] && [ -z "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
-  for scenario in missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
+  for scenario in non-omp-stamped-owner nested-queue-lock foreign-lock-owner sequence-pipe queue-read-error log-read-error publication-temp-link publication-temp-replaced lock-other-lock queue-hardlink queue-outside-home queue-parent-link queue-directory queue-owner queue-snapshot-swap queue-content-change queue-inode-change lock-wrong-identity lock-owner-link lock-child-link lock-wrong-home lock-wrong-path arm-result-link unrelated-lock-target unrelated-queue-target missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
     FM_TRANSITION_LIFECYCLE_CASE="$scenario" bash "$0"
   done
 fi

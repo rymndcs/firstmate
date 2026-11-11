@@ -268,9 +268,10 @@ healthy_watcher() {
 }
 
 report_success() {
-  local status=$1 result="$STATE/.omp-watch-arm-result" tmp="$STATE/.omp-watch-arm-result.$ARM_PID"
+  local status=$1 result="$STATE/.omp-watch-arm-result"
   if [ "${OMPCODE:-}" = 1 ] && [ -n "${PI_SESSION_ID:-}" ] && [ -n "${PI_TOOL_CALL_ID:-}" ]; then
-    (umask 077; printf '%s\n' "$PI_SESSION_ID" "$PI_TOOL_CALL_ID" "$status" > "$tmp" && mv -f "$tmp" "$result")
+    printf '%s\n' "$PI_SESSION_ID" "$PI_TOOL_CALL_ID" "$status" | fm_state_path replace "$result" || \
+      echo 'watcher: WARNING - native arm observation unavailable; preserve supervision.' >&2
   fi
   omp_transition_record cycle running "$HEALTHY_PID" verified
   printf '%s\n' "$status"
@@ -426,8 +427,7 @@ if [ "${OMPCODE:-}" = 1 ]; then
 fi
 if [ "${OMPCODE:-}" = 1 ] && [ -n "${PI_SESSION_ID:-}" ] && [ -n "${PI_TOOL_CALL_ID:-}" ]; then
   result="$STATE/.omp-watch-arm-result"
-  tmp="$STATE/.omp-watch-arm-result.$ARM_PID"
-  if ! (umask 077; printf '%s\n' "$PI_SESSION_ID" "$PI_TOOL_CALL_ID" 'watcher: pending confirmation' > "$tmp" && mv -f "$tmp" "$result"); then
+  if ! printf '%s\n' "$PI_SESSION_ID" "$PI_TOOL_CALL_ID" 'watcher: pending confirmation' | fm_state_path replace "$result"; then
     echo 'watcher: WARNING - native arm observation unavailable; preserve supervision.' >&2
   fi
 fi

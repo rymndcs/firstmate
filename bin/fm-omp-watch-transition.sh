@@ -56,22 +56,10 @@ SESSION=${PI_SESSION_ID:-}
 CALL=${PI_TOOL_CALL_ID:-}
 record=''
 warn() { printf 'watcher: WARNING - %s; arming without reset.\n' "$*" >&2; }
-regular_destination() {
-  if [ -e "$1" ] || [ -L "$1" ]; then
-    [ -f "$1" ] && [ ! -L "$1" ]
-  fi
-}
-publish() {
-  local tmp
-  regular_destination "$RECORD" || return 1
-  tmp=$(umask 077; mktemp "$STATE/.omp-transition.XXXXXX") || return 1
-  if cat > "$tmp" && mv -f "$tmp" "$RECORD"; then return 0; fi
-  rm -f "${tmp:?}"
-  return 1
-}
+publish() { fm_state_path replace "$RECORD"; }
 load_record() {
   [ -f "$RECORD" ] && [ ! -L "$RECORD" ] || return 1
-  record=$(cat "$RECORD" 2>/dev/null) || return 1
+  record=$(fm_state_path read "$RECORD") || return 1
   printf '%s' "$record" | jq -e '
     .version == 1 and (.session | type == "string" and length > 0)
     and (.arm | type == "string" and length > 0)
@@ -96,7 +84,9 @@ new_record() {
 token() { printf '%s' "$record" | jq -c '{session,arm,generation,watermark,batch}'; }
 queue_sequence() {
   local seq
-  seq=$(cat "$STATE/.wake-queue.seq" 2>/dev/null || printf 0)
+  if [ -e "$STATE/.wake-queue.seq" ] || [ -L "$STATE/.wake-queue.seq" ]; then
+    seq=$(fm_state_path read "$STATE/.wake-queue.seq") || return 1
+  else seq=0; fi
   case "$seq" in ''|*[!0-9]*) return 1 ;; esac
   printf '%s' "$seq"
 }
@@ -149,19 +139,14 @@ observe_external() {
   EXTERNAL=clean
 }
 record_verdict() {
-  local claim=$1 detail=$2 verdict=$3 observed=$4 tmp
-  regular_destination "$LOG" || return 1
-  command -v jq >/dev/null 2>&1 || return 1
-  tmp=$(umask 077; mktemp "$STATE/.omp-transition.XXXXXX") || return 1
-  if [ -f "$LOG" ]; then
-    tail -n 255 "$LOG" > "$tmp" || { rm -f "${tmp:?}"; return 1; }
-  fi
-  if jq -cn --arg session "$SESSION" --arg call "$CALL" --arg claim "$claim" \
-    --arg detail "$detail" --arg verdict "$verdict" --arg observed "$observed" \
-    '{session:$session,call:$call,claim:$claim,detail:$detail,verdict:$verdict,observed:$observed}' >> "$tmp" \
-    && mv -f "$tmp" "$LOG"; then return 0; fi
-  rm -f "${tmp:?}"
-  return 1
+  local claim=$1 detail=$2 verdict=$3 observed=$4 previous
+  previous=$(fm_state_path read "$LOG" | tail -n 255) || return 1
+  {
+    if [ -n "$previous" ]; then printf '%s\n' "$previous"; fi
+    jq -cn --arg session "$SESSION" --arg call "$CALL" --arg claim "$claim" \
+      --arg detail "$detail" --arg verdict "$verdict" --arg observed "$observed" \
+      '{session:$session,call:$call,claim:$claim,detail:$detail,verdict:$verdict,observed:$observed}'
+  } | fm_state_path replace "$LOG"
 }
 
 session_unarmed() {
@@ -195,6 +180,7 @@ initialize_drain() {
 observe() {
   local result_session result_call sequence
   OBSERVED=unknown
+  fm_state_path check "$FM_WAKE_QUEUE" || return
   if [ -e "$STATE/.afk" ] || [ -e "$STATE/.afk-daemon-terminal" ]; then OBSERVED=away; return; fi
   if [ -e "$STATE/.captain-hold" ]; then OBSERVED=hold; return; fi
   if [ ! -e "$RECORD" ] && [ ! -L "$RECORD" ]; then
@@ -338,7 +324,7 @@ case "${1:-}" in
   drain)
     rows=$(cat)
     if [ "${2:-}" = --queue-lock-held ]; then
-      [ -L "$FM_WAKE_QUEUE_LOCK" ] && [ "$(cat "$FM_WAKE_QUEUE_LOCK/pid" 2>/dev/null)" = "$PPID" ] || exit 1
+      fm_state_path lock-check "$FM_WAKE_QUEUE_LOCK" '' "$PPID" || exit 1
     else acquire_queue_lock || exit 1; fi
     if [ -z "$SESSION" ] || [ -z "$CALL" ]; then
       invalidate || true

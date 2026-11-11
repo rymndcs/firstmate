@@ -72,14 +72,15 @@ if [ "${OMPCODE:-}" = 1 ]; then
   fi
   DRAIN_LOCK_HELD=true
   RAW_ROWS=''
-  if [ -e "$FM_WAKE_QUEUE" ] || [ -L "$FM_WAKE_QUEUE" ]; then
-    RAW_ROWS=$(cat "$FM_WAKE_QUEUE") || exit 1
-  fi
+  snapshot=$(fm_state_path snapshot "$FM_WAKE_QUEUE") || exit 1
+  queue_identity=${snapshot%%$'\n'*}
+  RAW_ROWS=${snapshot#*$'\n'}
+  if [ "$snapshot" = "$queue_identity" ]; then RAW_ROWS=''; fi
   if [ -n "$RAW_ROWS" ]; then
-    fm_wake_print_deduped "$FM_WAKE_QUEUE" || exit 1
+    printf '%s\n' "$RAW_ROWS" | fm_wake_print_deduped /dev/stdin || exit 1
   fi
   record_omp_drain || exit 1
-  : > "$FM_WAKE_QUEUE" || exit 1
+  fm_state_path clear "$FM_WAKE_QUEUE" "$queue_identity" || exit 1
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   DRAIN_LOCK_HELD=false
   (fm_wake_print_annotations "$RAW_ROWS") || true
