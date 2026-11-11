@@ -230,21 +230,94 @@ class CleanupTest(unittest.TestCase):
         self.run_cleanup('--remove')
         self.assertTrue(b.exists())
 
-    def test_task_nested_slot_locked_and_legacy_preserved(self):
+    def hold(self, cwd, path=None):
+        code = 'import sys; f = sys.argv[1] and open(sys.argv[1]); print("held", flush=True); sys.stdin.read()'
+        proc = subprocess.Popen(['python3', '-c', code, str(path or '')], cwd=str(cwd),
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.stdin.close)
+        self.assertEqual(proc.stdout.readline(), 'held\n')
+
+    def test_removal_predicate_fixture_matrix(self):
+        linked = self.wt('linked', self.home / 'projects' / 'zz-linked')
         active = self.wt('active')
         nested = self.wt('nested', active / '.claude/worktrees/nested')
+        target = self.wt('target', self.home / 'tmp-base')
+        below_target = self.wt('below-target', self.home / 'tmp-root' / 'inner')
         (self.state / 'live.meta').write_text(f'worktree={active}\n')
+        (self.state / 'live.temp-targets').write_text(f'{target}\n{self.home / "tmp-root"}\n')
         locked = self.wt('locked')
         self.git('worktree', 'lock', str(locked))
         legacy = self.wt('legacy', self.home / 'projects/thanos-worktrees/legacy-claude/x')
         pool = self.home / 'pool'
         slot = self.wt('slot', pool / 'one')
         (pool / 'treehouse-state.json').write_text('{}')
+        orca = self.wt('orca-slot', self.home / 'orca' / 'slot')
         secondmate = self.wt('secondmate')
         (secondmate / '.fm-secondmate-home').write_text('home')
-        self.run_cleanup('--remove')
-        for path in (active, nested, locked, legacy, slot, secondmate):
+        busy_cwd = self.wt('busy-cwd')
+        self.hold(busy_cwd)
+        busy_file = self.wt('busy-file')
+        self.hold(self.home, busy_file / 'file')
+        control = self.wt()
+        out = self.run_cleanup('--remove')
+        for path in (self.repo, linked, active, nested, target, below_target, locked, legacy,
+                     slot, orca, secondmate, busy_cwd, busy_file):
             self.assertTrue(path.exists(), str(path))
+        self.assertFalse(control.exists())
+        self.assertEqual(out, f'Leftover worktrees: removed {control}; kept {locked}: locked worktree\n')
+
+    def test_uninspectable_process_use_removes_nothing_and_warns_once(self):
+        a = self.wt()
+        fakebin = self.home / 'fakebin'
+        fakebin.mkdir()
+        real = subprocess.check_output(['which', 'python3'], text=True).strip()
+        wrapper = fakebin / 'python3'
+        wrapper.write_text(f'#!/bin/sh\ncase " $* " in *" --in-use "*) exit 1 ;; esac\nexec {real} "$@"\n')
+        wrapper.chmod(0o755)
+        path = self.env['PATH']
+        self.env['PATH'] = f'{fakebin}:{path}'
+        warning = 'removed nothing this pass: process use could not be inspected'
+        self.assertEqual(self.run_cleanup('--remove'), f'Leftover worktrees: {warning}\n')
+        self.assertEqual(self.run_cleanup('--remove'), '')
+        self.assertTrue(a.exists())
+        self.env['PATH'] = path
+        self.assertIn(f'removed {a}', self.run_cleanup('--remove'))
+        b = self.wt('again')
+        self.env['PATH'] = f'{fakebin}:{path}'
+        self.assertIn(warning, self.run_cleanup('--remove'))
+        self.assertTrue(b.exists())
+
+    def test_failed_refresh_never_compares_against_a_stale_default(self):
+        remote = self.home / 'remote.git'
+        self.git('clone', '-q', '--bare', str(self.repo), str(remote))
+        self.git('remote', 'add', 'origin', str(remote))
+        a = self.wt()
+        (a / 'file').write_text('dirty\n')
+        self.assertIn(f'kept {a}', self.run_cleanup('--remove'))
+        self.git('fetch', '-q', 'origin')
+        b = self.wt('second')
+        remote.rename(self.home / 'gone.git')
+        (a / 'file').write_text('base\n')
+        self.run_cleanup('--remove')
+        self.assertTrue(a.exists() and b.exists())
+
+    def test_default_branch_fetched_once_per_repository(self):
+        remote = self.home / 'remote.git'
+        self.git('clone', '-q', '--bare', str(self.repo), str(remote))
+        self.git('remote', 'add', 'origin', str(remote))
+        paths = [self.wt(f'landed-{n}') for n in range(3)]
+        fakebin = self.home / 'fakebin'
+        fakebin.mkdir()
+        real = subprocess.check_output(['which', 'git'], text=True).strip()
+        log = self.home / 'fetches'
+        wrapper = fakebin / 'git'
+        wrapper.write_text(f'#!/bin/sh\ncase " $* " in *" fetch "*) echo fetch >> {log} ;; esac\nexec {real} "$@"\n')
+        wrapper.chmod(0o755)
+        self.env['PATH'] = f'{fakebin}:{self.env["PATH"]}'
+        self.run_cleanup('--remove')
+        self.assertFalse(any(p.exists() for p in paths))
+        self.assertEqual(log.read_text(), 'fetch\n')
 
     def test_away_skips_all_writes(self):
         a = self.wt()

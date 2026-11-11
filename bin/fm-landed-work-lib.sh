@@ -27,6 +27,8 @@ LANDED_UNCERTAIN=0
 LANDED_UNCERTAIN_REASONS=
 LANDED_REMAINING=
 LANDED_PR_HEAD=
+LANDED_DEFAULT_FETCHED=0
+DEFAULT_REF=
 LANDED_NO_BRANCH_REASON="this worktree is on no named branch (a detached HEAD), so no remote and no branch-discovered pull request could be consulted about this work"
 
 landed_note_uncertain() {
@@ -246,24 +248,35 @@ pr_head_commit() {
 # "added". A merge CONFLICT is a real answer - the branch changes something the
 # default branch changed differently, so its content is not in there - while a
 # missing default ref, a failed fetch, or a merge-tree error is uncertainty.
-content_in_default() {
-  local name ref default_tree merged_tree rc
+# Put the default branch's comparison ref into DEFAULT_REF, fetching origin's copy
+# first unless LANDED_DEFAULT_FETCHED=1 says this pass already refreshed it.
+default_ref() {
+  local name
   if ! name=$(default_branch); then
     landed_note_uncertain "the project's default branch could not be determined, so its content could not be compared"
     return 1
   fi
   if git -C "$WT" remote get-url origin >/dev/null 2>&1; then
-    if ! git_remote_op fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1; then
+    if [ "$LANDED_DEFAULT_FETCHED" != 1 ] \
+      && ! git_remote_op fetch --quiet origin "+refs/heads/$name:refs/remotes/origin/$name" >/dev/null 2>&1; then
       landed_note_uncertain "origin/$name could not be fetched, so the default branch could not be compared"
       return 1
     fi
-    ref="refs/remotes/origin/$name"
+    DEFAULT_REF="refs/remotes/origin/$name"
   elif git -C "$WT" rev-parse --quiet --verify "refs/heads/$name" >/dev/null 2>&1; then
-    ref="refs/heads/$name"
+    DEFAULT_REF="refs/heads/$name"
   else
     landed_note_uncertain "no copy of $name is reachable locally or on a remote, so its content could not be compared"
     return 1
   fi
+}
+
+content_in_default() {
+  local name ref default_tree merged_tree rc
+  default_ref || return 1
+  ref=$DEFAULT_REF
+  name=${ref#refs/remotes/origin/}
+  name=${name#refs/heads/}
   default_tree=$(git -C "$WT" rev-parse --quiet --verify "$ref^{tree}" 2>/dev/null) || default_tree=
   if [ -z "$default_tree" ]; then
     landed_note_uncertain "$name has no readable tree, so its content could not be compared"

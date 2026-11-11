@@ -45,6 +45,10 @@
 # It checks an available status against an unchanged pool snapshot while holding
 # Treehouse's own lock through cleanup, without leasing, resetting or returning.
 # A changed snapshot refuses; rerun only after checking current pool status.
+#
+# --in-use <path> exits 0 when any inspectable process has its working directory
+# or an open file at or below <path>, 2 when none does, and refuses (exit 1) when
+# it cannot inspect processes. It never stops anything.
 set -eu
 exec python3 - "$@" <<'PY'
 import posix
@@ -127,6 +131,41 @@ def processes():
     if os.getpid() not in table:
         raise OSError("cannot inspect which processes use the worktree")
     return table
+
+
+def open_paths(pid):
+    if sys.platform != "darwin":
+        try:
+            names = os.listdir(f"/proc/{pid}/fd")
+        except OSError:
+            return []
+        paths = []
+        for name in names:
+            try:
+                paths.append(Path(os.readlink(f"/proc/{pid}/fd/{name}")))
+            except OSError:
+                pass
+        return paths
+    libproc = ctypes.CDLL("/usr/lib/libproc.dylib")
+    size = libproc.proc_pidinfo(pid, 1, ctypes.c_uint64(0), None, 0)  # PROC_PIDLISTFDS
+    if size <= 0:
+        return []
+    fds = ctypes.create_string_buffer(size)
+    size = libproc.proc_pidinfo(pid, 1, ctypes.c_uint64(0), fds, size)
+    paths = []
+    for offset in range(0, max(size, 0) - 7, 8):  # struct proc_fdinfo
+        fd, kind = struct.unpack_from("iI", fds.raw, offset)
+        info = ctypes.create_string_buffer(1200)  # struct vnode_fdinfowithpath
+        if kind == 1 and libproc.proc_pidfdinfo(pid, fd, 2, info, 1200) == 1200:
+            paths.append(Path(os.fsdecode(info.raw[176:].split(b"\0", 1)[0])))
+    return paths
+
+
+def in_use(root):
+    root = Path(root).resolve()
+    table = processes()
+    return any(within(root, cwd) or any(within(root, path) for path in open_paths(pid))
+               for pid, (_, cwd) in table.items())
 
 
 def writers(roots):
@@ -315,6 +354,8 @@ def free_slot(project, pool, name):
 
 
 try:
+    if sys.argv[1:2] == ["--in-use"] and len(sys.argv) == 3:
+        sys.exit(0 if in_use(sys.argv[2]) else 2)
     if sys.argv[1] == "--free-slot":
         complete = free_slot(*sys.argv[2:])
     else:

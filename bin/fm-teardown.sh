@@ -124,9 +124,13 @@
 # bin/fm-worktree-cleanup.sh owns writer stopping, selection, retention, the
 # task's temporary-target record (state/<task-id>.temp-targets) and reporting.
 # Usage: fm-teardown.sh <task-id> [--force]
-#   fm-teardown.sh --check-default-content <project> <worktree>
+#   fm-teardown.sh --check-default-content <project> <worktree> [--fetched]
 #   The inspection form returns 0 only for content contained in the refreshed
 #   default branch; it never tears down, ignores dirt, and may fetch refs.
+#   --fetched compares against the copy a prior --refresh-default already fetched.
+#   fm-teardown.sh --refresh-default <project>
+#   Fetches the project's default branch once and returns 0 only when it is
+#   comparable, so a caller checking many worktrees of one repository fetches once.
 #   fm-teardown.sh --clean-free-slot <project> <pool-directory> <slot-name>
 #   The one-off mode prunes only an available pool slot; it never returns it.
 #   --force skips ordinary-task dirty and landed-work checks, skips scout report
@@ -215,10 +219,19 @@ SUB_HOME_MARKER=".fm-secondmate-home"
 . "$SCRIPT_DIR/fm-landed-work-lib.sh"
 if [ "${1:-}" = --check-default-content ]; then
   fm_refuse_if_gate_agent
-  [ "$#" -eq 3 ] || exit 2
+  case "$#:${4:-}" in 3: | 4:--fetched) ;; *) exit 2 ;; esac
   PROJ=$2
   WT=$3
+  [ "$#" -eq 3 ] || LANDED_DEFAULT_FETCHED=1
   content_in_default
+  exit $?
+fi
+if [ "${1:-}" = --refresh-default ]; then
+  fm_refuse_if_gate_agent
+  [ "$#" -eq 2 ] || exit 2
+  PROJ=$2
+  WT=$2
+  default_ref
   exit $?
 fi
 if [ "${1:-}" = --clean-free-slot ]; then

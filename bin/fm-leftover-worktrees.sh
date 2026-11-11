@@ -12,11 +12,18 @@
 # database cleanup once as ready for --remove. --remove repeats the same sweep
 # outside any cap and runs those destructive steps without a command timeout;
 # fm-session-start.sh runs it once per locked session start and prints its report.
-# It preserves primary clones, every direct projects/* entry, live task paths and
-# descendants, secondmate homes, Treehouse/Orca-managed paths, locked trees,
-# stashes, dirty and uninspectable trees.
+# One predicate, checked again immediately before removal, preserves primary
+# clones, every direct projects/* entry, paths at, inside or around a live task's
+# worktree= or state/<id>.temp-targets entry, secondmate homes, legacy and
+# Treehouse/Orca-managed paths, and any worktree a running process uses as its
+# working directory or holds a file open in (fm-worktree-cleanup.sh --in-use);
+# an in-use tree is skipped silently and reconsidered next pass, and when process
+# use cannot be inspected the pass removes nothing and warns once. Locked trees,
+# stashes, dirty and uninspectable trees are kept and named.
 # fm-teardown.sh --check-default-content owns proof of fully landed content,
 # including squash merges; a merely pushed branch is insufficient for this sweep.
+# fm-teardown.sh --refresh-default fetches each repository's default branch once
+# per pass, and every candidate of that repository is compared with --fetched.
 # Removal uses git worktree remove without --force and never deletes branches.
 # Thanos's bin/worktree-cleanup runs dry first, then --apply only when every
 # WOULD DROP line is parseable, names only worktree-specific databases, and every
@@ -71,6 +78,7 @@ CAPPED = sys.argv[1:] != ['--remove']
 DEADLINE = time.monotonic() + 20 if CAPPED else float('inf')
 ENV = dict(os.environ, GIT_TERMINAL_PROMPT='0', GIT_SSH_COMMAND='ssh -oBatchMode=yes')
 ORCA_PATHS = None
+REFRESHED = {}
 
 
 def run(*args, cwd=None, capped=True):
@@ -133,9 +141,27 @@ def database_blocked(path):
     return path in active or path in temps or any(inside(path, h) for h in homes) or marked_home(path)
 
 
-def protected(path):
-    homes, active, _ = protection()
-    if any(inside(path, p) or inside(p, path) for p in active + homes):
+class InspectionError(Exception):
+    pass
+
+
+def in_use(path):
+    try:
+        run(ROOT / 'bin/fm-worktree-cleanup.sh', '--in-use', path)
+        used = True
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode != 2:
+            raise InspectionError from exc
+        used = False
+    retire('process-inspection')
+    return used
+
+
+def protected(project, path):
+    if path == project or path.parent == PROJECTS:
+        return 'project checkout'
+    homes, active, temps = protection()
+    if any(inside(path, p) or inside(p, path) for p in active + temps + homes):
         return 'recorded task or secondmate home'
     if marked_home(path):
         return 'secondmate home'
@@ -148,6 +174,8 @@ def protected(path):
             return 'Orca-managed path'
     if any(inside(path, p) or inside(p, path) for p in orca_paths()):
         return 'Orca-managed worktree'
+    if in_use(path):
+        return 'in use'
     return ''
 
 
@@ -201,9 +229,23 @@ def retire(*keys):
     RECORD['named'] = [k for k in RECORD['named'] if k not in keys]
 
 
+def landed(project, path):
+    try:
+        if project not in REFRESHED:
+            REFRESHED[project] = False
+            run(ROOT / 'bin/fm-teardown.sh', '--refresh-default', project)
+            REFRESHED[project] = True
+        if REFRESHED[project]:
+            run(ROOT / 'bin/fm-teardown.sh', '--check-default-content', project, path, '--fetched')
+            return True
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, TimeoutError):
+        pass
+    return False
+
+
 def clean(project, entry):
     path = Path(entry['worktree']).resolve()
-    if path == project or path.parent == PROJECTS or protected(path):
+    if protected(project, path):
         return
     reason = ''
     if 'locked' in entry:
@@ -221,16 +263,14 @@ def clean(project, entry):
         notice(str(path), f'kept {path}: {reason}')
         return
     head = git(path, 'rev-parse', 'HEAD')
-    try:
-        run(ROOT / 'bin/fm-teardown.sh', '--check-default-content', project, path)
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, TimeoutError):
+    if not landed(project, path):
         notice(str(path), f'kept {path}: content is unlanded or cannot be proven landed')
         return
     if CAPPED:
         notice('ready:' + str(path), f'ready for --remove: {path}')
         return
     latest = [r for r in worktrees(project) if Path(r['worktree']).resolve() == path]
-    if away() or protected(path) or len(latest) != 1 or 'locked' in latest[0]:
+    if away() or protected(project, path) or len(latest) != 1 or 'locked' in latest[0]:
         return
     if git(path, 'rev-parse', 'HEAD') != head or git(path, 'stash', 'list'):
         notice(str(path), f'kept {path}: repository changed during inspection')
@@ -335,6 +375,9 @@ def sweep():
             break
         try:
             clean(project, entry)
+        except InspectionError:
+            notice('process-inspection', 'removed nothing this pass: process use could not be inspected')
+            break
         except (OSError, ValueError, AttributeError, TypeError, subprocess.SubprocessError, TimeoutError) as exc:
             notice(path, f'kept {path}: cleanup could not complete ({type(exc).__name__})')
         RECORD['cursor'] = path
