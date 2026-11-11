@@ -125,8 +125,10 @@
 # task's temporary-target record (state/<task-id>.temp-targets) and reporting.
 # Ship tasks returning to Treehouse first remove registered nested worktrees,
 # deepest first, only after every nested tree is clean, its HEAD content is proven
-# in the refreshed default branch, and Git's all-ref/all-reflog traversal across
-# every worktree finds no commits outside that branch's reachability or diagnostics.
+# in the refreshed default branch, and its HEAD, private refs/worktree refs and
+# checked-out branch retain no history outside that branch's reachability. Both
+# endpoints of their reflogs are inspected through Git-resolved paths; unreadable
+# history or a reference storage format without inspectable file reflogs refuses.
 # Hidden index flags and ignored files retained
 # by fm-worktree-cleanup.sh refuse removal. Immediately before each non-forced
 # removal, teardown re-reads cleanliness, flags, retention, history and the inspected HEAD;
@@ -1087,23 +1089,100 @@ read_registered_worktrees() {
 }
 
 validate_nested_worktree_history() {
-  local history context top common expected_common
-  local REGISTERED_WORKTREES=()
-  read_registered_worktrees || return 1
-  expected_common=$(git -C "$PROJ" rev-parse --path-format=absolute --git-common-dir 2>&1) || expected_common=
-  for context in "${REGISTERED_WORKTREES[@]}"; do
-    top=$(git -C "$context" rev-parse --show-toplevel 2>&1) || top=
-    common=$(git -C "$context" rev-parse --path-format=absolute --git-common-dir 2>&1) || common=
-    if [ "$top" != "$context" ] || [ -z "$common" ] || [ "$common" != "$expected_common" ]; then
-      echo "REFUSED: nested worktree $WT cannot inspect required Git context $context." >&2
-      return 1
-    fi
-    if ! history=$(git -C "$context" rev-list --all --reflog --not "$DEFAULT_REF" -- 2>&1) || [ -n "$history" ]; then
-      echo "REFUSED: nested worktree $WT retained history cannot be inspected or is not entirely in the default branch (Git context $context)." >&2
-      printf '%s\n' "$history" >&2
-      return 1
-    fi
-  done
+  local history
+  if ! history=$(python3 -I - "$WT" "$PROJ" "$DEFAULT_REF" 2>&1 <<'PY'
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+wt, project, default = sys.argv[1:]
+
+
+def git(repo, *args, input=None, detached=False):
+    result = subprocess.run(["git", "-C", repo, *args], input=input,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if detached and result.returncode == 1 and not result.stdout and not result.stderr:
+        return b""
+    if result.returncode or result.stderr:
+        raise ValueError(f"{repo}: git {' '.join(args)}: "
+                         f"exit {result.returncode}: {os.fsdecode(result.stderr)}")
+    return result.stdout.rstrip(b"\n")
+
+
+def git_path(name):
+    return Path(os.fsdecode(git(wt, "rev-parse", "--path-format=absolute", "--git-path", name)))
+
+
+def reflog(path):
+    try:
+        stream = path.open("rb")
+    except FileNotFoundError:
+        return
+    with stream:
+        for line in stream:
+            fields = line.split(b" ", 2)
+            if len(fields) != 3:
+                raise ValueError(f"unreadable reflog {path}")
+            for oid in fields[:2]:
+                add_oid(oid)
+
+
+def private_logs(path):
+    try:
+        entries = list(os.scandir(path))
+    except FileNotFoundError:
+        return
+    for entry in entries:
+        if entry.is_dir():
+            private_logs(Path(entry.path))
+        else:
+            reflog(Path(entry.path))
+
+
+def add_oid(oid):
+    if not re.fullmatch(b"[0-9a-f]{40}|[0-9a-f]{64}", oid):
+        raise ValueError(f"unreadable history object ID {oid!r}")
+    if oid.strip(b"0"):
+        commits.add(oid)
+
+
+try:
+    common = git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if (git(wt, "rev-parse", "--show-toplevel") != os.fsencode(wt)
+            or not common
+            or common != git(project, "rev-parse", "--path-format=absolute", "--git-common-dir")):
+        raise ValueError(f"cannot inspect candidate Git context {wt} for {project}")
+    if git(wt, "rev-parse", "--show-ref-format") != b"files":
+        raise ValueError("cannot inspect owned reflogs in this reference storage format")
+    commits = set()
+    add_oid(git(wt, "rev-parse", "--verify", "HEAD"))
+    reflog(git_path("logs/HEAD"))
+    for ref in git(wt, "for-each-ref", "--format=%(refname)", "refs/worktree/").splitlines():
+        add_oid(git(wt, "rev-parse", "--verify", os.fsdecode(ref)))
+        reflog(git_path("logs/" + os.fsdecode(ref)))
+    private_logs(git_path("logs/refs/worktree"))
+    branch = git(wt, "symbolic-ref", "-q", "HEAD", detached=True)
+    if branch:
+        add_oid(git(wt, "rev-parse", "--verify", os.fsdecode(branch)))
+        reflog(git_path("logs/" + os.fsdecode(branch)))
+    revisions = b"\n".join(sorted(commits)) + b"\n"
+    types = git(wt, "cat-file", "--batch-check=%(objecttype)", input=revisions).splitlines()
+    if types != [b"commit"] * len(commits):
+        raise ValueError("owned history contains missing or non-commit objects")
+    history = git(wt, "rev-list", "--stdin", "--not", default, "--", input=revisions)
+    if history:
+        raise ValueError(os.fsdecode(history))
+except (OSError, ValueError) as error:
+    print(error, file=sys.stderr)
+    sys.exit(1)
+PY
+  ); then
+    echo "REFUSED: nested worktree $WT retained history cannot be inspected or is not entirely in the default branch." >&2
+    printf '%s\n' "$history" >&2
+    return 1
+  fi
 }
 
 validate_worktree_teardown_safety() {

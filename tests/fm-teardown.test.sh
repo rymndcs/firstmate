@@ -4389,7 +4389,7 @@ test_nested_history() {
       git -C "$inner" fetch -q origin
       cat > "$c/fakebin/git" <<'SH'
 #!/usr/bin/env bash
-if [ "${2:-}" = "$NESTED_CASE/wt/.claude/worktrees/inner copy" ] && [ "${3:-} ${4:-} ${5:-}" = 'rev-list --all --reflog' ]; then
+if [ "${2:-}" = "$NESTED_CASE/wt/.claude/worktrees/inner copy" ] && [ "${3:-} ${4:-} ${5:-}" = 'rev-list --stdin --not' ]; then
   if [ "$NESTED_VARIANT" != history-silent-error ]; then echo 'synthetic unreadable retained history' >&2; fi
   if [ "$NESTED_VARIANT" = history-warning ]; then exit 0; fi
   exit 1
@@ -4429,9 +4429,26 @@ SH
       ;;
     *) grep -qxF "$unique" "$c/reachable-before" || fail "Git all-history traversal missed $variant fixture" ;;
   esac
+  case "$variant" in
+    other-worktree-*)
+      git -C "$history_root" rev-list --single-worktree --all --reflog --not origin/main -- > "$c/other-owned-before"
+      cp "$(git -C "$history_root" rev-parse --git-path logs/HEAD)" "$c/other-log-before"
+      ;;
+  esac
   printf 'Git all-history fixture verified: %s %s\n' "$variant" "$unique"
   NESTED_CASE="$c" NESTED_VARIANT="$variant" run_teardown "$c" > "$c/out" 2> "$c/err" || rc=$?
 
+  case "$variant" in
+    other-worktree-*)
+      [ "$rc" -eq 0 ] && [ ! -e "$inner" ] && [ -s "$c/returns" ] || fail "unrelated $variant blocked landed candidate"
+      [ -f "$history_root/.git" ] || fail 'unrelated history copy disappeared'
+      git -C "$history_root" rev-list --single-worktree --all --reflog --not origin/main -- > "$c/other-owned-after"
+      cmp -s "$c/other-owned-before" "$c/other-owned-after" || fail 'unrelated reachable history changed'
+      cmp -s "$c/other-log-before" "$(git -C "$history_root" rev-parse --git-path logs/HEAD)" || fail 'unrelated HEAD log changed'
+      pass "nested history excludes unrelated $variant and returns landed slot"
+      return
+      ;;
+  esac
   [ "$rc" -ne 0 ] || fail "nested history $variant unexpectedly allowed return"
   [ -f "$inner/.git" ] && [ -d "$gitdir" ] || fail "nested history $variant lost copy or private Git data"
   [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] || fail "nested history $variant changed task or returned slot"
@@ -4453,12 +4470,6 @@ SH
     fail 'refused history changed'
   fi
   if [ "$variant" = mixed ]; then [ -f "$c/wt/.claude/worktrees/a-landed-peer-longer/.git" ] || fail 'history refusal removed a safe peer before all proofs passed'; fi
-  if [ "$variant" = other-worktree-ref ]; then
-    [ -f "$history_root/.git" ] || fail 'other private ref lost its Git context'
-    git -C "$history_root" rev-list --all --reflog --not origin/main -- > "$c/other-reachable-after"
-    cmp -s "$c/other-reachable" "$c/other-reachable-after" || fail 'other private ref history changed'
-    [ "$(git -C "$history_root" rev-parse refs/worktree/saved-work)" = "$unique" ] || fail 'other private ref tip changed'
-  fi
   case "$variant" in
     history-unreadable|history-silent-error|history-warning) grep -F 'history cannot be inspected' "$c/err" >/dev/null || fail 'unreadable history missed explicit refusal' ;;
     *) grep -F "$unique" "$c/err" >/dev/null || fail 'history refusal did not identify unpublished commit' ;;
@@ -4560,7 +4571,7 @@ if [ "${3:-} ${4:-} ${5:-} ${6:-}" = 'worktree list --porcelain -z' ]; then
       ;;
   esac
 fi
-if [ "${2:-}" = "$other" ]; then
+if [ "${2:-}" = "$inner" ]; then
   case "$NESTED_VARIANT:${3:-} ${4:-} ${5:-}" in
     top-error:'rev-parse --show-toplevel ') "$REAL_GIT_FOR_TEST" "$@"; exit 1 ;;
     common-error:'rev-parse --path-format=absolute --git-common-dir') "$REAL_GIT_FOR_TEST" "$@"; exit 1 ;;
@@ -4589,28 +4600,166 @@ SH
   case "$variant" in
     late-*|final-*) [ -f "$c/final-status" ] || fail 'context fixture missed final inspection' ;;
   esac
+  case "$variant" in
+    missing|unlinked|foreign|initial-history-error|history-error|history-silent-error|history-warning|final-inventory-error|final-inventory-warning|late-ref|late-missing)
+      [ "$rc" -eq 0 ] && [ ! -e "$inner" ] && [ -s "$c/returns" ] || fail "unrelated context $variant blocked landed candidate"
+      if [ "$variant" = late-ref ]; then
+        [ "$(git -C "$c/late copy" rev-parse refs/worktree/saved-work)" = "$(cat "$c/late-commit")" ] || fail 'late unrelated private ref changed'
+        [ "$(git -C "$c/late copy" show "$(cat "$c/late-commit"):unique-work")" = 'late context work' ] || fail 'late unrelated bytes changed'
+      fi
+      pass "nested context $variant is outside owned history and allows landed return"
+      return
+      ;;
+  esac
   [ "$rc" -ne 0 ] || fail "nested context $variant unexpectedly allowed return"
   [ -f "$inner/.git" ] && [ -d "$gitdir" ] || fail "nested context $variant lost candidate or private Git data"
   [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] || fail "nested context $variant changed task or returned slot"
   grep -F 'REFUSED:' "$c/err" >/dev/null || fail 'context refusal lacked safety diagnostic'
   case "$variant" in
-    all-common-error|project-common-error) grep -F "$c/project" "$c/err" >/dev/null || fail 'identity refusal did not name project' ;;
+    project-common-error) grep -F "$c/project" "$c/err" >/dev/null || fail 'identity refusal did not name project' ;;
     *inventory*) grep -F "$c/wt" "$c/err" >/dev/null || fail 'inventory refusal did not name affected copy' ;;
-    late-ref)
-      [ -f "$c/late copy/.git" ] || fail 'late context disappeared'
-      [ "$(git -C "$c/late copy" show "$(cat "$c/late-commit"):unique-work")" = 'late context work' ] || fail 'late context bytes changed'
-      git -C "$c/late copy" rev-list --all --reflog --not origin/main -- > "$c/late-reachable"
-      grep -qxF "$(cat "$c/late-commit")" "$c/late-reachable" || fail 'late context lost unpublished history'
-      grep -F "$(cat "$c/late-commit")" "$c/err" >/dev/null || fail 'late context refusal did not name commit'
-      grep -F "$c/late copy" "$c/err" >/dev/null || fail 'late context refusal did not name context'
-      ;;
-    *) grep -F "$other" "$c/err" >/dev/null || fail 'context refusal did not name required context' ;;
+    *) grep -F "$inner" "$c/err" >/dev/null || fail 'context refusal did not name candidate context' ;;
   esac
   pass "nested context $variant refuses incomplete history inspection and preserves candidate"
 }
 
+test_nested_history_scope() {
+  local variant=$1 c inner other head unique local_oid remote_oid other_oid rc=0
+  c=$(nested_fixture "scope-$variant")
+  inner="$c/wt/.claude/worktrees/inner copy"
+  other="$c/other copy"
+  head=$(git -C "$inner" rev-parse HEAD)
+  local_oid=$(printf 'unrelated local\n' | git -C "$inner" commit-tree "$head^{tree}" -p "$head")
+  remote_oid=$(printf 'unrelated remote\n' | git -C "$inner" commit-tree "$head^{tree}" -p "$head")
+  case "$variant" in
+    local|all|unlanded)
+      git -C "$c/project" update-ref --create-reflog refs/heads/unrelated "$local_oid"
+      ;;
+  esac
+  case "$variant" in
+    remote|all|unlanded)
+      git -C "$c/project" update-ref --create-reflog refs/remotes/elsewhere/unrelated "$remote_oid"
+      ;;
+  esac
+  case "$variant" in
+    other|all|unlanded)
+      git -C "$c/project" worktree add -q --detach "$other" main
+      printf 'unrelated private work\n' > "$other/private-work"
+      git -C "$other" add private-work
+      git -C "$other" commit -qm 'unrelated private work'
+      other_oid=$(git -C "$other" rev-parse HEAD)
+      git -C "$other" update-ref --create-reflog refs/worktree/private "$other_oid"
+      git -C "$other" checkout -q --detach main
+      cp "$(git -C "$other" rev-parse --git-path logs/HEAD)" "$c/other-head-before"
+      cp "$(git -C "$other" rev-parse --git-path logs/refs/worktree/private)" "$c/other-private-before"
+      ;;
+  esac
+  git -C "$c/project" for-each-ref --format='%(refname) %(objectname)' refs/heads/unrelated refs/remotes/elsewhere/ > "$c/shared-before"
+  if [ "$variant" = unlanded ]; then
+    printf 'candidate unpublished work\n' > "$inner/candidate-work"
+    git -C "$inner" add candidate-work
+    git -C "$inner" commit -qm 'candidate unpublished work'
+    unique=$(git -C "$inner" rev-parse HEAD)
+  fi
+  NESTED_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || rc=$?
+  if [ "$variant" = unlanded ]; then
+    [ "$rc" -ne 0 ] && [ -f "$inner/.git" ] || fail 'unlanded candidate was removed under unrelated history'
+    [ "$(git -C "$inner" rev-parse HEAD)" = "$unique" ] || fail 'unlanded candidate HEAD changed'
+    [ "$(cat "$inner/candidate-work")" = 'candidate unpublished work' ] || fail 'unlanded candidate bytes lost'
+    [ ! -e "$c/returns" ] || fail 'unlanded candidate returned slot'
+  else
+    [ "$rc" -eq 0 ] || fail "unrelated $variant history blocked landed candidate removal"
+    [ ! -e "$inner" ] && [ -s "$c/returns" ] || fail 'landed candidate did not return slot'
+  fi
+  git -C "$c/project" for-each-ref --format='%(refname) %(objectname)' refs/heads/unrelated refs/remotes/elsewhere/ > "$c/shared-after"
+  cmp -s "$c/shared-before" "$c/shared-after" || fail 'unrelated shared refs changed'
+  case "$variant" in
+    other|all|unlanded)
+      [ "$(git -C "$other" rev-parse refs/worktree/private)" = "$other_oid" ] || fail 'other private history changed'
+      cmp -s "$c/other-head-before" "$(git -C "$other" rev-parse --git-path logs/HEAD)" || fail 'other HEAD reflog changed'
+      cmp -s "$c/other-private-before" "$(git -C "$other" rev-parse --git-path logs/refs/worktree/private)" || fail 'other private reflog changed'
+      [ "$(git -C "$other" show "$other_oid:private-work")" = 'unrelated private work' ] || fail 'other private bytes lost'
+      ;;
+  esac
+  pass "nested owned history excludes unrelated $variant work and preserves candidate safety"
+}
+
+test_nested_owned_history() {
+  local variant=$1 c inner head unique ref log gitdir rc=0
+  c=$(nested_fixture "owned-$variant")
+  inner="$c/wt/.claude/worktrees/inner copy"
+  head=$(git -C "$inner" rev-parse HEAD)
+  unique=$(printf 'owned history only\n' | git -C "$inner" commit-tree "$head^{tree}" -p "$head")
+  gitdir=$(git -C "$inner" rev-parse --absolute-git-dir)
+  ref=refs/heads/nested
+  case "$variant" in
+    private-log-root-file) ref=HEAD ;;
+    private-*) ref=refs/worktree/saved; git -C "$inner" update-ref --create-reflog "$ref" "$head" ;;
+    head-*) ref=HEAD ;;
+  esac
+  if [ "$variant" = private-nested-orphan-old ] || [ "$variant" = private-nested-landed ]; then
+    git -C "$inner" update-ref -d "$ref"
+    ref=refs/worktree/archive/saved
+  fi
+  case "$variant" in private-orphan-*) git -C "$inner" update-ref -d "$ref" ;; esac
+  log=$(git -C "$inner" rev-parse --git-path "logs/$ref")
+  mkdir -p "$(dirname "$log")"
+  case "$variant" in
+    branch-old|private-old|head-old|branch-missing-object|private-orphan-old|private-nested-orphan-old)
+      printf '%s %s %s\told endpoint only\n' "$unique" "$head" "$(git -C "$inner" var GIT_COMMITTER_IDENT)" > "$log"
+      ;;
+    branch-new|private-new|head-new|private-orphan-new)
+      printf '%s %s %s\tnew endpoint only\n' "$head" "$unique" "$(git -C "$inner" var GIT_COMMITTER_IDENT)" > "$log"
+      ;;
+    private-nested-landed) printf '%s %s %s\tlanded nested log\n' "$head" "$head" "$(git -C "$inner" var GIT_COMMITTER_IDENT)" > "$log" ;;
+    private-blob) git -C "$inner" update-ref "$ref" "$(printf 'private blob' | git -C "$inner" hash-object -w --stdin)" ;;
+    branch-malformed) printf '0 0 invalid reflog endpoints\n' > "$log" ;;
+    branch-truncated) printf '%040d' 0 > "$log" ;;
+    branch-directory|private-directory|head-directory) mv "$log" "$c/original-log"; mkdir "$log" ;;
+    private-log-root-file) mkdir -p "$(dirname "$(git -C "$inner" rev-parse --git-path logs/refs/worktree)")"; printf 'not a log directory\n' > "$(git -C "$inner" rev-parse --git-path logs/refs/worktree)" ;;
+  esac
+  if [ "$variant" = branch-missing-object ]; then
+    sed "s/$unique/1111111111111111111111111111111111111111/" "$log" > "$c/missing-log"
+    cp "$c/missing-log" "$log"
+  fi
+  if [ -f "$log" ]; then cp "$log" "$c/log-before"; fi
+  cat > "$c/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+if [ "${2:-}" = "$NESTED_CASE/wt/.claude/worktrees/inner copy" ]; then
+  case "$NESTED_VARIANT:${3:-} ${4:-}" in
+    branch-query-error:'symbolic-ref -q') exit 2 ;;
+    branch-query-warning:'symbolic-ref -q') "$REAL_GIT_FOR_TEST" "$@"; echo 'uncertain branch' >&2; exit 0 ;;
+    private-inventory-error:'for-each-ref --format=%(refname)') exit 1 ;;
+    private-inventory-warning:'for-each-ref --format=%(refname)') "$REAL_GIT_FOR_TEST" "$@"; echo 'uncertain refs' >&2; exit 0 ;;
+    backend:'rev-parse --show-ref-format') echo reftable; exit 0 ;;
+  esac
+  if [ "$NESTED_VARIANT" = branch-path-error ] && [ "${6:-}" = logs/refs/heads/nested ]; then exit 1; fi
+fi
+exec "$REAL_GIT_FOR_TEST" "$@"
+SH
+  chmod +x "$c/fakebin/git"
+  NESTED_CASE="$c" NESTED_VARIANT="$variant" run_teardown "$c" > "$c/out" 2> "$c/err" || rc=$?
+  if [ "$variant" = private-nested-landed ]; then
+    [ "$rc" -eq 0 ] && [ ! -e "$inner" ] && [ -s "$c/returns" ] || fail 'landed nested private log prevented slot return'
+    pass 'landed nested private log allows slot return'
+    return
+  fi
+  [ "$rc" -ne 0 ] || fail "owned $variant history unexpectedly allowed return"
+  [ -f "$inner/.git" ] && [ -d "$gitdir" ] || fail "owned $variant lost copy or private Git data"
+  [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] || fail 'owned history refusal changed task or returned slot'
+  grep -F "REFUSED: nested worktree $inner retained history cannot be inspected" "$c/err" >/dev/null || fail "owned $variant missed history refusal"
+  [ "$(git -C "$inner" rev-parse HEAD)" = "$head" ] || fail 'owned history refusal changed HEAD'
+  if [ -f "$c/log-before" ]; then cmp -s "$c/log-before" "$log" || fail 'owned history refusal changed reflog'; fi
+  case "$variant" in
+    *-old|*-new) grep -F "$unique" "$c/err" >/dev/null || fail 'owned endpoint refusal did not identify commit' ;;
+  esac
+  pass "nested owned $variant history refuses and preserves HEAD, private data and reflog"
+}
+
 run_nested_tests() {
   local variant
+  for variant in local remote other all unlanded; do test_nested_history_scope "$variant"; done
+  for variant in branch-old branch-new private-old private-new head-old head-new private-orphan-old private-orphan-new private-nested-orphan-old private-nested-landed branch-truncated branch-directory private-directory head-directory branch-malformed branch-missing-object private-log-root-file private-blob branch-query-error branch-query-warning private-inventory-error private-inventory-warning branch-path-error backend; do test_nested_owned_history "$variant"; done
   test_nested_landed
   test_nested_squash
   test_nested_disposable
@@ -4637,6 +4786,8 @@ if [ "${1:-}" = nested ]; then
   if [ "$#" -gt 1 ]; then
     case "$2" in
       landed|squash|disposable) "test_nested_$2" ;;
+      scope) test_nested_history_scope "$3" ;;
+      owned) test_nested_owned_history "$3" ;;
       history) test_nested_history "$3" ;;
       history-changed) test_nested_history_changed "$3" ;;
       context) test_nested_history_context "$3" ;;
