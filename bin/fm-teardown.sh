@@ -125,8 +125,12 @@
 # task's temporary-target record (state/<task-id>.temp-targets) and reporting.
 # Ship tasks returning to Treehouse first remove registered nested worktrees,
 # deepest first, only after every nested tree is clean and its content is proven
-# in the refreshed default branch. Unknown or unlanded nested work refuses
-# teardown, including with --force; that flag only discards the task tree itself.
+# in the refreshed default branch. Hidden index flags and ignored files retained
+# by fm-worktree-cleanup.sh refuse removal. Immediately before each non-forced
+# removal, teardown re-reads cleanliness, flags, retention and the inspected HEAD;
+# a changed or uninspectable copy refuses. The final read and removal are not atomic.
+# Unknown or unlanded nested work refuses teardown, including with --force; that
+# flag only discards the task tree itself.
 # Scouts, secondmates and Orca tasks keep their existing cleanup paths.
 # Usage: fm-teardown.sh <task-id> [--force]
 #   fm-teardown.sh --check-default-content <project> <worktree> [--fetched]
@@ -1037,6 +1041,26 @@ teardown_treehouse_return() {
   return 1
 }
 
+validate_nested_worktree_files() {
+  local dirty
+  if ! dirty=$(git -C "$WT" status --porcelain 2>/dev/null); then
+    echo "REFUSED: nested worktree $WT cannot be inspected for uncommitted changes." >&2
+    return 1
+  fi
+  if [ -n "$dirty" ]; then
+    echo "REFUSED: nested worktree $WT has uncommitted changes." >&2
+    return 1
+  fi
+  if ! "$SCRIPT_DIR/fm-worktree-cleanup.sh" --check-index-flags "$WT"; then
+    echo "REFUSED: nested worktree $WT has hidden index flags or cannot be inspected for them." >&2
+    return 1
+  fi
+  if ! "$SCRIPT_DIR/fm-worktree-cleanup.sh" --check-retained-ignored "$WT"; then
+    echo "REFUSED: nested worktree $WT has retained ignored files or cannot be inspected for them." >&2
+    return 1
+  fi
+}
+
 validate_worktree_teardown_safety() {
   local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch
   local scope=${1:-task}
@@ -1046,25 +1070,8 @@ validate_worktree_teardown_safety() {
     secondmate|scout) return 0 ;;
   esac
 
-  if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
-    if worktree_safety_blocked_by_lock "uncommitted changes"; then
-      return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
-    fi
-    echo "REFUSED: cannot inspect worktree $WT for uncommitted changes." >&2
-    echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
-    return 1
-  fi
   if [ "$scope" = default-only ]; then
-    dirty=$dirty_raw
-  else
-    dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
-  fi
-
-  if [ "$scope" = default-only ]; then
-    if [ -n "$dirty" ]; then
-      echo "REFUSED: nested worktree $WT has uncommitted changes." >&2
-      return 1
-    fi
+    validate_nested_worktree_files || return 1
     work_landed_verdict "$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)" default-only
     case "$LANDED_VERDICT" in
       landed) return 0 ;;
@@ -1076,6 +1083,16 @@ validate_worktree_teardown_safety() {
     esac
     return 1
   fi
+
+  if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
+    if worktree_safety_blocked_by_lock "uncommitted changes"; then
+      return "$TEARDOWN_WORKTREE_SAFETY_LOCK_BLOCKED"
+    fi
+    echo "REFUSED: cannot inspect worktree $WT for uncommitted changes." >&2
+    echo "Restore the git index state, or get the captain's explicit OK to discard, then --force." >&2
+    return 1
+  fi
+  dirty=$(printf '%s\n' "$dirty_raw" | grep -vE '^\?\? (\.claude/|\.fm-(grok|kimi)-turnend$)' | head -1 || true)
 
   if ! unpushed_raw=$(git -C "$WT" log --oneline HEAD --not --remotes -- 2>/dev/null); then
     if worktree_safety_blocked_by_lock "commits not on a remote"; then
@@ -1144,8 +1161,8 @@ validate_worktree_teardown_safety() {
 
 remove_nested_ship_worktrees() {
   local WT=$WT FORCE=$FORCE
-  local slot field path top complete=0 i j swap
-  local nested=()
+  local slot field path top head complete=0 i j swap
+  local nested=() heads=()
   [ "$KIND" = ship ] && [ "$BACKEND" != orca ] && [ -d "$WT" ] || return 0
   slot=$(canonical_existing_dir "$WT") || return 1
   while IFS= read -r -d '' field; do
@@ -1168,6 +1185,7 @@ remove_nested_ship_worktrees() {
       echo "REFUSED: cannot inspect nested worktree $path." >&2
       return 1
     fi
+    heads+=("$(git -C "$path" rev-parse --verify HEAD 2>/dev/null || true)")
     WT=$path
     FORCE=
     validate_worktree_teardown_safety default-only || return 1
@@ -1178,9 +1196,19 @@ remove_nested_ship_worktrees() {
         swap=${nested[i]}
         nested[i]=${nested[j]}
         nested[j]=$swap
+        swap=${heads[i]}
+        heads[i]=${heads[j]}
+        heads[j]=$swap
       fi
     done
     path=${nested[i]}
+    WT=$path
+    validate_nested_worktree_files || return 1
+    head=$(git -C "$path" rev-parse --verify HEAD 2>/dev/null || true)
+    if [ -z "${heads[i]}" ] || [ "$head" != "${heads[i]}" ]; then
+      echo "REFUSED: nested worktree $path HEAD changed or cannot be inspected after landing proof." >&2
+      return 1
+    fi
     if ! git -C "$PROJ" worktree remove -- "$path"; then
       echo "REFUSED: could not remove nested worktree $path; keeping the slot." >&2
       return 1

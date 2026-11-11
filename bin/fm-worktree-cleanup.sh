@@ -46,6 +46,10 @@
 # Treehouse's own lock through cleanup, without leasing, resetting or returning.
 # A changed snapshot refuses; rerun only after checking current pool status.
 #
+# --check-index-flags <path> and --check-retained-ignored <path> inspect only.
+# Each exits 0 when clear, 2 for hidden index flags or ignored files retained by
+# KEEP respectively, and 1 when inspection fails. Neither stops processes.
+#
 # --in-use <path> exits 0 when any inspectable process has its working directory
 # or an open file at or below <path>, 2 when none does, and refuses (exit 1) when
 # it cannot inspect processes. It never stops anything.
@@ -99,6 +103,18 @@ def keep(relative):
     return any(fnmatch.fnmatchcase("/".join(parts[i:]), pattern)
                and (pattern != "deps" or not compiled(parts[:i]))
                for pattern in KEEP for i in range(len(parts)))
+
+
+def hidden_index_flags(root):
+    return any(line and (line[0] == 'S' or line[0].islower())
+               for line in git(root, "ls-files", "-v", "-z").decode().split('\0'))
+
+
+def retained_ignored(root):
+    return any(keep(relative) or any(keep(parent) for parent in relative.parents)
+               for relative in (Path(os.fsdecode(raw)) for raw in git(
+                   root, "ls-files", "--others", "--ignored", "--exclude-standard", "-z"
+               ).split(b"\0") if raw))
 
 
 def within(parent, path):
@@ -354,6 +370,10 @@ def free_slot(project, pool, name):
 
 
 try:
+    if sys.argv[1:2] == ["--check-index-flags"] and len(sys.argv) == 3:
+        sys.exit(2 if hidden_index_flags(sys.argv[2]) else 0)
+    if sys.argv[1:2] == ["--check-retained-ignored"] and len(sys.argv) == 3:
+        sys.exit(2 if retained_ignored(sys.argv[2]) else 0)
     if sys.argv[1:2] == ["--in-use"] and len(sys.argv) == 3:
         sys.exit(0 if in_use(sys.argv[2]) else 2)
     if sys.argv[1] == "--free-slot":

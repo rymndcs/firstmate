@@ -243,6 +243,16 @@ def landed(project, path):
     return False
 
 
+def hidden_index_flags(path):
+    try:
+        run(ROOT / 'bin/fm-worktree-cleanup.sh', '--check-index-flags', path)
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode != 2:
+            raise
+        return True
+    return False
+
+
 def clean(project, entry):
     path = Path(entry['worktree']).resolve()
     if protected(project, path):
@@ -256,8 +266,7 @@ def clean(project, entry):
         reason = 'uncommitted or untracked files'
     elif git(path, 'stash', 'list'):
         reason = 'repository has a stash'
-    elif any(line and (line[0] == 'S' or line[0].islower())
-             for line in run('git', '-C', path, 'ls-files', '-v', '-z').split('\0')):
+    elif hidden_index_flags(path):
         reason = 'index flags hide working-tree changes'
     if reason:
         notice(str(path), f'kept {path}: {reason}')

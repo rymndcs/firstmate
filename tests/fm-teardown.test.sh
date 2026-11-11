@@ -3960,6 +3960,7 @@ SH
 test_nested_landed() {
   local c inner deep sibling
   c=$(nested_fixture landed)
+  nested_tracked_fixture "$c"
   inner="$c/wt/.claude/worktrees/inner copy"
   deep="$inner/tmp/deeper"
   sibling="$c/wt-other"
@@ -4060,10 +4061,141 @@ SH
   pass "nested $variant refuses and preserves task before return"
 }
 
+nested_tracked_fixture() {
+  local c=$1 inner
+  inner="$c/wt/.claude/worktrees/inner copy"
+  printf 'base\n' > "$inner/tracked"
+  git -C "$inner" add tracked
+  git -C "$inner" commit -qm 'landed tracked file'
+  git -C "$inner" push -q origin HEAD:main
+}
+
+test_nested_private() {
+  local variant=$1 c inner rc=0
+  c=$(nested_fixture "$variant")
+  inner="$c/wt/.claude/worktrees/inner copy"
+  case "$variant" in
+    skip-worktree|assume-unchanged)
+      nested_tracked_fixture "$c"
+      git -C "$inner" update-index "--$variant" tracked
+      printf 'unpublished tracked bytes\n' > "$inner/tracked"
+      ;;
+    env|notes|rails-key|dependency)
+      printf '%s\n' '.env' '.claude/' 'config/' 'node_modules/' >> "$(git -C "$inner" rev-parse --git-path info/exclude)"
+      case "$variant" in
+        env) printf 'private fixture\n' > "$inner/.env" ;;
+        notes) mkdir -p "$inner/apps/web/.claude"; printf 'private fixture\n' > "$inner/apps/web/.claude/notes.md" ;;
+        rails-key) mkdir -p "$inner/config/credentials"; printf 'private fixture\n' > "$inner/config/credentials/development.key" ;;
+        dependency) mkdir -p "$inner/node_modules/pkg"; printf 'private fixture\n' > "$inner/node_modules/pkg/index.js" ;;
+      esac
+      ;;
+    status-unreadable|flags-unreadable|ignored-unreadable|head-unreadable)
+      cat > "$c/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+if [ "${2:-}" = "$NESTED_CASE/wt/.claude/worktrees/inner copy" ]; then
+  case "$NESTED_VARIANT:$*" in
+    status-unreadable:*'status --porcelain'*|flags-unreadable:*'ls-files -v -z'*|ignored-unreadable:*'ls-files --others --ignored'*|head-unreadable:*'rev-parse --verify HEAD'*) exit 1 ;;
+  esac
+fi
+exec "$REAL_GIT_FOR_TEST" "$@"
+SH
+      chmod +x "$c/fakebin/git"
+      ;;
+  esac
+  [ -z "$(git -C "$inner" status --porcelain)" ] || fail "nested $variant fixture is visibly dirty"
+  NESTED_CASE="$c" NESTED_VARIANT="$variant" run_teardown "$c" > "$c/out" 2> "$c/err" || rc=$?
+  [ "$rc" -ne 0 ] || fail "nested $variant unexpectedly allowed return"
+  [ -f "$inner/.git" ] || fail "nested $variant copy was discarded"
+  [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] || fail "nested $variant changed task or returned slot"
+  grep -F "$inner" "$c/err" >/dev/null || fail "nested $variant refusal did not name copy"
+  case "$variant" in
+    skip-worktree|assume-unchanged) [ "$(cat "$inner/tracked")" = 'unpublished tracked bytes' ] || fail 'hidden edit changed' ;;
+    env) [ "$(cat "$inner/.env")" = 'private fixture' ] || fail 'private env changed' ;;
+    notes) [ "$(cat "$inner/apps/web/.claude/notes.md")" = 'private fixture' ] || fail 'private notes changed' ;;
+    rails-key) [ "$(cat "$inner/config/credentials/development.key")" = 'private fixture' ] || fail 'private key changed' ;;
+    dependency) [ "$(cat "$inner/node_modules/pkg/index.js")" = 'private fixture' ] || fail 'dependency changed' ;;
+  esac
+  pass "nested $variant refuses and preserves unpublished or uninspectable copy"
+}
+
+test_nested_disposable() {
+  local c inner
+  c=$(nested_fixture disposable)
+  inner="$c/wt/.claude/worktrees/inner copy"
+  printf '*.log\n' >> "$(git -C "$inner" rev-parse --git-path info/exclude)"
+  printf 'discardable\n' > "$inner/build.log"
+  NESTED_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'disposable ignored output blocked nested cleanup'
+  [ ! -e "$inner" ] && [ -s "$c/returns" ] || fail 'disposable ignored output prevented return'
+  pass 'nested disposable ignored output follows existing retention contract'
+}
+
+test_nested_changed() {
+  local variant=$1 c inner rc=0
+  c=$(nested_fixture "changed-$variant")
+  inner="$c/wt/.claude/worktrees/inner copy"
+  nested_tracked_fixture "$c"
+  git -C "$inner" checkout -q --detach
+  printf '.env\n' >> "$(git -C "$inner" rev-parse --git-path info/exclude)"
+  cat > "$c/fakebin/git" <<'SH'
+#!/usr/bin/env bash
+inner="$NESTED_CASE/wt/.claude/worktrees/inner copy"
+if [ "${2:-}" = "$inner" ] && [ "${3:-} ${4:-}" = 'merge-tree --write-tree' ] && [ ! -e "$NESTED_CASE/interleaved" ]; then
+  "$REAL_GIT_FOR_TEST" "$@" || exit $?
+  "$REAL_GIT_FOR_TEST" -C "$inner" rev-parse HEAD > "$NESTED_CASE/proven-head"
+  case "$NESTED_VARIANT" in
+    head)
+      printf 'late unpublished content\n' > "$inner/late-feature"
+      "$REAL_GIT_FOR_TEST" -C "$inner" add late-feature
+      "$REAL_GIT_FOR_TEST" -C "$inner" commit -qm 'late nested work'
+      ;;
+    dirty) printf 'late unpublished content\n' > "$inner/tracked" ;;
+    skip-worktree|assume-unchanged)
+      "$REAL_GIT_FOR_TEST" -C "$inner" update-index "--$NESTED_VARIANT" tracked
+      printf 'late unpublished content\n' > "$inner/tracked"
+      ;;
+    ignored) printf 'late unpublished content\n' > "$inner/.env" ;;
+  esac
+  "$REAL_GIT_FOR_TEST" -C "$inner" rev-parse HEAD > "$NESTED_CASE/late-head"
+  touch "$NESTED_CASE/interleaved"
+  exit 0
+fi
+if [ "${2:-}" = "$inner" ] && [ -e "$NESTED_CASE/interleaved" ] && [ "$NESTED_VARIANT" = head-unreadable ] && [ "${3:-} ${4:-} ${5:-}" = 'rev-parse --verify HEAD' ]; then
+  exit 1
+fi
+exec "$REAL_GIT_FOR_TEST" "$@"
+SH
+  chmod +x "$c/fakebin/git"
+  NESTED_CASE="$c" NESTED_VARIANT="$variant" run_teardown "$c" > "$c/out" 2> "$c/err" || rc=$?
+  [ -f "$c/interleaved" ] || fail "nested changed $variant did not reach controlled interleaving"
+  [ "$rc" -ne 0 ] || fail "nested changed $variant unexpectedly allowed return"
+  [ -f "$inner/.git" ] || fail "nested changed $variant copy was discarded"
+  [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] || fail "nested changed $variant changed task or returned slot"
+  grep -F "REFUSED: nested worktree $inner" "$c/err" >/dev/null || fail "nested changed $variant missed early refusal"
+  case "$variant" in
+    head)
+      [ "$(cat "$c/proven-head")" != "$(cat "$c/late-head")" ] || fail 'controlled commit did not advance HEAD'
+      [ "$(git -C "$inner" rev-parse HEAD)" = "$(cat "$c/late-head")" ] || fail 'late detached HEAD lost'
+      [ "$(cat "$inner/late-feature")" = 'late unpublished content' ] || fail 'late file lost'
+      [ -n "$(git -C "$inner" reflog --format=%H)" ] || fail 'late detached reflog lost'
+      if git -C "$c/project" merge-base --is-ancestor "$(cat "$c/late-head")" origin/main; then fail 'late commit unexpectedly landed'; fi
+      ;;
+    dirty|skip-worktree|assume-unchanged) [ "$(cat "$inner/tracked")" = 'late unpublished content' ] || fail 'late tracked bytes lost' ;;
+    ignored) [ "$(cat "$inner/.env")" = 'late unpublished content' ] || fail 'late ignored bytes lost' ;;
+  esac
+  pass "nested changed $variant refuses after controlled proof/removal interleaving"
+}
+
 run_nested_tests() {
   test_nested_landed
   test_nested_squash
+  test_nested_disposable
   local variant
+  for variant in skip-worktree assume-unchanged env notes rails-key dependency status-unreadable flags-unreadable ignored-unreadable head-unreadable; do
+    test_nested_private "$variant"
+  done
+  for variant in head dirty skip-worktree assume-unchanged ignored head-unreadable; do
+    test_nested_changed "$variant"
+  done
   for variant in unlanded pushed forced dirty agent-dirty unknown locked missing mixed inventory; do
     test_nested_refusal "$variant"
   done
@@ -4072,7 +4204,9 @@ run_nested_tests() {
 if [ "${1:-}" = nested ]; then
   if [ "$#" -gt 1 ]; then
     case "$2" in
-      landed|squash) "test_nested_$2" ;;
+      landed|squash|disposable) "test_nested_$2" ;;
+      private) test_nested_private "$3" ;;
+      changed) test_nested_changed "$3" ;;
       *) test_nested_refusal "$2" ;;
     esac
   else
