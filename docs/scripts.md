@@ -44,6 +44,8 @@ The shared no-mistakes gate refusal for fleet lifecycle entrypoints is summarize
 | `fm-subagent-pretool-check.sh` | Primary-home delegation-shape PreToolUse guard (docs/subagent-guard.md) |
 | `fm-ask-user-pretool-check.sh` | Per-finding PreToolUse gate forcing the ask-user-authority skill (docs/ask-user-guard.md) |
 | `fm-ask-user-command-policy.mjs` | Semantic owner of the ask-user gate's steer command-word decision (docs/ask-user-guard.md) |
+| `fm-process-pretool-check.sh` | Scoped PreToolUse transport for the worker and validation process-kill guard (docs/process-kill-guard.md) |
+| `fm-process-command-policy.mjs` | Owner of the process-kill guard's literal word-filter decision (docs/process-kill-guard.md) |
 | `fm-supervision-instructions.sh` | Render the session-start primary-harness supervision block or the one-line repair instruction |
 | `fm-home-seed.sh`        | Transactionally provision a local secondmate home and maintain `data/secondmates.md` |
 | `fm-remote-home-seed.sh` | Register and provision a whole secondmate home on an SSH-reachable host              |
