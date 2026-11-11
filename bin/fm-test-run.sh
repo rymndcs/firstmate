@@ -459,6 +459,7 @@ tests/fm-grok-stop-live-e2e.test.sh 14
 tests/fm-guard-stale-banner.test.sh 4674
 tests/fm-harness-liveness-drift-live-e2e.test.sh 14
 tests/fm-herdr-session-cleanup.test.sh 7466
+tests/fm-jira.test.sh 136038
 tests/fm-kimi-harness.test.sh 14447
 tests/fm-linear.test.sh 27617
 tests/fm-merge-local.test.sh 6934
@@ -466,12 +467,15 @@ tests/fm-nomistakes-daemon.test.sh 3861
 tests/fm-omp-harness.test.sh 8933
 tests/fm-omp-herdr-live-e2e.test.sh 17
 tests/fm-omp-primary-live-e2e.test.sh 12
+tests/fm-omp-reset.test.sh 63973
+tests/fm-omp-watch-transition.test.sh 563124
 tests/fm-on.test.sh 10803
 tests/fm-opencode-primary-live-e2e.test.sh 14
 tests/fm-operational-input.test.sh 267
 tests/fm-pending-reply.test.sh 11464
 tests/fm-pi-primary-live-e2e.test.sh 17
 tests/fm-pi-watch-extension.test.sh 18772
+tests/fm-pr-activity.test.sh 156628
 tests/fm-pr-auto-register.test.sh 158063
 tests/fm-pr-check-security.test.sh 372062
 tests/fm-pr-ci.test.sh 15875
