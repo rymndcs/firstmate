@@ -176,17 +176,198 @@ expect_code 0 "$rc" 'an unknown wake kind must not require reset'
 assert_contains "$output" WARNING 'an unknown wake kind must warn'
 drain
 
-printf '1\t3\tstale\tworker\tstale: worker (paused; rechecked)\n' > "$LAB/state/.wake-queue"
+stale_row() {
+  printf '1\t3\tstale\tworker\t%s' "$1"
+  [ -z "${2:-}" ] || printf '\t%s' "$2"
+  printf '\n'
+}
+assert_observed() {
+  jq -es --arg observed "$1" '.[-1].observed == $observed' "$LAB/state/.omp-watch-transitions.log" >/dev/null || fail "expected observed $1"
+}
+arm --transition work-pending --reason 'begin unsupported event-kind case'
+printf '1\t3\tidle-recheck\tworker\tunsupported kind named like an internal class\n' > "$LAB/state/.wake-queue"
 "$DRAIN" >/dev/null 2>&1
-arm --transition idle-recheck --reason 'already reported idle wait'
-expect_code 0 "$rc" 'idle recheck must not force another reset'
+arm
+expect_code 0 "$rc" 'unsupported event kind must preserve unknown-state arming'
+assert_contains "$output" WARNING 'unsupported kind must not impersonate the verified idle class'
+assert_observed unknown
+
+arm --transition work-pending --reason 'begin isolated stale cycle'
+expect_code 0 "$rc" 'stale fixture starts a fresh cycle'
+stale_row 'stale: worker (unresponsive; deep inspection required)' > "$LAB/state/.wake-queue"
 "$DRAIN" >/dev/null 2>&1
-arm --transition idle-recheck --reason 'already reported idle wait'
-expect_code 0 "$rc" 'repeated idle recheck must not produce a reset storm'
+arm
+expect_code 2 "$rc" 'fresh actionable stale cannot acquire the idle exemption'
+assert_observed clean
+assert_contains "$output" firstmate_watch_reset 'fresh stale refusal names reset'
+arm --transition watching-only --reason 'the new stale event is handled; no work remains'
+expect_code 2 "$rc" 'fresh handled stale still requires reset'
+assert_observed clean
+arm --transition work-pending --reason 'begin misleading display-text case'
+stale_row 'stale: worker (paused; rechecked)' > "$LAB/state/.wake-queue"
+"$DRAIN" >/dev/null 2>&1
+arm
+expect_code 2 "$rc" 'display prose cannot establish idle provenance'
+assert_observed clean
+pass 'fresh stale wakes cannot bypass reset with bare or watching-only arms'
+
+for class in parked 'done' paused; do
+  mkdir -p "$LAB/fakebin"
+  cat > "$LAB/fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+case "$1" in
+  list-windows) printf 'fm-worker\n' ;;
+  display-message)
+    case "$*" in
+      *pane_current_command*) printf '%s\n' "${PRODUCER_COMMAND:-claude}" ;;
+      *pane_tty*) : ;;
+      *) printf '%%1\n' ;;
+    esac ;;
+  capture-pane) printf 'idle composer\n' ;;
+  *) exit 1 ;;
+esac
+SH
+  cat > "$LAB/fakebin/crew-state" <<'SH'
+#!/usr/bin/env bash
+printf 'state: %s · source: status-log · reported state\n' "$PRODUCER_CLASS"
+SH
+  chmod +x "$LAB/fakebin/tmux" "$LAB/fakebin/crew-state"
+  for repetition in 1 2; do
+    arm --transition work-pending --reason "begin $class recheck cycle"
+    expect_code 0 "$rc" 'producer fixture starts a fresh cycle'
+    kind=scout
+    [ "$class" != paused ] || kind=secondmate
+    printf 'window=test:fm-worker\nbackend=tmux\nharness=claude\nkind=%s\n' "$kind" > "$LAB/state/worker.meta"
+    pane_hash=$(printf 'idle composer' | { if command -v md5 >/dev/null 2>&1; then md5 -q; else md5sum | awk '{print $1}'; fi; })
+    printf '%s' "$pane_hash" > "$LAB/state/.hash-test_fm-worker"
+    printf '1\n' > "$LAB/state/.count-test_fm-worker"
+    printf '%s: already reported\n' "$class" > "$LAB/state/worker.status"
+    if [ "$(uname)" = Darwin ]; then
+      sig=$(stat -f '%z:%Fm' "$LAB/state/worker.status")
+    else
+      sig=$(stat -c '%s:%Y' "$LAB/state/worker.status")
+    fi
+    printf '%s' "$sig" > "$LAB/state/.seen-worker_status"
+    touch "$LAB/state/.last-check"
+    PATH="$LAB/fakebin:$PATH" PRODUCER_CLASS="$class" FM_CREW_STATE_BIN="$LAB/fakebin/crew-state" \
+      FM_POLL=0 FM_SIGNAL_GRACE=0 FM_PAUSE_RESURFACE_SECS=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+      "$ROOT/bin/fm-watch.sh" > "$LAB/producer.out" 2> "$LAB/producer.err" || fail "real $class producer failed: $(cat "$LAB/producer.err")"
+    assert_grep 'stale: test:fm-worker' "$LAB/producer.out" 'the real producer must surface its recheck'
+    "$DRAIN" > "$LAB/drained.out" 2>&1
+    rm -f "${LAB:?}/state/worker.meta" "${LAB:?}/state/worker.status"
+    "$DRAIN" >/dev/null 2>&1
+    if [ "$repetition" = 1 ]; then arm
+    else arm --transition idle-recheck --reason 'already reported idle wait'; fi
+    expect_code 0 "$rc" "$class recheck must not force reset"
+    assert_observed idle-recheck
+    assert_not_contains "$output" WARNING 'verified idle provenance must not degrade to unknown'
+  done
+  drain
+done
+pass 'real idle and paused producers retain verifiable provenance through drain and repeated arms'
+
+for scenario in fresh terminal escalated dead; do
+  arm --transition work-pending --reason "begin $scenario stale cycle"
+  expect_code 0 "$rc" 'fresh producer fixture starts a new cycle'
+  printf 'window=test:fm-worker\nbackend=tmux\nharness=claude\nkind=scout\n' > "$LAB/state/worker.meta"
+  class=unknown
+  command=claude
+  case "$scenario" in
+    terminal) status='done' ;;
+    escalated) status=working; class=working ;;
+    dead) status=working; command=zsh ;;
+    *) status=working ;;
+  esac
+  printf '%s: already reported\n' "$status" > "$LAB/state/worker.status"
+  if [ "$(uname)" = Darwin ]; then sig=$(stat -f '%z:%Fm' "$LAB/state/worker.status")
+  else sig=$(stat -c '%s:%Y' "$LAB/state/worker.status"); fi
+  printf '%s' "$sig" > "$LAB/state/.seen-worker_status"
+  pane_hash=$(printf 'idle composer' | { if command -v md5 >/dev/null 2>&1; then md5 -q; else md5sum | awk '{print $1}'; fi; })
+  printf '%s' "$pane_hash" > "$LAB/state/.hash-test_fm-worker"
+  printf '1\n' > "$LAB/state/.count-test_fm-worker"
+  rm -f "${LAB:?}/state/.stale-test_fm-worker" "${LAB:?}/state/.paused-test_fm-worker" "${LAB:?}/state/.quiet-stale-test_fm-worker" "${LAB:?}/state/.quiet-state-test_fm-worker"
+  if [ "$scenario" = escalated ]; then
+    printf '%s' "$pane_hash" > "$LAB/state/.stale-test_fm-worker"
+    printf '1\n' > "$LAB/state/.stale-since-test_fm-worker"
+  fi
+  touch "$LAB/state/.last-check"
+  PATH="$LAB/fakebin:$PATH" PRODUCER_CLASS="$class" PRODUCER_COMMAND="$command" FM_CREW_STATE_BIN="$LAB/fakebin/crew-state" \
+    FM_POLL=0 FM_SIGNAL_GRACE=0 FM_STALE_ESCALATE_SECS=0 FM_PAUSE_RESURFACE_SECS=0 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$ROOT/bin/fm-watch.sh" > "$LAB/producer.out" 2> "$LAB/producer.err" || fail "real $scenario producer failed: $(cat "$LAB/producer.err")"
+  assert_grep 'stale: test:fm-worker' "$LAB/producer.out" 'the real fresh producer must surface'
+  if [ "$scenario" = escalated ]; then assert_grep 'possible wedge, escalation' "$LAB/producer.out" 'the fixture must exercise wedge escalation'; fi
+  if [ "$scenario" = dead ]; then assert_grep 'agent exited or endpoint gone' "$LAB/producer.out" 'the fixture must exercise death'; fi
+  "$DRAIN" >/dev/null 2>&1
+  rm -f "${LAB:?}/state/worker.meta" "${LAB:?}/state/worker.status"
+  arm
+  expect_code 2 "$rc" "$scenario stale requires reset after handling"
+  assert_observed clean
+  assert_contains "$output" firstmate_watch_reset 'fresh producer refusal must name reset'
+  arm --transition watching-only --reason 'new event handled; nothing remains'
+  expect_code 2 "$rc" "$scenario watching-only declaration cannot bypass reset"
+  assert_observed clean
+  assert_not_contains "$output" WARNING 'fresh producer must be classified, not unknown'
+done
+pass 'real fresh, terminal, escalated and dead producers require reset after handling'
+
+for kind in signal check heartbeat; do
+  arm --transition work-pending --reason 'begin non-stale provenance case'
+  bash -c '. "$1"; fm_wake_append "$2" fixture "ordinary event" idle-recheck' _ "$LAB/bin/fm-wake-lib.sh" "$kind"
+  "$DRAIN" > "$LAB/drained.out" 2>&1
+  awk -F '\t' 'NF != 5 {exit 1}' "$LAB/drained.out" || fail 'non-stale queue rows gained stale provenance'
+  arm
+  expect_code 2 "$rc" 'stale provenance must not exempt a non-stale event'
+  assert_observed clean
+done
+arm --transition work-pending --reason 'begin malformed provenance case'
+stale_row 'stale recheck with an unexpected field' idle-recheck | awk '{print $0 "\textra"}' | "$LAB/bin/fm-omp-watch-transition.sh" drain
+arm
+expect_code 2 "$rc" 'malformed provenance must not establish an idle exemption'
+assert_observed clean
+arm --transition work-pending --reason 'begin malformed queued provenance case'
+{
+  stale_row 'stale recheck with an unexpected field' idle-recheck | awk '{print $0 "\textra"}'
+  stale_row 'later idle recheck' idle-recheck
+} > "$LAB/state/.wake-queue"
+"$DRAIN" >/dev/null 2>&1
+arm
+expect_code 2 "$rc" 'dedup must not bless malformed idle provenance'
+assert_observed clean
+pass 'stale provenance is structural and does not exempt other or malformed events'
+
+for ordering in fresh-first idle-first; do
+  arm --transition work-pending --reason 'begin duplicate stale cycle'
+  if [ "$ordering" = fresh-first ]; then
+    stale_row 'fresh actionable stale'
+    stale_row 'idle recheck' idle-recheck
+  else
+    stale_row 'idle recheck' idle-recheck
+    stale_row 'fresh actionable stale'
+  fi > "$LAB/state/.wake-queue"
+  "$DRAIN" >/dev/null 2>&1
+  arm
+  expect_code 2 "$rc" 'fresh duplicate must dominate an idle recheck in either order'
+  assert_observed clean
+  drain
+done
+arm --transition work-pending --reason 'begin successive stale drains'
+stale_row 'idle recheck' idle-recheck > "$LAB/state/.wake-queue"
+"$DRAIN" >/dev/null 2>&1
+stale_row 'new actionable stale' > "$LAB/state/.wake-queue"
+"$DRAIN" >/dev/null 2>&1
+arm
+expect_code 2 "$rc" 'fresh event in a later drain must dominate the earlier idle recheck'
+assert_observed clean
+stale_row 'idle recheck' idle-recheck > "$LAB/state/.wake-queue"
+"$DRAIN" >/dev/null 2>&1
+arm
+expect_code 2 "$rc" 'later idle drain must not erase fresh provenance'
+assert_observed clean
 drain
 arm --transition watching-only --reason 'nothing remains'
 expect_code 2 "$rc" 'declared watching-only must use reset'
-pass 'idle rechecks avoid reset storms and watching-only cannot bypass reset'
+pass 'fresh events dominate duplicate and successive idle drains'
 
 printf '#!/usr/bin/env bash\nexit 1\n' > "$LAB/bin/fm-watch.sh"
 arm --transition unknown --reason 'fixture failure'

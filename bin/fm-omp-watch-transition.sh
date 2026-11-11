@@ -14,16 +14,18 @@
 # Automatically observed startup, reset recovery, away delivery, watcher repair,
 # queued wakes, open status decisions, backlog holds and inbox questions preserve
 # arming. Unavailable or ambiguous evidence allows arming with a visible warning.
-# All-stale drains also preserve arming, so an idle recheck cannot force a reset
-# storm. Other harnesses are unaffected.
+# Only drains consisting entirely of producer-tagged idle rechecks preserve
+# arming as idle-recheck; fresh or escalated stale events remain clean-transition
+# candidates. Other harnesses are unaffected.
 #
 # Internal producers (OMPCODE=1, PI_SESSION_ID and PI_TOOL_CALL_ID required):
 #   cycle <starting|running|wake|failed> <watcher-pid> <cause>
 #     owns .omp-watch-cycle: five lines, session/call/phase/pid/cause.
 #     Terminal updates apply only to the current arm, never its successor.
 #   drain  # drained canonical wake TSV on stdin, after queue consumption commits
-#     owns .omp-watch-drain: session/call/space-separated wake kinds.
-#     Empty repeated drains retain the current cycle's earlier wake kinds.
+#     owns .omp-watch-drain: session/call/space-separated wake classes.
+#     Stale rows tagged idle-recheck use that class; other stale rows use stale.
+#     Empty repeated drains retain the current cycle's earlier wake classes.
 #   recovery <session>  # one replacement arm, consumed at the arm boundary
 #   arm <declaration-or-empty> <description-or-empty>
 # Recovery records are session-bound. A new session always starts by arming.
@@ -76,7 +78,13 @@ record_drain() {
   if [ -f "$DRAIN" ]; then
     { IFS= read -r previous_session; IFS= read -r previous_call; IFS= read -r previous_kinds; } < "$DRAIN" || true
   fi
-  kinds=$(printf '%s\n' "$rows" | awk -F '\t' 'NF >= 5 {print $3}' | LC_ALL=C sort -u | paste -sd' ' -)
+  kinds=$(printf '%s\n' "$rows" | awk -F '\t' '
+    NF >= 5 {
+      if ($3 == "stale" && NF == 6 && $6 == "idle-recheck") print "idle-recheck"
+      else if ($3 ~ /^(check|heartbeat|signal|stale)$/) print $3
+      else print "unknown"
+    }
+  ' | LC_ALL=C sort -u | paste -sd' ' -)
   if [ "$previous_session" = "$SESSION" ] && [ "$previous_call" = "$cycle_call" ]; then
     kinds=$(printf '%s\n%s\n' "$kinds" "$previous_kinds" | tr ' ' '\n' | sed '/^$/d' | LC_ALL=C sort -u | paste -sd' ' -)
   fi
@@ -138,9 +146,9 @@ observe() {
   { IFS= read -r drain_session && IFS= read -r drain_call && IFS= read -r kinds; } < "$DRAIN" || return
   [ "$drain_session" = "$SESSION" ] && [ "$drain_call" = "$cycle_call" ] || return
   case "$kinds" in
-    stale) OBSERVED=idle-recheck ;;
+    idle-recheck) OBSERVED=idle-recheck ;;
     *)
-      if printf '%s\n' "$kinds" | grep -Eq '^(check|heartbeat|signal|stale)( (check|heartbeat|signal|stale))*$'; then
+      if printf '%s\n' "$kinds" | grep -Eq '^(check|heartbeat|signal|stale|idle-recheck)( (check|heartbeat|signal|stale|idle-recheck))*$'; then
         OBSERVED=clean
       fi
       ;;

@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # Shared durable wake queue and portable lock helpers.
+# fm_wake_append <kind> <key> <payload> [stale-provenance] writes canonical TSV:
+# epoch, sequence, kind, key, payload, and an optional stale-provenance field.
+# The bounded quiet/pause producer supplies idle-recheck; other stale rows omit
+# the optional field. fm-omp-watch-transition.sh --help owns omp enforcement.
+# Dedup retains the latest display row, but any actionable stale for that key
+# dominates idle-recheck provenance. Display payloads never establish provenance.
 
 FM_WAKE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_WAKE_DEFAULT_ROOT="$(cd "$FM_WAKE_LIB_DIR/.." && pwd)"
@@ -444,7 +450,7 @@ fm_wake_clean_field() {
 }
 
 fm_wake_append() {
-  local kind=$1 key=$2 payload=$3 clean_key clean_payload epoch seq seq_file status
+  local kind=$1 key=$2 payload=$3 clean_key clean_payload epoch seq seq_file status provenance=''
   case "$kind" in
     signal|stale|check|heartbeat) ;;
     *) printf 'fm_wake_append: invalid wake kind: %s\n' "$kind" >&2; return 2 ;;
@@ -452,6 +458,7 @@ fm_wake_append() {
 
   clean_key=$(printf '%s' "$key" | fm_wake_clean_field)
   clean_payload=$(printf '%s' "$payload" | fm_wake_clean_field)
+  if [ "$kind" = stale ] && [ "${4:-}" = idle-recheck ]; then provenance=$'\tidle-recheck'; fi
   epoch=$(date +%s)
   seq_file="$STATE/.wake-queue.seq"
   status=0
@@ -464,7 +471,7 @@ fm_wake_append() {
   seq=$((seq + 1))
   printf '%s\n' "$seq" > "$seq_file" || status=$?
   if [ "$status" -eq 0 ]; then
-    printf '%s\t%s\t%s\t%s\t%s\n' "$epoch" "$seq" "$kind" "$clean_key" "$clean_payload" >> "$FM_WAKE_QUEUE" || status=$?
+    printf '%s\t%s\t%s\t%s\t%s%s\n' "$epoch" "$seq" "$kind" "$clean_key" "$clean_payload" "$provenance" >> "$FM_WAKE_QUEUE" || status=$?
   fi
   fm_lock_release "$FM_WAKE_QUEUE_LOCK"
   return "$status"
@@ -515,10 +522,14 @@ fm_wake_print_deduped() {
         seen[dedupe] = 1
       }
       line[dedupe] = $0
+      if ($3 == "stale" && !(NF == 6 && $6 == "idle-recheck")) actionable[dedupe] = 1
     }
     END {
       for (i = 1; i <= count; i++) {
-        print line[order[i]]
+        if (actionable[order[i]]) {
+          split(line[order[i]], fields, "\t")
+          print fields[1] "\t" fields[2] "\t" fields[3] "\t" fields[4] "\t" fields[5]
+        } else print line[order[i]]
       }
     }
   ' "$file"

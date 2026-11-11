@@ -332,7 +332,7 @@ busy_turn_over_age() {  # <task>
 # Bounded idle rechecks share status-age anchoring and per-window throttling.
 # Death surfaces immediately once; subsequent rechecks use the long cadence.
 handle_bounded_stale() {  # <window> <task> <hash> <paused|parked|done|dead>
-  local win=$1 task=$2 h=$3 class=$4 key statusf mtime age rf rf_age reason group
+  local win=$1 task=$2 h=$3 class=$4 key statusf mtime age rf rf_age reason group provenance=''
   case "$class" in
     paused) group=paused ;;
     dead) group=dead ;;
@@ -355,7 +355,8 @@ handle_bounded_stale() {  # <window> <task> <hash> <paused|parked|done|dead>
       dead) reason="stale: $win (agent exited or endpoint gone; rechecked on a long cadence)" ;;
       *) reason="stale: $win ($class ${age}s; healthy idle agent, rechecked on a long cadence)" ;;
     esac
-    fm_wake_append stale "$win" "$reason" || exit 1
+    [ "$group" = dead ] || provenance=idle-recheck
+    fm_wake_append stale "$win" "$reason" "$provenance" || exit 1
     date +%s > "$rf"
     wake "$reason"
   fi
