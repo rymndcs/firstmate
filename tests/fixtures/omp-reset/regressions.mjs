@@ -10,6 +10,7 @@ const handlers = new Map(), tools = new Map(), commands = new Map();
 const messages = [], timers = [], submitted = [], errors = [];
 let enqueueFailures = 0, enqueueCalls = 0;
 let queued = false;
+let contextUsage = { tokens: 60000, contextWindow: 100000, percent: 60 };
 let editor = '', jobs = null, session = 'old', terminalInput, switchMode = 'success', idle = true, switches = 0;
 const pi = {
   zod: chain,
@@ -26,6 +27,7 @@ const ctx = {
   agent: { kind: 'main' }, mode: 'tui', hasUI: true,
   sessionManager: { getSessionId: () => session, getSessionFile: () => '/old.jsonl' },
   isIdle: () => idle, hasPendingMessages: () => queued, getAsyncJobSnapshot: () => jobs,
+  getContextUsage: () => contextUsage,
   ui: { getEditorText: () => editor, setEditorText: value => { editor = value; },
     notify(text, type) { errors.push({ text, type, session }); },
     onTerminalInput(fn) { terminalInput = fn; return () => { terminalInput = undefined; }; } },
@@ -46,7 +48,7 @@ async function emit(name, event = {}) {
   for (const fn of handlers.get(name) ?? []) results.push(await fn(event, ctx));
   return results;
 }
-const call = params => tools.get('firstmate_watch_reset').execute('test', params, undefined, undefined, ctx);
+const call = (params, context = ctx) => tools.get('firstmate_watch_reset').execute('test', params, undefined, undefined, context);
 const recoveries = () => messages.filter(x => x.message.customType === 'firstmate-reset-recovery' && x.options.triggerTurn);
 function classify(content) {
   const result = spawnSync('bash', ['-c', `
@@ -116,12 +118,144 @@ function waitFile(path) {
     const w = watch(`${home}/state`, () => { if (existsSync(path)) { w.close(); resolve(); } });
   });
 }
+function admitHeartbeat() {
+  const env = { ...process.env, OMPCODE: '1', PI_SESSION_ID: session, PI_TOOL_CALL_ID: 'arm-call' };
+  for (const args of [
+    [`${home}/bin/fm-omp-watch-transition.sh`, 'cycle', 'wake', '42', 'fixture'],
+    ['bash', '-c', '. "$1"; fm_wake_append heartbeat fixture "heartbeat: fixture"', '_', `${home}/bin/fm-wake-lib.sh`],
+    [`${home}/bin/fm-wake-drain.sh`],
+  ]) {
+    const result = spawnSync(args[0], args.slice(1), { env, encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+  }
+}
+let rearmCalls = 0;
+async function rearm(context, claim = '') {
+  const event = { toolName: 'bash', toolCallId: `after-context-refusal-${++rearmCalls}`, input: {
+    command: `[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh${claim}`,
+    async: true, timeout: 0,
+  } };
+  let input = event.input;
+  for (const handler of handlers.get('tool_call') ?? []) {
+    const result = await handler({ ...event, input }, context);
+    assert.notEqual(result?.block, true, 'plain tracked arm must pass the existing command guards');
+    input = result?.input ?? input;
+  }
+  assert.equal(input.async, true, 'context transport must retain native tracked execution');
+  assert.equal(input.timeout, 0, 'context transport must retain the unbounded arm timeout');
+  return spawnSync('bash', ['-c', input.command], { cwd: home, encoding: 'utf8', env: {
+    ...process.env, OMPCODE: '1', PI_SESSION_ID: session, PI_TOOL_CALL_ID: event.toolCallId,
+    FM_OMP_CONTEXT_PERCENT: '60',
+  } });
+}
 extension(pi);
 mkdirSync(`${home}/state/classifier-away`, { recursive: true });
 writeFileSync(`${home}/state/classifier-away/.afk`, '');
 assert.deepEqual(classify('I am back; please show the investigation results.'), ['', '', 'yes'], 'a real human return must remain unmarked and end away mode');
 await emit('session_start');
-if (scenario.startsWith('questions-')) {
+if (scenario === 'context-missing-ctx' || scenario === 'context-missing-method') {
+  await arm();
+  const previousNonce = (await call({action:'prepare'})).details.nonce;
+  assert.ok(previousNonce, 'measured high context must prepare before missing evidence');
+  const context = scenario === 'context-missing-ctx' ? undefined : ctx;
+  if (context) delete context.getContextUsage;
+  const event = {toolName:'bash',input:{command:'exec bin/fm-watch-arm.sh | head -1'}};
+  await assert.doesNotReject(async () => {
+    for (const handler of handlers.get('tool_call') ?? []) {
+      const blocked = await handler(event, context);
+      if (blocked?.block) assert.match(blocked.reason, /watcher-arm/);
+    }
+  }, 'missing context must not throw before the Bash rejection');
+  assert.ok((await handlers.get('tool_call').at(-1)(event, context)).block,
+    'missing context must not bypass rejected Bash commands');
+  let result;
+  await assert.doesNotReject(async () => {
+    result = await call({action:'prepare'}, context ?? null);
+  }, 'missing context or measurement method must refuse reset without throwing');
+  assert.equal(result.isError, true);
+  assert.equal(result.details.nonce, undefined);
+  assert.match(result.content.map(x => x.text ?? '').join('\n'), /plain re-arm/i);
+  assert.doesNotMatch(result.content.map(x => x.text ?? '').join('\n'), /# stow/);
+  let refused;
+  await assert.doesNotReject(async () => {
+    refused = await call({action:'ready',nonce:previousNonce,stowComplete:true,onlyKeepingWatch:true,
+      pendingQuestionsRecorded:true,stowReceipt:stowReceipt(),handoff:'Next: supervise.'}, context ?? null);
+  }, 'missing context must also safely refuse readiness');
+  assert.equal(refused.isError, true, 'missing evidence must invalidate the earlier nonce');
+  assert.equal(timers.length, 0);
+  assert.equal(existsSync(`${home}/state/.omp-reset-handoff.json`), false);
+  await commands.get('fm-reset').handler(previousNonce, ctx);
+  assert.equal(switches, 0);
+  assert.deepEqual(messages, []);
+  admitHeartbeat();
+  for (const claim of ['', ' --transition watching-only --reason "only watching remains"']) {
+    let continuation;
+    await assert.doesNotReject(async () => { continuation = await rearm(context, claim); },
+      'missing context must not throw in either registered Bash callback');
+    assert.equal(continuation.status, 0, 'unavailable context must replace inherited high usage and permit real arm');
+    assert.match(continuation.stdout, /heartbeat: fixture/);
+    admitHeartbeat();
+  }
+} else if (scenario === 'context-rearm-fresh') {
+  await arm();
+  admitHeartbeat();
+  contextUsage = { tokens: 39990, contextWindow: 100000, percent: 39.99 };
+  assert.equal((await call({ action: 'prepare' })).isError, true);
+  contextUsage = { tokens: 40001, contextWindow: 100000, percent: 40.001 };
+  const high = await rearm(ctx);
+  assert.equal(high.status, 2, 'a refused low preparation must not exempt a later high-context arm');
+  assert.match(high.stderr, /reset required/);
+  contextUsage = undefined;
+  const unavailable = await rearm(ctx);
+  assert.equal(unavailable.status, 0, 'unavailable usage must replace the prior high measurement');
+  assert.match(unavailable.stdout, /heartbeat: fixture/);
+} else if (scenario.startsWith('context-')) {
+  await arm();
+  const previousNonce = (await call({action:'prepare'})).details.nonce;
+  assert.ok(previousNonce, 'high context must prepare before testing a changed measurement');
+  const kind = scenario.slice('context-'.length);
+  const percent = {zero:0,below:39.99,boundary:40,above:40.01,high:80,unknown:null,nan:NaN}[kind];
+  contextUsage = kind === 'unavailable' ? undefined : {tokens:percent * 1000,contextWindow:100000,percent};
+  const result = await call({action:'prepare'});
+  admitHeartbeat();
+  for (const claim of ['', ' --transition watching-only --reason "only watching remains"']) {
+    const continuation = await rearm(ctx, claim);
+    assert.equal(continuation.status, kind === 'above' || kind === 'high' ? 2 : 0,
+      `${scenario}: real plain/watching-only arm must follow the current context threshold; ${continuation.stderr}`);
+    if (kind === 'above' || kind === 'high') assert.match(continuation.stderr, /reset required/);
+    else {
+      assert.match(continuation.stdout, /heartbeat: fixture/, 'permitted arm must reach its actual watcher child');
+      const record = JSON.parse(readFileSync(`${home}/state/.omp-watch-transition`, 'utf8'));
+      assert.equal(record.decision.verdict, 'allow');
+      admitHeartbeat();
+    }
+  }
+  if (kind === 'above' || kind === 'high') {
+    assert.equal(result.isError, undefined, `${scenario}: context above 40% must prepare`);
+    const nonce = result.details.nonce;
+    assert.ok(nonce, 'accepted preparation must return a fresh nonce');
+    const accepted = await call({action:'ready',nonce,stowComplete:true,onlyKeepingWatch:true,
+      pendingQuestionsRecorded:true,stowReceipt:stowReceipt(),handoff:'Next: supervise.'});
+    assert.equal(accepted.isError, undefined, 'eligible context must retain readiness');
+    await commands.get('fm-reset').handler(nonce, ctx);
+    assert.equal(switches, 1, 'eligible context must retain native reset');
+    unlinkSync(`${home}/state/.omp-reset-handoff.json`);
+  } else {
+    assert.equal(result.isError, true, `${scenario}: context at or below 40% or unavailable must refuse preparation`);
+    assert.equal(result.details.nonce, undefined, 'refused preparation must not return a nonce');
+    const text = result.content.map(x => x.text ?? '').join('\n');
+    assert.match(text, /plain re-arm/i, 'refusal must direct a plain re-arm');
+    assert.doesNotMatch(text, /# stow/, 'refusal must not start the stow skill');
+    const refused = await call({action:'ready',nonce:previousNonce,stowComplete:true,onlyKeepingWatch:true,
+      pendingQuestionsRecorded:true,stowReceipt:stowReceipt(),handoff:'Next: supervise.'});
+    assert.equal(refused.isError, true, 'refusal must invalidate an earlier preparation');
+    assert.equal(timers.length, 0, 'refusal must not schedule transport');
+    assert.equal(existsSync(`${home}/state/.omp-reset-handoff.json`), false, 'refusal must not save a handoff');
+    await commands.get('fm-reset').handler(previousNonce, ctx);
+    assert.equal(switches, 0, 'refusal must preserve the current session');
+    assert.deepEqual(messages, [], 'refusal must not queue another turn');
+  }
+} else if (scenario.startsWith('questions-')) {
   await arm();
   const nonce = (await call({action:'prepare'})).details.nonce;
   const params = {action:'ready',nonce,stowComplete:true,onlyKeepingWatch:true,

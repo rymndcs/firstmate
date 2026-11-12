@@ -140,7 +140,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   let removeInputListener: (() => void) | undefined;
   const fresh = () => request?.readyAt !== undefined && Date.now() - request.readyAt < 30_000;
   const sessionId = (ctx: ExtensionContext) => ctx.sessionManager.getSessionId();
-  const main = (ctx: ExtensionContext) => ctx.agent?.kind === "main" && ctx.mode === "tui";
+  const main = (ctx: ExtensionContext) => ctx?.agent?.kind === "main" && ctx.mode === "tui";
   const check = () => spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["check", String(process.pid)], { env }).status === 0;
   const budget = () => {
     const result = spawnSync(`${root}/bin/fm-startup-memory-budget.sh`, ["report"], { env, encoding: "utf8" });
@@ -151,8 +151,9 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     return effectiveBudgetTokens && totalTokensAfter !== undefined ? { effectiveBudgetTokens, totalTokensAfter } : undefined;
   };
   const available = (ctx: ExtensionContext) => {
+    if (!main(ctx)) return false;
     const jobs = ctx.getAsyncJobSnapshot();
-    return main(ctx) && check() && !ctx.hasPendingMessages() && ctx.ui.getEditorText() === ""
+    return check() && !ctx.hasPendingMessages() && ctx.ui.getEditorText() === ""
       && (jobs === null || (jobs.running.every(job => armedJobs.has(job.id))
         && jobs.delivery.queued === 0 && !jobs.delivery.delivering && jobs.delivery.pendingJobIds.length === 0));
   };
@@ -243,7 +244,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   pi.registerTool({
     name: "firstmate_watch_reset",
     label: "Stow before watching",
-    description: "In normal mode only, before re-arming omp supervision when only keeping watch: prepare, complete the returned stow skill, then ready with its stowReceipt, a compact durable handoff and true stowComplete, onlyKeepingWatch and pendingQuestionsRecorded attestations. pendingQuestionsRecorded confirms every unanswered captain question is durably recorded in the home's decision inbox or backlog, or as a mockup question with an open captain decision hold; none lives only in chat or the handoff. Receipt token counts are decimal strings from the before/after budget reports; the actions object records one Completion receipt action per memory file. Never call ready after stow fails.",
+    description: "In normal mode only, before re-arming omp supervision when only keeping watch and context usage is above 40%: prepare, complete the returned stow skill, then ready with its stowReceipt, a compact durable handoff and true stowComplete, onlyKeepingWatch and pendingQuestionsRecorded attestations. pendingQuestionsRecorded confirms every unanswered captain question is durably recorded in the home's decision inbox or backlog, or as a mockup question with an open captain decision hold; none lives only in chat or the handoff. Receipt token counts are decimal strings from the before/after budget reports; the actions object records one Completion receipt action per memory file. Never call ready after stow fails.",
     parameters: pi.zod.object({
       action: pi.zod.enum(["prepare", "ready", "cancel"]),
       nonce: pi.zod.string().optional(),
@@ -266,6 +267,13 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
       if (params.action === "cancel") {
         request = undefined;
         return result("Reset cancelled. Continue the current supervision protocol.");
+      }
+      if (params.action === "prepare") {
+        const usage = ctx?.getContextUsage?.();
+        if (!usage || !(usage.percent > 40)) {
+          request = undefined;
+          return result("Reset unavailable: context usage must be above 40%. At 40% or below, or when usage is unavailable, do a plain re-arm instead; keep this session without stowing or clearing.", true);
+        }
       }
       if (!eligible || !available(ctx)) {
         request = undefined;
@@ -413,7 +421,7 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("tool_call", async (event) => {
+  pi.on("tool_call", async (event, ctx) => {
     if (event.toolName !== "bash") return {};
     const command = bashCommand(event.input);
     if (!command) return {};
@@ -422,8 +430,11 @@ export default function (pi: ExtensionAPI) {
       return { block: true, reason: cdResult.stderr.trim() || "denied by the cd-guard PreToolUse seatbelt" };
     }
     const armResult = await run("fm-arm-pretool-check.sh", ["--command", command], null);
-    if (armResult.code !== 2) return {};
-    return { block: true, reason: armResult.stderr.trim() || "denied by the watcher-arm PreToolUse seatbelt" };
+    if (armResult.code === 2) {
+      return { block: true, reason: armResult.stderr.trim() || "denied by the watcher-arm PreToolUse seatbelt" };
+    }
+    const percent = JSON.stringify(ctx?.getContextUsage?.()?.percent ?? null);
+    return { input: { ...event.input, command: `export FM_OMP_CONTEXT_PERCENT='${percent}';\n${command}` } };
   });
 
   // omp fires session_stop only for the main session, awaits it before the turn

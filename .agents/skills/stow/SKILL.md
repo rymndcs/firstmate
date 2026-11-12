@@ -85,10 +85,10 @@ Do not hide an over-budget result behind a reset-safe claim.
 This section owns the post-wake and answered-message transition for normal and away omp supervision.
 While away mode is active (`state/.afk` or the selected omp away owner), re-arm using the omp protocol and finish under the [afk](../afk/SKILL.md) reporting policy; never prepare or submit a reset.
 Startup and reset recovery also arm using the omp protocol; neither prepares another reset in that turn.
-In normal mode at other transitions, when all instructions have reached the workers and nothing waits on firstmate's next step, use `firstmate_watch_reset` instead of re-arming, regardless of context size.
+In normal mode at other transitions, when all instructions have reached the workers and nothing waits on firstmate's next step, use `firstmate_watch_reset` instead of re-arming only when the session's context usage is above 40% of its window.
 Otherwise continue work, then arm using the omp protocol with the explicit transition declaration owned by `bin/fm-watch-arm.sh --help`; unknown state permits arming with a visible warning.
 The last message must be answered, every question still waiting on the captain must be durably recorded in the home's decision inbox or backlog, or as a mockup question with an open captain decision hold, and no push, merge, cleanup or steer may be half done; any unanswered question living only in chat or the handoff blocks reset until recorded.
-If not already prepared, call its `prepare` action first.
+If not already prepared, call its `prepare` action first; at 40% or below, or when usage is unavailable, it refuses and directs a plain re-arm without stowing or clearing.
 Complete this skill, then call `ready` with its Completion receipt in `stowReceipt` using the tool schema, the returned nonce, all three true attestations (`stowComplete`, `onlyKeepingWatch`, and `pendingQuestionsRecorded`), and a compact handoff of open-thread pointers, already-reported outcomes, and the immediate supervision action.
 The extension independently reruns the budget report at readiness and refuses an incomplete, mismatched or over-budget receipt.
 An incomplete stow or unresolved exception means cancel the reset and continue supervision in the current session.

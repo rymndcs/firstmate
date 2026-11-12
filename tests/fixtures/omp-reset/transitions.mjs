@@ -21,6 +21,7 @@ const pi = {
 };
 let terminalInput;
 const ctx = {
+  getContextUsage: () => ({tokens:60000,contextWindow:100000,percent:60}),
   agent: { kind: 'main' }, mode: 'tui', hasUI: true,
   sessionManager: { getSessionId: () => session, getSessionFile: () => '/old-session.jsonl' },
   isIdle: () => idle, hasPendingMessages: () => queued, getAsyncJobSnapshot: () => jobs,

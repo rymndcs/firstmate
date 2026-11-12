@@ -3,7 +3,7 @@ Mode: omp async-job supervision.
 When this session owns supervision, including omp away mode selected by `/afk`:
 1. Drain first with `bin/fm-wake-drain.sh`.
 2. Source `__FM_X_MODE_ENV__` first when X mode is active.
-3. Follow [.agents/skills/stow/SKILL.md, omp watching-only reset](../../.agents/skills/stow/SKILL.md#omp-watching-only-reset) for the next transition; when it directs arming, use the tracked job below alone:
+3. Follow [.agents/skills/stow/SKILL.md, omp watching-only reset](../../.agents/skills/stow/SKILL.md#omp-watching-only-reset) for the next transition, including plain re-arm at 40% or lower or unavailable context usage; when it directs arming, use the tracked job below alone:
 
    `bash` with `async: true` and `timeout: 0` on:
    `[ -f __FM_X_MODE_ENV_SH__ ] && . __FM_X_MODE_ENV_SH__; exec bin/fm-watch-arm.sh`

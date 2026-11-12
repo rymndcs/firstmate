@@ -75,18 +75,7 @@ printf 'claude\n' > "$HOME_DIR/config/crew-harness"
 printf 'project=fixture\n' > "$HOME_DIR/state/fixture.meta"
 printf 'working: fixture dispatch already reported\n' > "$HOME_DIR/state/fixture.status"
 printf '# Backlog\n\n## In flight\n\n- fixture: Waiting for fixture result\n' > "$HOME_DIR/data/backlog.md"
-printf '#!/usr/bin/env bash\nREAL_TMUX=%q\nSOCKET=%q\nFIXTURE_HOME=%q\n' "$TMUX_BIN" "$SOCKET" "$HOME_DIR" > "$LAB/$MODE-shim/tmux"
-cat >> "$LAB/$MODE-shim/tmux" <<'SHIM'
-case "${1:-}:${4:-}:${5:-}" in
-  send-keys:-l:$'\033[?9001;'*)
-    if [ -f "$FIXTURE_HOME/state/fixture-draft-race" ]; then
-      "$REAL_TMUX" -L "$SOCKET" send-keys -t "$3" -l Wai
-      rm -f "${FIXTURE_HOME:?}/state/fixture-draft-race"
-    fi
-    ;;
-esac
-exec "$REAL_TMUX" -L "$SOCKET" "$@"
-SHIM
+printf '#!/usr/bin/env bash\nexec %q -L %q "$@"\n' "$TMUX_BIN" "$SOCKET" > "$LAB/$MODE-shim/tmux"
 chmod +x "$LAB/$MODE-shim/tmux"
 AWAY=0
 if [ "$MODE" = away ]; then
@@ -133,38 +122,20 @@ if [ "$MODE" = away ]; then
 else
 # The existing job is deliberately still running when the answered message arrives.
 send answered
-wait_count switch 1
-wait_count startup 2
 wait_count armed 2
-wait_count wake-drained 1
 send inspect
 wait_count inspect 1
 jq -es '
-  ([.[]|select(.kind=="switch")]|length) == 1 and
-  ([.[]|select(.kind=="startup")]|length) == 2 and
-  ([.[]|select(.kind=="reset-tool" and .input.action=="prepare")]|length) == 1 and
-  ([.[]|select(.kind=="reset-tool" and .input.action=="ready")]|length) == 1 and
+  ([.[]|select(.kind=="switch")]|length) == 0 and
+  ([.[]|select(.kind=="startup")]|length) == 1 and
+  ([.[]|select(.kind=="reset-result" and .input.action=="prepare" and .error==false)]|length) == 0 and
+  ([.[]|select(.kind=="reset-tool" and .input.action=="ready")]|length) == 0 and
   ([.[]|select(.kind=="inspect")][-1].jobs.running|length) == 1
-' "$HOME_DIR/events.jsonl" >/dev/null || fail 'expected one model-driven stow/reset, one startup per session, and one resumed supervision job'
-jq -es '
-  [.[]|select(.kind=="reset-tool" and .input.action=="ready")][0] as $ready |
-  [.[]|select(.kind=="reset-result" and .input.action=="ready")][0] as $result |
-  $ready.input.stowReceipt != null and
-  $result.error == false and $result.session == $ready.session and
-  $result.details.budgetVerified == true and
-  $result.details.stowReceipt == $ready.input.stowReceipt
-' "$HOME_DIR/events.jsonl" >/dev/null || fail 'stow requires the ready completion receipt and the extension budget verification'
-[ ! -s "$HOME_DIR/state/.wake-queue" ] || fail 'new startup did not consume the durable wake'
-old_pid=$(jq -sr '[.[]|select(.kind=="armed")][0].status | capture("pid=(?<pid>[0-9]+)").pid' "$HOME_DIR/events.jsonl")
-new_pid=$(cat "$HOME_DIR/state/.watch.lock/pid")
-[ "$new_pid" != "$old_pid" ] || fail 'native switch retained the old physical watcher'
-kill -0 "$new_pid" 2>/dev/null || fail 'new physical watcher is not live'
-if kill -0 "$old_pid" 2>/dev/null && ! ps -o stat= -p "$old_pid" | grep -q Z; then
-  fail 'old physical watcher survived the native session switch'
-fi
+' "$HOME_DIR/events.jsonl" >/dev/null || fail 'low-context watching-only transition must plain re-arm without preparing, readying or switching'
+[ ! -e "$HOME_DIR/state/.omp-reset-handoff.json" ] || fail 'low-context transition prepared a reset handoff'
 jq -es --arg arm '[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh' '
-  [.[]|select(.kind=="bash" and .input.command==$arm and .input.async==true and .input.timeout==0)]|length >= 1
-' "$HOME_DIR/events.jsonl" >/dev/null || fail 'native model did not use the supported unquoted arm before reset'
+  [.[]|select(.kind=="bash" and .input.command==$arm and .input.async==true and .input.timeout==0)]|length >= 2
+' "$HOME_DIR/events.jsonl" >/dev/null || fail 'native model did not use the supported unquoted arm for startup and the plain re-arm'
 send error-ui
 wait_count error-ui 1
 n=0
@@ -179,15 +150,8 @@ if [ -n "${FM_OMP_RESET_EVIDENCE:-}" ]; then
   cp "$LAB/normal-error-ui.txt" "$FM_OMP_RESET_EVIDENCE.normal.error-ui.txt"
 fi
 printf 'ok - %s normal error UI renders a visible chat line\n' "$OMP_VERSION"
-send race
-wait_count recovery 1
-jq -es '
-  ([.[]|select(.kind=="switch")]|length) == 1 and
-  ([.[]|select(.kind=="recovery")]|length) == 1 and
-  ([.[]|select(.kind=="recovery")][0].editor == "Wai") and
-  all(.[]|select(.kind=="input"); (.text|contains("Wai"))|not)
-' "$HOME_DIR/events.jsonl" >/dev/null || fail 'interleaved draft must remain intact and unsubmitted with one recovery turn in the same session'
-printf 'ok - %s %s integrated reset: model follows emitted wake protocol, stows, switches with live supervision, runs startup once, drains durable wake, arms one cycle, vetoes interleaved draft\n' "$OMP_VERSION" "$MODE"
+printf 'ok - %s %s low-context transition: model follows emitted wake protocol and plain re-arms one cycle without stow or switch\n' "$OMP_VERSION" "$MODE"
+printf 'not run - %s native above-threshold stow/reset: the fixture session stays at or below 40%% context usage\n' "$OMP_VERSION"
 fi
 stop_fixture
 if [ -n "${FM_OMP_RESET_EVIDENCE:-}" ]; then

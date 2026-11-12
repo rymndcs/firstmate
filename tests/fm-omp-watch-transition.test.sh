@@ -30,6 +30,7 @@ chmod +x "$LAB/bin/"*.sh
 export FM_HOME="$LAB" FM_ROOT_OVERRIDE="$LAB" FM_STATE_OVERRIDE="$LAB/state"
 export FM_DATA_OVERRIDE="$LAB/data" FM_CONFIG_OVERRIDE="$LAB/config"
 export FM_TRANSITION_SOURCE="$ROOT" OMPCODE=1 PI_SESSION_ID=normal PI_TOOL_CALL_ID=first
+export FM_OMP_CONTEXT_PERCENT=60
 ARM="$LAB/bin/fm-watch-arm.sh"
 DRAIN="$LAB/bin/fm-wake-drain.sh"
 arm_number=0

@@ -4,7 +4,8 @@
 # Reasons: work-pending, unanswered-input, chat-question, stow-incomplete,
 # decision, idle-recheck, unknown, watching-only. Semantic work/input reasons
 # remain claims. A verified clean bare/watching-only arm exits 2 naming
-# firstmate_watch_reset; unavailable evidence warns and allows, never resets.
+# firstmate_watch_reset only above 40% native FM_OMP_CONTEXT_PERCENT usage.
+# Lower or unavailable usage allows plain arming; unknown evidence warns and allows.
 #
 # Sole authority: state/.omp-watch-transition, private atomic regular JSON v1.
 # Special-file/symlink obstructions are unknown and are never read or replaced.
@@ -269,7 +270,10 @@ arm_transition() {
   [ "$before" != unavailable ] && [ "$before" = "$after" ] && [ "$after" = "$current" ] || OBSERVED=unknown
   observed=$OBSERVED
   case "$claim" in
-    ''|watching-only) [ "$observed" != clean ] || verdict=refuse ;;
+    ''|watching-only)
+      if [ "$observed" = clean ] && jq -en --arg percent "${FM_OMP_CONTEXT_PERCENT:-}" '$percent | tonumber? | . > 40' >/dev/null 2>&1; then
+        verdict=refuse
+      fi ;;
     decision|idle-recheck) [ "$observed" = "$claim" ] || observed=unknown ;;
     unknown) warn "declared unknown transition: $detail" ;;
   esac
