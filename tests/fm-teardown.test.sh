@@ -4705,7 +4705,7 @@ test_nested_owned_history() {
   log=$(git -C "$inner" rev-parse --git-path "logs/$ref")
   mkdir -p "$(dirname "$log")"
   case "$variant" in
-    branch-old|private-old|head-old|branch-missing-object|private-orphan-old|private-nested-orphan-old)
+    branch-old|private-old|head-old|branch-missing-object|private-orphan-old|private-nested-orphan-old|backend-echo-unlanded)
       printf '%s %s %s\told endpoint only\n' "$unique" "$head" "$(git -C "$inner" var GIT_COMMITTER_IDENT)" > "$log"
       ;;
     branch-new|private-new|head-new|private-orphan-new)
@@ -4732,6 +4732,13 @@ if [ "${2:-}" = "$NESTED_CASE/wt/.claude/worktrees/inner copy" ]; then
     private-inventory-error:'for-each-ref --format=%(refname)') exit 1 ;;
     private-inventory-warning:'for-each-ref --format=%(refname)') "$REAL_GIT_FOR_TEST" "$@"; echo 'uncertain refs' >&2; exit 0 ;;
     backend:'rev-parse --show-ref-format') echo reftable; exit 0 ;;
+    backend-echo-landed:'rev-parse --show-ref-format'|backend-echo-unlanded:'rev-parse --show-ref-format')
+      touch "$NESTED_CASE/format-queried"
+      printf '%s\n' --show-ref-format; exit 0 ;;
+    backend-empty:'rev-parse --show-ref-format') exit 0 ;;
+    backend-other:'rev-parse --show-ref-format') echo unknown; exit 0 ;;
+    backend-error:'rev-parse --show-ref-format') printf '%s\n' --show-ref-format; exit 1 ;;
+    backend-warning:'rev-parse --show-ref-format') printf '%s\n' --show-ref-format; echo 'uncertain storage' >&2; exit 0 ;;
   esac
   if [ "$NESTED_VARIANT" = branch-path-error ] && [ "${6:-}" = logs/refs/heads/nested ]; then exit 1; fi
 fi
@@ -4739,9 +4746,12 @@ exec "$REAL_GIT_FOR_TEST" "$@"
 SH
   chmod +x "$c/fakebin/git"
   NESTED_CASE="$c" NESTED_VARIANT="$variant" run_teardown "$c" > "$c/out" 2> "$c/err" || rc=$?
-  if [ "$variant" = private-nested-landed ]; then
-    [ "$rc" -eq 0 ] && [ ! -e "$inner" ] && [ -s "$c/returns" ] || fail 'landed nested private log prevented slot return'
-    pass 'landed nested private log allows slot return'
+  case "$variant" in
+    backend-echo-*) [ -f "$c/format-queried" ] || fail 'legacy echo did not reach storage inspection' ;;
+  esac
+  if [ "$variant" = private-nested-landed ] || [ "$variant" = backend-echo-landed ]; then
+    [ "$rc" -eq 0 ] && [ ! -e "$inner" ] && [ -s "$c/returns" ] || fail "landed $variant prevented slot return"
+    pass "landed $variant allows slot return"
     return
   fi
   [ "$rc" -ne 0 ] || fail "owned $variant history unexpectedly allowed return"
@@ -4751,7 +4761,7 @@ SH
   [ "$(git -C "$inner" rev-parse HEAD)" = "$head" ] || fail 'owned history refusal changed HEAD'
   if [ -f "$c/log-before" ]; then cmp -s "$c/log-before" "$log" || fail 'owned history refusal changed reflog'; fi
   case "$variant" in
-    *-old|*-new) grep -F "$unique" "$c/err" >/dev/null || fail 'owned endpoint refusal did not identify commit' ;;
+    *-old|*-new|backend-echo-unlanded) grep -F "$unique" "$c/err" >/dev/null || fail 'owned endpoint refusal did not identify commit' ;;
   esac
   pass "nested owned $variant history refuses and preserves HEAD, private data and reflog"
 }
@@ -4759,7 +4769,7 @@ SH
 run_nested_tests() {
   local variant
   for variant in local remote other all unlanded; do test_nested_history_scope "$variant"; done
-  for variant in branch-old branch-new private-old private-new head-old head-new private-orphan-old private-orphan-new private-nested-orphan-old private-nested-landed branch-truncated branch-directory private-directory head-directory branch-malformed branch-missing-object private-log-root-file private-blob branch-query-error branch-query-warning private-inventory-error private-inventory-warning branch-path-error backend; do test_nested_owned_history "$variant"; done
+  for variant in branch-old branch-new private-old private-new head-old head-new private-orphan-old private-orphan-new private-nested-orphan-old private-nested-landed branch-truncated branch-directory private-directory head-directory branch-malformed branch-missing-object private-log-root-file private-blob branch-query-error branch-query-warning private-inventory-error private-inventory-warning branch-path-error backend backend-echo-landed backend-echo-unlanded backend-empty backend-other backend-error backend-warning; do test_nested_owned_history "$variant"; done
   test_nested_landed
   test_nested_squash
   test_nested_disposable

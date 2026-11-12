@@ -1154,7 +1154,7 @@ try:
             or not common
             or common != git(project, "rev-parse", "--path-format=absolute", "--git-common-dir")):
         raise ValueError(f"cannot inspect candidate Git context {wt} for {project}")
-    if git(wt, "rev-parse", "--show-ref-format") != b"files":
+    if git(wt, "rev-parse", "--show-ref-format") not in (b"files", b"--show-ref-format"):
         raise ValueError("cannot inspect owned reflogs in this reference storage format")
     commits = set()
     add_oid(git(wt, "rev-parse", "--verify", "HEAD"))
