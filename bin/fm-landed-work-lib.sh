@@ -301,13 +301,26 @@ content_in_default() {
 # unknown (a check could not run). LANDED_REMAINING holds the commits still
 # unaccounted for after the remote refresh, and LANDED_UNCERTAIN_REASONS explains
 # every check that could not answer. The proofs and their order are described in
-# the script header. Always returns 0; the verdict is the result.
+# the script header. A second argument of default-only limits the decision to
+# the refreshed default-branch content proof, which nested-copy teardown pairs
+# with its own history check. Always returns 0; the verdict is the result.
 work_landed_verdict() {
   local branch=$1 ref remaining
   LANDED_VERDICT=
   LANDED_UNCERTAIN=0
   LANDED_UNCERTAIN_REASONS=
   LANDED_REMAINING=
+
+  if [ "${2:-}" = default-only ]; then
+    if content_in_default; then
+      LANDED_VERDICT=landed
+    elif [ "$LANDED_UNCERTAIN" -eq 0 ]; then
+      LANDED_VERDICT=unlanded
+    else
+      LANDED_VERDICT=unknown
+    fi
+    return 0
+  fi
 
   refresh_remote_branch_refs "$branch"
 

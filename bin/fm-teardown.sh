@@ -123,6 +123,19 @@
 # and the return proceeds, leaving what remained.
 # bin/fm-worktree-cleanup.sh owns writer stopping, selection, retention, the
 # task's temporary-target record (state/<task-id>.temp-targets) and reporting.
+# Ship tasks returning to Treehouse first remove registered nested worktrees,
+# deepest first, only after every nested tree is clean, its HEAD content is proven
+# in the refreshed default branch, and its HEAD, private refs/worktree refs and
+# checked-out branch retain no history outside that branch's reachability. Both
+# endpoints of their reflogs are inspected through Git-resolved paths; unreadable
+# history or a reference storage format without inspectable file reflogs refuses.
+# Hidden index flags and ignored files retained
+# by fm-worktree-cleanup.sh refuse removal. Immediately before each non-forced
+# removal, teardown re-reads cleanliness, flags, retention, history and the inspected HEAD;
+# a changed or uninspectable copy refuses. The final read and removal are not atomic.
+# Unknown or unlanded nested work refuses teardown, including with --force; that
+# flag only discards the task tree itself.
+# Scouts, secondmates and Orca tasks keep their existing cleanup paths.
 # Usage: fm-teardown.sh <task-id> [--force]
 #   fm-teardown.sh --check-default-content <project> <worktree> [--fetched]
 #   The inspection form returns 0 only for content contained in the refreshed
@@ -1032,13 +1045,168 @@ teardown_treehouse_return() {
   return 1
 }
 
+validate_nested_worktree_files() {
+  local dirty
+  if ! dirty=$(git -C "$WT" status --porcelain --untracked-files=all 2>/dev/null); then
+    echo "REFUSED: nested worktree $WT cannot be inspected for uncommitted changes." >&2
+    return 1
+  fi
+  if [ -n "$dirty" ]; then
+    echo "REFUSED: nested worktree $WT has uncommitted changes." >&2
+    return 1
+  fi
+  if ! "$SCRIPT_DIR/fm-worktree-cleanup.sh" --check-index-flags "$WT"; then
+    echo "REFUSED: nested worktree $WT has hidden index flags or cannot be inspected for them." >&2
+    return 1
+  fi
+  if ! "$SCRIPT_DIR/fm-worktree-cleanup.sh" --check-retained-ignored "$WT" "$@"; then
+    echo "REFUSED: nested worktree $WT has retained ignored files or cannot be inspected for them." >&2
+    return 1
+  fi
+}
+
+read_registered_worktrees() {
+  local field diagnostics complete=0
+  REGISTERED_WORKTREES=()
+  while IFS= read -r -d '' field; do
+    case "$field" in
+      fm-worktree-list-complete) complete=1 ;;
+      'worktree '*) REGISTERED_WORKTREES+=("${field#worktree }") ;;
+    esac
+  done < <(
+    {
+      if diagnostics=$(git -C "$PROJ" worktree list --porcelain -z 2>&1 >&3) && [ -z "$diagnostics" ]; then
+        printf 'fm-worktree-list-complete\0'
+      else
+        printf '%s\n' "$diagnostics" >&2
+      fi
+    } 3>&1
+  )
+  if [ "$complete" != 1 ] || [ "${#REGISTERED_WORKTREES[@]}" -eq 0 ]; then
+    echo "REFUSED: cannot list nested worktrees and required Git contexts for $WT." >&2
+    return 1
+  fi
+}
+
+validate_nested_worktree_history() {
+  local history
+  if ! history=$(python3 -I - "$WT" "$PROJ" "$DEFAULT_REF" 2>&1 <<'PY'
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+wt, project, default = sys.argv[1:]
+
+
+def git(repo, *args, input=None, detached=False):
+    result = subprocess.run(["git", "-C", repo, *args], input=input,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if detached and result.returncode == 1 and not result.stdout and not result.stderr:
+        return b""
+    if result.returncode or result.stderr:
+        raise ValueError(f"{repo}: git {' '.join(args)}: "
+                         f"exit {result.returncode}: {os.fsdecode(result.stderr)}")
+    return result.stdout.rstrip(b"\n")
+
+
+def git_path(name):
+    return Path(os.fsdecode(git(wt, "rev-parse", "--path-format=absolute", "--git-path", name)))
+
+
+def reflog(path):
+    try:
+        stream = path.open("rb")
+    except FileNotFoundError:
+        return
+    with stream:
+        for line in stream:
+            fields = line.split(b" ", 2)
+            if len(fields) != 3:
+                raise ValueError(f"unreadable reflog {path}")
+            for oid in fields[:2]:
+                add_oid(oid)
+
+
+def private_logs(path):
+    try:
+        entries = list(os.scandir(path))
+    except FileNotFoundError:
+        return
+    for entry in entries:
+        if entry.is_dir():
+            private_logs(Path(entry.path))
+        else:
+            reflog(Path(entry.path))
+
+
+def add_oid(oid):
+    if not re.fullmatch(b"[0-9a-f]{40}|[0-9a-f]{64}", oid):
+        raise ValueError(f"unreadable history object ID {oid!r}")
+    if oid.strip(b"0"):
+        commits.add(oid)
+
+
+try:
+    common = git(wt, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if (git(wt, "rev-parse", "--show-toplevel") != os.fsencode(wt)
+            or not common
+            or common != git(project, "rev-parse", "--path-format=absolute", "--git-common-dir")):
+        raise ValueError(f"cannot inspect candidate Git context {wt} for {project}")
+    if git(wt, "rev-parse", "--show-ref-format") not in (b"files", b"--show-ref-format"):
+        raise ValueError("cannot inspect owned reflogs in this reference storage format")
+    commits = set()
+    add_oid(git(wt, "rev-parse", "--verify", "HEAD"))
+    reflog(git_path("logs/HEAD"))
+    for ref in git(wt, "for-each-ref", "--format=%(refname)", "refs/worktree/").splitlines():
+        add_oid(git(wt, "rev-parse", "--verify", os.fsdecode(ref)))
+        reflog(git_path("logs/" + os.fsdecode(ref)))
+    private_logs(git_path("logs/refs/worktree"))
+    branch = git(wt, "symbolic-ref", "-q", "HEAD", detached=True)
+    if branch:
+        add_oid(git(wt, "rev-parse", "--verify", os.fsdecode(branch)))
+        reflog(git_path("logs/" + os.fsdecode(branch)))
+    revisions = b"\n".join(sorted(commits)) + b"\n"
+    types = git(wt, "cat-file", "--batch-check=%(objecttype)", input=revisions).splitlines()
+    if types != [b"commit"] * len(commits):
+        raise ValueError("owned history contains missing or non-commit objects")
+    history = git(wt, "rev-list", "--stdin", "--not", default, "--", input=revisions)
+    if history:
+        raise ValueError(os.fsdecode(history))
+except (OSError, ValueError) as error:
+    print(error, file=sys.stderr)
+    sys.exit(1)
+PY
+  ); then
+    echo "REFUSED: nested worktree $WT retained history cannot be inspected or is not entirely in the default branch." >&2
+    printf '%s\n' "$history" >&2
+    return 1
+  fi
+}
+
 validate_worktree_teardown_safety() {
   local dirty_raw dirty unpushed_raw unpushed DEFAULT unmerged_raw unmerged branch
+  local scope=${1:-task}
   [ -d "$WT" ] || return 0
   [ "$FORCE" != "--force" ] || return 0
   case "$KIND" in
     secondmate|scout) return 0 ;;
   esac
+
+  if [ "$scope" = default-only ]; then
+    validate_nested_worktree_files "${@:2}" || return 1
+    work_landed_verdict "$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)" default-only
+    case "$LANDED_VERDICT" in
+      landed) validate_nested_worktree_history; return $? ;;
+      unlanded) echo "REFUSED: nested worktree $WT has work not in the default branch." >&2 ;;
+      *)
+        echo "REFUSED: cannot establish whether nested worktree $WT has landed in the default branch." >&2
+        printf 'what could not be checked:\n%s\n' "$LANDED_UNCERTAIN_REASONS" >&2
+        ;;
+    esac
+    return 1
+  fi
 
   if ! dirty_raw=$(git -C "$WT" status --porcelain 2>/dev/null); then
     if worktree_safety_blocked_by_lock "uncommitted changes"; then
@@ -1113,6 +1281,56 @@ validate_worktree_teardown_safety() {
         ;;
     esac
   fi
+}
+
+remove_nested_ship_worktrees() {
+  local WT=$WT FORCE=$FORCE
+  local slot path top head i j swap
+  local nested=() heads=() REGISTERED_WORKTREES=()
+  [ "$KIND" = ship ] && [ "$BACKEND" != orca ] && [ -d "$WT" ] || return 0
+  slot=$(canonical_existing_dir "$WT") || return 1
+  read_registered_worktrees || return 1
+  for path in "${REGISTERED_WORKTREES[@]}"; do
+    case "$path" in "$slot"/*) nested+=("$path") ;; esac
+  done
+  [ "${#nested[@]}" -gt 0 ] || return 0
+  for path in "${nested[@]}"; do
+    top=$(git -C "$path" rev-parse --show-toplevel 2>/dev/null) || top=
+    if [ "$top" != "$path" ] || [ "$(canonical_existing_dir "$path" || true)" != "$path" ]; then
+      echo "REFUSED: cannot inspect nested worktree $path." >&2
+      return 1
+    fi
+    heads+=("$(git -C "$path" rev-parse --verify HEAD 2>/dev/null || true)")
+    WT=$path
+    FORCE=
+    validate_worktree_teardown_safety default-only "${nested[@]}" || return 1
+  done
+  for ((i=0; i<${#nested[@]}; i++)); do
+    for ((j=i+1; j<${#nested[@]}; j++)); do
+      if [ "${#nested[j]}" -gt "${#nested[i]}" ]; then
+        swap=${nested[i]}
+        nested[i]=${nested[j]}
+        nested[j]=$swap
+        swap=${heads[i]}
+        heads[i]=${heads[j]}
+        heads[j]=$swap
+      fi
+    done
+    path=${nested[i]}
+    WT=$path
+    validate_nested_worktree_files || return 1
+    validate_nested_worktree_history || return 1
+    head=$(git -C "$path" rev-parse --verify HEAD 2>/dev/null || true)
+    if [ -z "${heads[i]}" ] || [ "$head" != "${heads[i]}" ]; then
+      echo "REFUSED: nested worktree $path HEAD changed or cannot be inspected after landing proof." >&2
+      return 1
+    fi
+    if ! git -C "$PROJ" worktree remove -- "$path"; then
+      echo "REFUSED: could not remove nested worktree $path; keeping the slot." >&2
+      return 1
+    fi
+    echo "teardown: removed landed nested worktree $path"
+  done
 }
 
 require_orca_worktree_path_match() {
@@ -1906,6 +2124,8 @@ if [ "$BACKEND" = herdr ]; then
   TEARDOWN_HERDR_SESSION=$FM_BACKEND_HERDR_SESSION
   TEARDOWN_HERDR_PANE=$FM_BACKEND_HERDR_PANE
 fi
+
+remove_nested_ship_worktrees || exit 1
 
 if [ -d "$WT" ] && [ "$KIND" = ship ]; then
   "$SCRIPT_DIR/fm-protected-paths.sh" remove "$WT" "$ID" || exit 1

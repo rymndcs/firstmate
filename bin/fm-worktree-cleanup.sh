@@ -46,6 +46,13 @@
 # Treehouse's own lock through cleanup, without leasing, resetting or returning.
 # A changed snapshot refuses; rerun only after checking current pool status.
 #
+# --check-index-flags <path> and --check-retained-ignored <path> [candidate...]
+# inspect only. Each exits 0 when clear, 2 for hidden index flags or retained
+# ignored paths respectively, and 1 when inspection fails. Retention uses the
+# same KEEP, ancestor and repository decision as cleanup. Descendant candidates
+# in the caller's all-proven removal plan are excluded from this inspection;
+# each requires its own proof before any removal. Neither stops processes.
+#
 # --in-use <path> exits 0 when any inspectable process has its working directory
 # or an open file at or below <path>, 2 when none does, and refuses (exit 1) when
 # it cannot inspect processes. It never stops anything.
@@ -99,6 +106,40 @@ def keep(relative):
     return any(fnmatch.fnmatchcase("/".join(parts[i:]), pattern)
                and (pattern != "deps" or not compiled(parts[:i]))
                for pattern in KEEP for i in range(len(parts)))
+
+
+def hidden_index_flags(root):
+    return any(line and (line[0] == 'S' or line[0].islower())
+               for line in git(root, "ls-files", "-v", "-z").decode().split('\0'))
+
+
+def retained(path, relative, external=False):
+    return ((not external and any(keep(part) for part in (relative, *relative.parents)))
+            or (not path.is_symlink() and path.is_dir() and (path / ".git").exists()))
+
+
+def retained_ignored(root, candidates=()):
+    root = Path(root).resolve()
+    excluded = {Path(candidate) for candidate in candidates if root in Path(candidate).parents}
+
+    def inspect(path):
+        if any(within(candidate, path) for candidate in excluded):
+            return None
+        if retained(path, path.relative_to(root)):
+            return path
+        if path.is_dir() and not path.is_symlink():
+            for child in sorted(path.iterdir()):
+                found = inspect(child)
+                if found is not None:
+                    return found
+        return None
+
+    for raw in git(root, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z").split(b"\0"):
+        if raw:
+            found = inspect(root / os.fsdecode(raw.rstrip(b"/")))
+            if found is not None:
+                return found
+    return None
 
 
 def within(parent, path):
@@ -256,17 +297,15 @@ class Cleanup:
             self.release(target, link.name in BUILD_OUTPUT and any(within(owned, target) for owned in self.owned))
 
     def remove(self, path, relative, external=False):
-        if not external and keep(relative):
-            return False
         try:
+            if retained(path, relative, external):
+                return False
             st = path.lstat()
             if stat.S_ISLNK(st.st_mode):
                 if not external:
                     self.release_target(path)
                 path.unlink()
             elif stat.S_ISDIR(st.st_mode):
-                if (path / ".git").exists():
-                    return False
                 widened = not external and st.st_mode & 0o700 != 0o700
                 if widened:
                     os.chmod(path, st.st_mode | 0o700)
@@ -292,7 +331,7 @@ class Cleanup:
         ).split(b"\0") if raw]
         tops = set(listed)
         for relative in listed:
-            if not any(parent in tops or keep(parent) for parent in relative.parents):
+            if not any(parent in tops for parent in relative.parents):
                 before = self.removed
                 self.remove(self.root / relative, relative)
                 if self.removed != before:
@@ -354,6 +393,13 @@ def free_slot(project, pool, name):
 
 
 try:
+    if sys.argv[1:2] == ["--check-index-flags"] and len(sys.argv) == 3:
+        sys.exit(2 if hidden_index_flags(sys.argv[2]) else 0)
+    if sys.argv[1:2] == ["--check-retained-ignored"] and len(sys.argv) >= 3:
+        found = retained_ignored(sys.argv[2], sys.argv[3:])
+        if found is not None:
+            print(f"REFUSED: retained ignored path {found}", file=sys.stderr)
+        sys.exit(2 if found is not None else 0)
     if sys.argv[1:2] == ["--in-use"] and len(sys.argv) == 3:
         sys.exit(0 if in_use(sys.argv[2]) else 2)
     if sys.argv[1] == "--free-slot":
