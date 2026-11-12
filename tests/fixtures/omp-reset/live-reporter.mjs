@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 const [root, lab] = process.argv.slice(2);
-const cases = process.env.FM_RESET_REPORTER_CASE ? [process.env.FM_RESET_REPORTER_CASE] : ['error', 'empty', 'reuse', 'optout', 'skipped-stow', 'unverified-budget'];
+const cases = process.env.FM_RESET_REPORTER_CASE ? [process.env.FM_RESET_REPORTER_CASE] : ['error', 'empty', 'reuse', 'optout', 'prepared-reset', 'switched'];
 for (const mode of cases) {
   const home = `${lab}/${mode}`;
   const bin = `${home}/bin`;
@@ -38,9 +38,6 @@ case "$3" in
     done
     mode=$(basename "$project" -project)
     fixture_home=$(dirname "$project")/$mode-home
-    mkdir -p "$fixture_home/state/.watch.lock"
-    printf '%s\\n' "$REPORT_PARENT_PID" > "$fixture_home/state/.watch.lock/pid"
-    : > "$fixture_home/state/.wake-queue"
     if [ "$mode" = away ]; then
       cat > "$fixture_home/events.jsonl" <<'JSON'
 {"kind":"start"}
@@ -52,37 +49,28 @@ JSON
     else
       cat > "$fixture_home/events.jsonl" <<'JSON'
 {"kind":"start"}
-{"kind":"armed","status":"watcher: started pid=999999999 (beacon fresh)"}
+{"kind":"bash","input":{"command":"[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh","async":true,"timeout":0}}
 {"kind":"armed","status":"watcher: started pid=1 (beacon fresh)"}
 {"kind":"startup"}
-{"kind":"startup"}
-{"kind":"switch"}
-{"kind":"wake-drained"}
 {"kind":"reset-tool","input":{"action":"prepare"}}
-{"kind":"reset-tool","session":"old","input":{"action":"ready","stowReceipt":{"effectiveBudgetTokens":"4800","totalTokensBefore":"0","totalTokensAfter":"0","actions":{"data/captain.md":"unchanged","data/captain-shared.md":"unchanged","data/learnings.md":"unchanged"}}}}
-{"kind":"reset-result","session":"old","input":{"action":"ready"},"error":false,"details":{"budgetVerified":true,"stowReceipt":{"effectiveBudgetTokens":"4800","totalTokensBefore":"0","totalTokensAfter":"0","actions":{"data/captain.md":"unchanged","data/captain-shared.md":"unchanged","data/learnings.md":"unchanged"}}}}
-{"kind":"inspect","jobs":{"running":[{}]}}
+{"kind":"reset-result","input":{"action":"prepare"},"error":true}
 {"kind":"bash","input":{"command":"[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh","async":true,"timeout":0}}
+{"kind":"armed","status":"watcher: attached pid=1 (beacon fresh)"}
+{"kind":"inspect","jobs":{"running":[{}]}}
 {"kind":"error-ui"}
-{"kind":"recovery","editor":"Wai"}
 JSON
     fi
-    if [ "$REPORT_MODE" = skipped-stow ] && [ -n "\${REPORT_EVENTS:-}" ]; then
-      jq -c 'select(.input.action != "ready")' "$fixture_home/events.jsonl" > "$fixture_home/events.new"
-      cat "$REPORT_EVENTS" >> "$fixture_home/events.new"
+    if [ "$REPORT_MODE" = prepared-reset ]; then
+      jq -c 'if .kind == "reset-result" then .error = false else . end' "$fixture_home/events.jsonl" > "$fixture_home/events.new"
       mv "$fixture_home/events.new" "$fixture_home/events.jsonl"
-    elif [ "$REPORT_MODE" = skipped-stow ]; then
-      jq -c 'if .input.action == "ready" then del(.input.stowReceipt, .details) else . end' "$fixture_home/events.jsonl" > "$fixture_home/events.new"
-      mv "$fixture_home/events.new" "$fixture_home/events.jsonl"
-    elif [ "$REPORT_MODE" = unverified-budget ]; then
-      jq -c 'if .kind == "reset-result" then .details.budgetVerified = false else . end' "$fixture_home/events.jsonl" > "$fixture_home/events.new"
-      mv "$fixture_home/events.new" "$fixture_home/events.jsonl"
+    elif [ "$REPORT_MODE" = switched ] && [ "$mode" = normal ]; then
+      printf '{"kind":"switch"}\\n' >> "$fixture_home/events.jsonl"
     fi
     ;;
 esac`);
   const result = spawnSync('bash', [process.env.FM_RESET_LIVE_SCRIPT ?? `${root}/tests/fm-omp-reset-live-e2e.test.sh`], {
     env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, TMPDIR: `${home}/tmp`,
-      REPORT_HOME: home, REPORT_MODE: mode, REPORT_EVENTS: process.env.FM_RESET_REPORTER_EVENTS ?? '', REPORT_PARENT_PID: String(process.pid),
+      REPORT_HOME: home, REPORT_MODE: mode,
       FM_OMP_RESET_LIVE: mode === 'optout' ? '0' : '1', FM_OMP_RESET_FLOW_ONLY: '0',
       FM_OMP_RESET_EVIDENCE: '', FM_OMP_RESET_TEMP_REGISTRY: '', FM_OMP_RESET_LIVE_POLLS: '1' },
     encoding: 'utf8',
@@ -99,16 +87,16 @@ esac`);
     assert.match(output, /not ok - .*omp.*version/i, `${mode}: report the version failure`);
     assert.doesNotMatch(output, /^ok -/m, 'invalid version must never print success');
     assert.equal(readFileSync(`${home}/calls`, 'utf8'), 'version\n', 'version failure must be checked exactly once');
-  } else if (mode === 'skipped-stow' || mode === 'unverified-budget') {
-    assert.notEqual(result.status, 0, `${mode}: live proof must reject missing receipt or extension verification; ${output}`);
-    assert.match(output, /not ok - stow requires the ready completion receipt and the extension budget verification/, 'proof must reach the stow receipt assertion');
-    if (process.env.FM_RESET_REPORTER_EVENTS) process.stdout.write(output);
-    assert.doesNotMatch(output, /integrated reset:.*stows/, 'incomplete stow must never print stow success');
+  } else if (mode === 'prepared-reset' || mode === 'switched') {
+    assert.notEqual(result.status, 0, `${mode}: low-context proof must reject a prepared reset or session switch; ${output}`);
+    assert.match(output, /not ok - low-context watching-only transition must plain re-arm without preparing, readying or switching/, 'proof must reach the plain re-arm assertion');
+    assert.doesNotMatch(output, /low-context transition:/, 'a reset must never print plain re-arm success');
   } else {
     assert.equal(result.status, 0, output);
     assert.equal(readFileSync(`${home}/calls`, 'utf8'), 'version\n', 'success must reuse the single prelaunch version capture');
     assert.match(output, /^ok - omp-reporter-fixture-1 normal error UI renders a visible chat line$/m);
-    assert.match(output, /^ok - omp-reporter-fixture-1 normal integrated reset:/m);
+    assert.match(output, /^ok - omp-reporter-fixture-1 normal low-context transition:/m);
+    assert.match(output, /^not run - omp-reporter-fixture-1 native above-threshold stow\/reset:/m);
     assert.match(output, /^ok - omp-reporter-fixture-1 away supervision:/m);
     assert.ok(readFileSync(`${home}/launches`, 'utf8').includes('model-flow'), 'neutral stub must reach the model-flow launch boundary');
   }

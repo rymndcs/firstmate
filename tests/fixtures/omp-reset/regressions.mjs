@@ -196,27 +196,19 @@ if (scenario === 'context-missing-ctx' || scenario === 'context-missing-method')
     assert.match(continuation.stdout, /heartbeat: fixture/);
     admitHeartbeat();
   }
-} else if (scenario === 'context-rearm-fresh' || scenario === 'context-rearm-isolation') {
+} else if (scenario === 'context-rearm-fresh') {
   await arm();
   admitHeartbeat();
   contextUsage = { tokens: 39990, contextWindow: 100000, percent: 39.99 };
   assert.equal((await call({ action: 'prepare' })).isError, true);
-  if (scenario === 'context-rearm-isolation') {
-    for (const context of [{ ...ctx, agent: { kind: 'sub' } }, { ...ctx, mode: 'print' }]) {
-      const result = await rearm(context);
-      assert.equal(result.status, 2, 'nonprimary context must not replace the primary measurement');
-      assert.match(result.stderr, /reset required/);
-    }
-  } else {
-    contextUsage = { tokens: 40001, contextWindow: 100000, percent: 40.001 };
-    const high = await rearm(ctx);
-    assert.equal(high.status, 2, 'a refused low preparation must not exempt a later high-context arm');
-    assert.match(high.stderr, /reset required/);
-    contextUsage = undefined;
-    const unavailable = await rearm(ctx);
-    assert.equal(unavailable.status, 0, 'unavailable usage must replace the prior high measurement');
-    assert.match(unavailable.stdout, /heartbeat: fixture/);
-  }
+  contextUsage = { tokens: 40001, contextWindow: 100000, percent: 40.001 };
+  const high = await rearm(ctx);
+  assert.equal(high.status, 2, 'a refused low preparation must not exempt a later high-context arm');
+  assert.match(high.stderr, /reset required/);
+  contextUsage = undefined;
+  const unavailable = await rearm(ctx);
+  assert.equal(unavailable.status, 0, 'unavailable usage must replace the prior high measurement');
+  assert.match(unavailable.stdout, /heartbeat: fixture/);
 } else if (scenario.startsWith('context-')) {
   await arm();
   const previousNonce = (await call({action:'prepare'})).details.nonce;

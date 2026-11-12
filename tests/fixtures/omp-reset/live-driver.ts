@@ -1,4 +1,4 @@
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import primary from './.omp/extensions/fm-primary-omp.ts';
 
@@ -34,7 +34,6 @@ export default function (pi: any) {
         log({kind:'inspect',session:ctx.sessionManager.getSessionId(),jobs:ctx.getAsyncJobSnapshot(),editor:ctx.ui.getEditorText()});
         return;
       }
-      if (action === 'race') writeFileSync(`${home}/state/fixture-draft-race`, '');
       const protocol = spawnSync(`${root}/bin/fm-supervision-instructions.sh`, ['--harness','omp'], {encoding:'utf8'}).stdout;
       const content = action === 'startup'
         ? 'This is an isolated native supervision fixture. Run bin/fm-session-start.sh exactly once now, read its complete digest and required STOP files, then follow its startup supervision protocol and verify the arm status. Do no project work. The fixture dispatch has already been answered. End the turn after the successful initial arm; this is startup, not a watching-only transition.'

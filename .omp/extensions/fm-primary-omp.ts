@@ -433,7 +433,6 @@ export default function (pi: ExtensionAPI) {
     if (armResult.code === 2) {
       return { block: true, reason: armResult.stderr.trim() || "denied by the watcher-arm PreToolUse seatbelt" };
     }
-    if (ctx && (ctx.agent?.kind !== "main" || ctx.mode !== "tui")) return {};
     const percent = JSON.stringify(ctx?.getContextUsage?.()?.percent ?? null);
     return { input: { ...event.input, command: `export FM_OMP_CONTEXT_PERCENT='${percent}';\n${command}` } };
   });
