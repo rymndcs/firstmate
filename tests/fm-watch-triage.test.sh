@@ -105,6 +105,15 @@ record_pi_busy() {  # <state-dir> <id>
 
 reap() { kill "$1" 2>/dev/null || true; wait "$1" 2>/dev/null || true; }
 
+await_exit_event() {
+  local deadline=$((SECONDS + 30)) line
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    IFS= read -r -t "$((deadline - SECONDS))" line <&9 || return 1
+    case "$line" in exit:*) return 0 ;; esac
+  done
+  return 1
+}
+
 # --- pure classifier predicates (fm-classify-lib.sh) ------------------------
 
 test_signal_reason_is_actionable_classifier() {
@@ -724,30 +733,33 @@ SH
         FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
         FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=3600 FM_POLL=0.037 FM_SIGNAL_GRACE=1 \
         FM_POLL_COMPLETE="$poll_fifo" FM_REAL_SLEEP="$real_sleep" \
-        FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
-      printf '%s\n' "$!" > "$pid_file"
+        FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+        sh -c 'printf "%s\n" "$$" > "$1"; shift; exec "$@"' sh "$pid_file" "$WATCH" >> "$out" &
       rc=0
       wait "$!" || rc=$?
-      printf 'exit:%s\n' "$rc" > "$poll_fifo"
+      printf 'exit:%s\n' "$rc" >&9
     ) &
     pid=$!
-    if ! IFS= read -r -t 30 event <&9; then
-      if [ -s "$pid_file" ]; then kill "$(cat "$pid_file")" 2>/dev/null || true; else kill "$pid" 2>/dev/null || true; fi
-      wait "$pid" 2>/dev/null || true
-      exec 9>&-
-      fail "dead-agent watcher round $round produced no cycle event"
-    fi
-    watcher_pid=$(cat "$pid_file")
+    IFS= read -r -t 30 event <&9 || event=timeout
+    watcher_pid=$(cat "$pid_file" 2>/dev/null) || watcher_pid=
     case "$event" in
-      "poll:$watcher_pid") kill "$watcher_pid" 2>/dev/null || true ;;
+      exit:*) ;;
+      *)
+        kill "${watcher_pid:-$pid}" 2>/dev/null || true
+        if ! await_exit_event; then
+          kill -s KILL ${watcher_pid:+"$watcher_pid"} "$pid" 2>/dev/null || true
+          exec 9>&-
+          fail "dead-agent watcher round $round did not stop after event $event"
+        fi
+        ;;
     esac
-    wait "$pid" || fail "dead-agent watcher round $round failed"
+    wait "$pid"
     exec 9>&-
     if [ "$round" -eq 1 ]; then
-      [ "$event" = exit:0 ] || fail "initial paused recheck did not finish its wake"
+      [ "$event" = exit:0 ] || fail "initial paused recheck did not finish its wake: $event"
       [ -s "$state/.paused-resurfaced-$key" ] || fail "initial paused recheck did not commit its receipt"
     else
-      [ "$event" = "poll:$watcher_pid" ] || fail "unchanged paused watcher exited before completing poll $round: $event"
+      [ "$event" = "poll:$watcher_pid" ] || fail "unchanged paused watcher did not complete poll $round: $event"
     fi
     round=$((round + 1))
   done
