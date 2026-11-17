@@ -3,7 +3,7 @@
 This document is the authoritative human-readable contract for the watcher arm PreToolUse seatbelt.
 `bin/fm-arm-command-policy.mjs` is the single semantic owner.
 `bin/fm-arm-pretool-check.sh` is only the stable harness transport and output renderer.
-The tracked harness adapters forward command text without classifying it.
+The tracked harness adapters forward command text and supported tool metadata without classifying them.
 `bin/fm-arm-command-policy.mjs` is also the sole owner of firstmate's shell classification: it exports the tokenizer and command-position analysis that the sibling guard policies reuse instead of duplicating shell lexing.
 Sibling policies reuse those primitives: the [cd guard](cd-guard.md) and [ask-user authority gate](ask-user-guard.md).
 The [scoped process-kill guard](process-kill-guard.md) applies its own literal word filter.
@@ -13,6 +13,8 @@ The [scoped process-kill guard](process-kill-guard.md) applies its own literal w
 A firstmate primary must arm `bin/fm-watch-arm.sh` or run `bin/fm-watch-checkpoint.sh` through an observable harness call.
 A shell background operator, pipeline, redirection, wrapper, or unrelated command list can hide failure or let the watcher child die with the tool call.
 The seatbelt rejects those command shapes before execution.
+An omp watcher arm with a nonempty Bash `name` is also denied: it creates a service rather than the plain async job required for reset eligibility.
+The refusal directs arming as a plain async job with `timeout: 0` and no `name`; unnamed startup, reset recovery, away-mode, and repair arms keep the existing command policy.
 
 This policy is not a post-arm liveness guarantee.
 `bin/fm-guard.sh`, `bin/fm-turnend-guard.sh`, the watcher lock, and the watcher beacon still prove whether supervision is healthy after an allowed call.
@@ -28,6 +30,7 @@ It tokenizes the bytes and classifies lexical execution positions only.
 - Stdin JSON at `.toolInput.command` for Grok.
 - `--command <exact string>` for OpenCode, Pi, pi-signed, and omp.
 - `--background` as a compatibility-only field that never changes the decision.
+- omp service-name metadata through the CLI option documented by `bin/fm-arm-pretool-check.sh --help`.
 - `--claude` to preserve Claude's stderr-only deny requirement.
 
 The wrapper discovers the code root from its own location.
@@ -141,6 +144,7 @@ Every semantic deny includes one stable code in square brackets before its prose
 | `broad-watcher-kill` | An actual broad process kill targets the watcher. |
 | `unclassifiable-protected-command` | Malformed or unsupported syntax contains a protected command and cannot be safely classified. |
 | `watcher-direct` | A direct `bin/fm-watch.sh` execution; the watcher must be reached through `bin/fm-watch-arm.sh` or `bin/fm-watch-checkpoint.sh`. |
+| `watcher-named` | An omp watcher arm requests a named Bash service. |
 
 Reason codes are the stable contract for tests and adapters.
 Prose may improve without changing adapter behavior.
@@ -164,7 +168,7 @@ Prose may improve without changing adapter behavior.
 | Grok | `.toolInput.command` | `.grok/hooks/fm-primary-pretool-check.json` forwards stdin and Grok consumes the stdout `decision=deny` object. |
 | OpenCode | `output.args.command` | `.opencode/plugins/fm-primary-pretool-check.js` passes one `--command` argument and throws only for exit 2. |
 | Pi / pi-signed | `event.input.command` | `.pi/extensions/fm-primary-turnend-guard.ts` passes one `--command` argument and returns `{block: true}` only for exit 2. |
-| omp | `event.input.command` | `.omp/extensions/fm-primary-omp.ts` `tool_call` passes one `--command` argument and returns `{block: true, reason}` only for exit 2; a spawn error allows. |
+| omp | `event.input.command`, `event.input.name` | `.omp/extensions/fm-primary-omp.ts` `tool_call` forwards both fields to the checker and returns `{block: true, reason}` only for exit 2; a spawn error allows. |
 
 Grok project hooks require folder trust.
 Every shell variable reference in a Grok hook command must carry an inline default such as `${GROK_WORKSPACE_ROOT:-}` because Grok expands the raw hook command before `bash -lc` runs it.

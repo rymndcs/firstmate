@@ -337,13 +337,15 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
       return;
     }
     if (event.toolName !== "read") return;
-    const job = jobs?.running.find(job => event.input.path === `proc://${job.id}`);
-    if (!job) return;
     try {
       const [sourceSession, call, status] = readFileSync(`${state}/.omp-watch-arm-result`, "utf8").split("\n");
-      if (sourceSession !== sessionId(ctx) || call !== jobCalls.get(job.id)
-        || !/^watcher: (started|attached) pid=[0-9]+ /.test(status)) return;
-      if (event.content.some(part => part.type === "text" && part.text.split("\n").includes(status))) {
+      if (sourceSession !== sessionId(ctx) || !/^watcher: (started|attached) pid=[0-9]+ /.test(status)) return;
+      const savedResult = resolve(root, event.input.path.replace(/:raw$/, "")) === resolve(state, ".omp-watch-arm-result");
+      const job = jobs?.running.find(job => call === jobCalls.get(job.id)
+        && (savedResult || event.input.path === `proc://${job.id}`));
+      if (!job) return;
+      const lines = event.content.flatMap(part => part.type === "text" ? part.text.split("\n") : []);
+      if (lines.includes(status) || (savedResult && lines.includes(`3:${status}`))) {
         eligible = true;
         armedJobs.add(job.id);
       }
@@ -429,7 +431,9 @@ export default function (pi: ExtensionAPI) {
     if (cdResult.code === 2) {
       return { block: true, reason: cdResult.stderr.trim() || "denied by the cd-guard PreToolUse seatbelt" };
     }
-    const armResult = await run("fm-arm-pretool-check.sh", ["--command", command], null);
+    const armArgs = ["--command", command];
+    if (typeof event.input.name === "string") armArgs.push("--omp-name", event.input.name);
+    const armResult = await run("fm-arm-pretool-check.sh", armArgs, null);
     if (armResult.code === 2) {
       return { block: true, reason: armResult.stderr.trim() || "denied by the watcher-arm PreToolUse seatbelt" };
     }

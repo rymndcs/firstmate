@@ -103,7 +103,7 @@ The native switch cancels this session's old supervision job, including one stil
 The command consumes readiness once, writes a private handoff, and starts a native session seeded with that handoff and the startup instruction.
 Run `bin/fm-session-start.sh` exactly once there; reconcile its durable wakes before arming exactly one cycle.
 The extension does not remove wake records or change away mode.
-Startup must arm before another reset is eligible, so the seed cannot create an immediate reset loop.
+Startup must verify its arm through the [omp protocol](../../../docs/supervision-protocols/omp.md) before another reset is eligible, so the seed cannot create an immediate reset loop.
 Other primary harnesses keep their existing supervision and manual session-reset procedures.
 
 ## Scope exclusion: no skill storage
