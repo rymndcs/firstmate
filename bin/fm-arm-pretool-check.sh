@@ -12,7 +12,7 @@
 #
 # Usage:
 #   <PreToolUse JSON on stdin> | bin/fm-arm-pretool-check.sh
-#   bin/fm-arm-pretool-check.sh --command '<cmd>' [--background true|false]
+#   bin/fm-arm-pretool-check.sh --command '<cmd>' [--background true|false] [--omp-name <name>]
 #
 # Stdin mode extracts .toolInput.command for Grok or .tool_input.command for
 # Claude and Codex.
@@ -20,6 +20,7 @@
 # command string.
 # --background remains accepted for compatibility, but harness-native tracked
 # background execution is not itself a policy signal.
+# --omp-name forwards the omp Bash service name to the policy owner.
 #
 # Exit/output contract:
 #   ALLOW - exit 0 and no output.
@@ -37,11 +38,12 @@ set -u
 CMD=""
 CMD_SET=0
 BACKGROUND=""
+OMP_NAME=""
 CLAUDE_MODE=0
 
 usage() {
   cat <<'EOF'
-Usage: fm-arm-pretool-check.sh [--command <cmd>] [--background true|false] [--claude]
+Usage: fm-arm-pretool-check.sh [--command <cmd>] [--background true|false] [--omp-name <name>] [--claude]
 
 With no --command, reads a PreToolUse-style JSON payload on stdin (Grok
 toolInput.command, or Claude/Codex tool_input.command).
@@ -49,6 +51,7 @@ Exits 0 to allow and 2 to deny.
 The deny reason is written to stderr, with a Grok decision object on stdout
 unless --claude is supplied.
 Malformed transport and an unavailable classifier runtime fail open.
+--omp-name forwards omp's Bash service name; named watcher arms are denied.
 EOF
 }
 
@@ -77,6 +80,11 @@ while [ "$#" -gt 0 ]; do
     --claude)
       CLAUDE_MODE=1
       shift
+      ;;
+    --omp-name)
+      [ "$#" -gt 1 ] || { echo "error: --omp-name requires a value" >&2; exit 2; }
+      OMP_NAME=$2
+      shift 2
       ;;
     -h|--help)
       usage
@@ -150,7 +158,7 @@ POLICY="$ROOT/bin/fm-arm-command-policy.mjs"
 command -v node >/dev/null 2>&1 || exit 0
 [ -f "$POLICY" ] || exit 0
 
-POLICY_OUTPUT=$(node "$POLICY" --command "$CMD" --root "$ROOT" --home "$ACTIVE_HOME" 2>/dev/null) || exit 0
+POLICY_OUTPUT=$(node "$POLICY" --command "$CMD" --root "$ROOT" --home "$ACTIVE_HOME" --omp-name "$OMP_NAME" 2>/dev/null) || exit 0
 [ -n "$POLICY_OUTPUT" ] || exit 0
 
 TAB=$(printf '\t')

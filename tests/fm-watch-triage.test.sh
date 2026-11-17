@@ -680,6 +680,7 @@ test_nonterminal_stale_paused_absorbed_then_resurfaced() {
 # every watcher re-arm.
 test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   local dir state fakebin out capture_file statusf window key pane_hash sig pid back round wakes bare
+  local real_sleep poll_fifo pid_file event watcher_pid rc
   dir=$(make_case exited-declared-pause); state="$dir/state"; fakebin="$dir/fakebin"
   out="$dir/watch.out"; capture_file="$dir/pane.txt"; statusf="$state/held.status"
   window="test:fm-held"
@@ -701,14 +702,48 @@ test_exited_declared_pause_is_bounded_but_live_gate_surfaces() {
   printf '%s' "$pane_hash" > "$state/.hash-$key"
   printf '1\n' > "$state/.count-$key"
 
+  real_sleep=$(command -v sleep)
+  cat > "$fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "${FM_POLL:-}" ] && [ -n "${FM_POLL_COMPLETE:-}" ]; then
+  printf 'poll:%s\n' "$PPID" > "$FM_POLL_COMPLETE"
+  exit 0
+fi
+exec "$FM_REAL_SLEEP" "$@"
+SH
+  chmod +x "$fakebin/sleep"
+
   round=1
   while [ "$round" -le 6 ]; do
-    PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
-      FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
-      FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=3600 FM_POLL=1 FM_SIGNAL_GRACE=1 \
-      FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+    poll_fifo="$dir/poll-$round"
+    pid_file="$dir/pid-$round"
+    mkfifo "$poll_fifo"
+    exec 9<> "$poll_fifo"
+    (
+      PATH="$fakebin:$PATH" FM_FAKE_TMUX_WINDOW="$window" FM_FAKE_TMUX_CAPTURE="$capture_file" \
+        FM_FAKE_TMUX_CURRENT_COMMAND=zsh FM_FAKE_CREW_STATE='state: stopped · source: pane · bare shell' \
+        FM_STATE_OVERRIDE="$state" FM_CREW_STATE_BIN="$fakebin/fm-crew-state.sh" FM_PAUSE_RESURFACE_SECS=3600 FM_POLL=0.037 FM_SIGNAL_GRACE=1 \
+        FM_POLL_COMPLETE="$poll_fifo" FM_REAL_SLEEP="$real_sleep" \
+        FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" >> "$out" &
+      printf '%s\n' "$!" > "$pid_file"
+      rc=0
+      wait "$!" || rc=$?
+      printf 'exit:%s\n' "$rc" > "$poll_fifo"
+    ) &
     pid=$!
-    if wait_live "$pid" 15; then reap "$pid"; else wait "$pid" || fail "dead-agent watcher round $round failed"; fi
+    IFS= read -r event <&9
+    watcher_pid=$(cat "$pid_file")
+    case "$event" in
+      "poll:$watcher_pid") kill "$watcher_pid" 2>/dev/null || true ;;
+    esac
+    wait "$pid" || fail "dead-agent watcher round $round failed"
+    exec 9>&-
+    if [ "$round" -eq 1 ]; then
+      [ "$event" = exit:0 ] || fail "initial paused recheck did not finish its wake"
+      [ -s "$state/.paused-resurfaced-$key" ] || fail "initial paused recheck did not commit its receipt"
+    else
+      [ "$event" = "poll:$watcher_pid" ] || fail "unchanged paused watcher exited before completing poll $round: $event"
+    fi
     round=$((round + 1))
   done
   wakes=$(awk -F '\t' -v w="$window" '$3 == "stale" && $4 == w { n++ } END { print n + 0 }' "$state/.wake-queue")

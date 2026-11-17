@@ -29,13 +29,14 @@ const REASONS = {
   "broad-watcher-kill": "a broad process kill targeting the firstmate watcher is forbidden",
   "unclassifiable-protected-command": "unsupported or malformed shell syntax contains a protected watcher command",
   "watcher-direct": "bin/fm-watch.sh must not be run directly; arm the watcher with bin/fm-watch-arm.sh or run bin/fm-watch-checkpoint.sh instead",
+  "watcher-named": "arm the watcher as a plain async job with timeout: 0 and no name; an omp named job is a service and cannot prove reset eligibility",
 };
 
 function parseArguments(argv) {
-  const result = { command: "", root: "", home: "" };
+  const result = { command: "", root: "", home: "", "omp-name": "" };
   for (let i = 0; i < argv.length; i += 1) {
     const name = argv[i];
-    if (name === "--command" || name === "--root" || name === "--home") {
+    if (name === "--command" || name === "--root" || name === "--home" || name === "--omp-name") {
       if (i + 1 >= argv.length) throw new Error(`${name} requires a value`);
       result[name.slice(2)] = argv[i + 1];
       i += 1;
@@ -902,7 +903,7 @@ function blessedProgram(analysis, context) {
   return true;
 }
 
-function decision(command, root, home) {
+function decision(command, root, home, ompName) {
   const context = { root: path.normalize(root), home: path.normalize(home), protectedVariables: new Set(), watcherPatterns: new Set(), watcherPids: new Set() };
   const analysis = analyzeProgram(command, context);
   if (analysis.broadKill) return deny("broad-watcher-kill");
@@ -918,7 +919,10 @@ function decision(command, root, home) {
   if (separators.includes("|") || separators.includes("|&")) return deny("watcher-pipeline");
   if (analysis.nodeInfos.some((info) => info.redirection)) return deny("watcher-redirection");
   if (analysis.nodeInfos.some((info) => info.substitution)) return deny("watcher-nested");
-  if (blessedProgram(analysis, context)) return { decision: "allow" };
+  if (blessedProgram(analysis, context)) {
+    if (ompName && analysis.nodeInfos.at(-1).protectedKind === "arm") return deny("watcher-named");
+    return { decision: "allow" };
+  }
   if (analysis.nodeInfos.some((info) => info.position.prefixAssignments > 0 || info.position.wrappers.some((wrapper) => wrapper !== "exec"))) {
     return deny("watcher-nested");
   }
@@ -949,7 +953,7 @@ if (invokedDirectly()) {
     if (!args.command) {
       process.stdout.write("allow\n");
     } else {
-      const result = decision(args.command, args.root, args.home);
+      const result = decision(args.command, args.root, args.home, args["omp-name"]);
       if (result.decision === "allow") {
         process.stdout.write("allow\n");
       } else {

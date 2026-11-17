@@ -3,13 +3,14 @@ Mode: omp async-job supervision.
 When this session owns supervision, including omp away mode selected by `/afk`:
 1. Drain first with `bin/fm-wake-drain.sh`.
 2. Source `__FM_X_MODE_ENV__` first when X mode is active.
-3. Follow [.agents/skills/stow/SKILL.md, omp watching-only reset](../../.agents/skills/stow/SKILL.md#omp-watching-only-reset) for the next transition, including plain re-arm at 40% or lower or unavailable context usage; when it directs arming, use the tracked job below alone:
+3. Follow [stow/reset](../../.agents/skills/stow/SKILL.md#omp-watching-only-reset) for the next transition, including plain re-arm at 40% or lower or unavailable context usage; when it directs arming, use the tracked job below alone:
 
-   `bash` with `async: true` and `timeout: 0` on:
+   `bash` with `async: true`, `timeout: 0`, and no `name` on:
    `[ -f __FM_X_MODE_ENV_SH__ ] && . __FM_X_MODE_ENV_SH__; exec bin/fm-watch-arm.sh`
 
-4. The call returns a job id, not the arm's status.
-   Read `proc://<job-id>` once for the arm's one-line status; reading it does not consume the completion delivery.
+4. The call returns a job id.
+   Read `proc://<job-id>` or the saved result described by `bin/fm-watch-arm.sh` once; neither consumes completion.
+   Reset eligibility requires the current session, call, running job and returned status to match.
 5. Trust only that one-line status.
    `watcher: started ...` or `watcher: attached ...` means a live cycle exists.
    On attach, the job follows verified identity-matched successors instead of exiting when the first cycle ends.
@@ -19,14 +20,14 @@ When this session owns supervision, including omp away mode selected by `/afk`:
 8. Waiting is silent: never poll the job, call `wait` on it, or kill it.
 9. Never use shell `&` for firstmate supervision.
 10. Never bundle the arm onto another command.
-    A shell `&`, a truncating pipe, or bundling is denied automatically by the seatbelt in `.omp/extensions/fm-primary-omp.ts`.
+    The extension enforces the [watcher-arm policy](../arm-pretool-check.md), including refusal of named services.
 
 omp delivers a finished async job as a new turn, even when the session is idle.
 When the arm job's completion arrives:
 1. Run `bin/fm-wake-drain.sh` first.
 2. Read the reason line from the delivered job output.
 3. Handle `signal`, `stale`, `check`, or `heartbeat` using the harness-neutral contract in `AGENTS.md`.
-4. Ordinary wake: if work remains in flight, X mode still needs polling, or omp away mode remains active, follow [.agents/skills/stow/SKILL.md, omp watching-only reset](../../.agents/skills/stow/SKILL.md#omp-watching-only-reset).
+4. Ordinary wake: if work remains in flight, X mode still needs polling, or omp away mode remains active, follow [stow/reset](../../.agents/skills/stow/SKILL.md#omp-watching-only-reset).
 5. Do not invent a wake from an attach-status line alone.
    Drain the queue and act only on real wake records or a real watcher reason line.
    Re-arm attaches to an existing healthy cycle when one is already present and follows its verified successor chain.

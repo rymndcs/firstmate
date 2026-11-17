@@ -4,6 +4,7 @@ set -eu
 # shellcheck source=tests/lib.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 LAB=$(fm_test_tmproot fm-omp-reset)
+LAB=$(cd "$LAB" && pwd -P)
 FM_TEST_CLEANUP_DIRS+=("$LAB")
 trap fm_test_cleanup EXIT
 mkdir -p "$LAB/.omp/extensions" "$LAB/bin" "$LAB/state" "$LAB/data" "$LAB/config"
@@ -85,6 +86,7 @@ done
 cat > "$LAB/bin/fm-arm-pretool-check.sh" <<'SH'
 #!/usr/bin/env bash
 case "$*" in *' | head -1'*) exit 2 ;; esac
+exec "$FM_RESET_SOURCE_ROOT/bin/fm-arm-pretool-check.sh" "$@"
 SH
 mkfifo "$LAB/state/submit-resume"
 mkdir -p "$LAB/.agents/skills/stow"
@@ -99,7 +101,7 @@ if [ "${FM_RESET_SKIP_REPORTER:-0}" != 1 ]; then
 fi
 if [ -n "${FM_RESET_REPORTER_CASE:-}" ]; then exit; fi
 node "$ROOT/tests/fixtures/omp-reset/model-flow-regressions.mjs" "$ROOT" "$LAB/model-flow"
-for scenario in context-missing-ctx context-missing-method context-rearm-fresh context-zero context-below context-boundary context-above context-high context-unavailable context-unknown context-nan questions-missing questions-false questions-string questions-valid receipt-missing receipt-after receipt-before receipt-before-invalid receipt-budget receipt-action-captain receipt-action-shared receipt-action-learnings receipt-action-invalid receipt-mismatch receipt-budget-mismatch receipt-over-budget receipt-report-missing-total receipt-report-missing-budget receipt-valid startup-refused startup-encoding startup-enqueue startup-recovery-encoding startup-recovery-enqueue recovery-encoding recovery-enqueue retired-recovery normal-seed unquoted-arm away-flag-prepare away-flag-ready away-flag-ready-budget away-flag-command-budget away-flag-scheduled away-flag-input away-flag-command away-flag-in-flight away-flag-in-flight-clean away-owner-prepare away-owner-ready away-owner-ready-budget away-owner-command-budget away-owner-scheduled away-owner-input away-owner-command away-owner-in-flight away-owner-in-flight-clean arm-gate draft-race in-flight cancelled-switch thrown-switch partial-switch running-watcher veto-draft veto-busy veto-queued veto-forged veto-foreign-job; do
+for scenario in arm-file-valid arm-file-attached arm-file-relative arm-file-foreign arm-file-session arm-file-call arm-file-missing arm-file-status arm-file-output arm-file-completed arm-file-error named-arm unnamed-arm context-missing-ctx context-missing-method context-rearm-fresh context-zero context-below context-boundary context-above context-high context-unavailable context-unknown context-nan questions-missing questions-false questions-string questions-valid receipt-missing receipt-after receipt-before receipt-before-invalid receipt-budget receipt-action-captain receipt-action-shared receipt-action-learnings receipt-action-invalid receipt-mismatch receipt-budget-mismatch receipt-over-budget receipt-report-missing-total receipt-report-missing-budget receipt-valid startup-refused startup-encoding startup-enqueue startup-recovery-encoding startup-recovery-enqueue recovery-encoding recovery-enqueue retired-recovery normal-seed unquoted-arm away-flag-prepare away-flag-ready away-flag-ready-budget away-flag-command-budget away-flag-scheduled away-flag-input away-flag-command away-flag-in-flight away-flag-in-flight-clean away-owner-prepare away-owner-ready away-owner-ready-budget away-owner-command-budget away-owner-scheduled away-owner-input away-owner-command away-owner-in-flight away-owner-in-flight-clean arm-gate draft-race in-flight cancelled-switch thrown-switch partial-switch running-watcher veto-draft veto-busy veto-queued veto-forged veto-foreign-job; do
   FM_HOME="$LAB" FM_STATE_OVERRIDE="$LAB/state" node --experimental-strip-types "$ROOT/tests/fixtures/omp-reset/regressions.mjs" "$scenario"
 done
 FM_HOME="$LAB" FM_STATE_OVERRIDE="$LAB/state" node --experimental-strip-types "$ROOT/tests/fixtures/omp-reset/transitions.mjs"

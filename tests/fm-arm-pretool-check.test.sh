@@ -258,6 +258,26 @@ test_background_flag_accepted_and_non_gating() {
   pass "--background is accepted for interface parity and is never itself a deny signal"
 }
 
+test_omp_service_name() {
+  local command out rc
+  out=$("$CHECK" --command 'exec bin/fm-watch-arm.sh' --omp-name supervision 2>&1)
+  rc=$?
+  [ "$rc" -eq 2 ] || fail "a named omp watcher arm must be denied, got exit $rc"
+  assert_contains "$out" '[watcher-named]' 'named arm must report its stable reason'
+  assert_contains "$out" 'plain async job with timeout: 0 and no name' 'named arm must explain the supported continuation'
+  for command in 'exec bin/fm-watch-arm.sh' 'exec bin/fm-watch-arm.sh --restart'; do
+    out=$("$CHECK" --command "$command" --omp-name '' 2>&1) || fail "an empty service name must preserve a plain arm"
+    [ -z "$out" ] || fail "an unnamed arm must remain silent"
+  done
+  for command in 'echo ordinary' 'printf "%s" "bin/fm-watch-arm.sh"' 'exec bin/fm-watch-checkpoint.sh --seconds 180'; do
+    out=$("$CHECK" --command "$command" --omp-name service 2>&1) || fail "non-arm named calls must remain allowed: $command"
+    [ -z "$out" ] || fail "an allowed named call must remain silent: $command"
+  done
+  "$CHECK" --command 'exec bin/fm-watch-arm.sh' --omp-name >/dev/null 2>&1
+  [ "$?" -eq 2 ] || fail "missing --omp-name value must be rejected"
+  pass 'omp named arms deny; unnamed arms, data mentions and other services allow'
+}
+
 test_unknown_flag_errors() {
   "$CHECK" --bogus-flag >/dev/null 2>&1
   [ "$?" -eq 2 ] || fail "an unrecognized flag must exit non-zero, not silently allow"
@@ -451,6 +471,7 @@ test_full_acceptance_matrix
 test_direct_policy_contract
 test_command_equals_form
 test_background_flag_accepted_and_non_gating
+test_omp_service_name
 test_unknown_flag_errors
 test_stdin_grok_schema_deny
 test_stdin_claude_codex_schema_allow
