@@ -731,7 +731,12 @@ SH
       printf 'exit:%s\n' "$rc" > "$poll_fifo"
     ) &
     pid=$!
-    IFS= read -r event <&9
+    if ! IFS= read -r -t 30 event <&9; then
+      if [ -s "$pid_file" ]; then kill "$(cat "$pid_file")" 2>/dev/null || true; else kill "$pid" 2>/dev/null || true; fi
+      wait "$pid" 2>/dev/null || true
+      exec 9>&-
+      fail "dead-agent watcher round $round produced no cycle event"
+    fi
     watcher_pid=$(cat "$pid_file")
     case "$event" in
       "poll:$watcher_pid") kill "$watcher_pid" 2>/dev/null || true ;;

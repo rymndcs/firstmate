@@ -340,11 +340,12 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     try {
       const [sourceSession, call, status] = readFileSync(`${state}/.omp-watch-arm-result`, "utf8").split("\n");
       if (sourceSession !== sessionId(ctx) || !/^watcher: (started|attached) pid=[0-9]+ /.test(status)) return;
-      const savedResult = resolve(root, event.input.path) === resolve(state, ".omp-watch-arm-result");
+      const savedResult = resolve(root, event.input.path.replace(/:raw$/, "")) === resolve(state, ".omp-watch-arm-result");
       const job = jobs?.running.find(job => call === jobCalls.get(job.id)
         && (savedResult || event.input.path === `proc://${job.id}`));
       if (!job) return;
-      if (event.content.some(part => part.type === "text" && part.text.split("\n").includes(status))) {
+      const lines = event.content.flatMap(part => part.type === "text" ? part.text.split("\n") : []);
+      if (lines.includes(status) || (savedResult && lines.includes(`3:${status}`))) {
         eligible = true;
         armedJobs.add(job.id);
       }

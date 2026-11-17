@@ -9,7 +9,7 @@ When this session owns supervision, including omp away mode selected by `/afk`:
    `[ -f __FM_X_MODE_ENV_SH__ ] && . __FM_X_MODE_ENV_SH__; exec bin/fm-watch-arm.sh`
 
 4. The call returns a job id.
-   Read `proc://<job-id>` or the saved result described by `bin/fm-watch-arm.sh` once; neither consumes completion.
+   Read `proc://<job-id>` or `state/.omp-watch-arm-result` once; neither consumes completion.
    Reset eligibility requires the current session, call, running job and returned status to match.
 5. Trust only that one-line status.
    `watcher: started ...` or `watcher: attached ...` means a live cycle exists.
