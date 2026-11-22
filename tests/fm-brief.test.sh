@@ -108,6 +108,18 @@ PYCODE
     [ "$(cat "$home/created")" = "$before" ] || fail 'malformed ownership record reached createdb'
     [ "$(cat "$home/state/database-task.databases")" = "$entry" ] || fail 'creation backfilled a malformed ownership record'
   done
+  local help_command project_root help_out
+  help_command=$(python3 - "$home/data/database-task/brief.md" <<'PYCODE'
+from pathlib import Path
+import re, sys
+brief = Path(sys.argv[1]).read_text()
+print(re.findall(r'`([^`]*fm-task-databases\.sh[^`]*--help)`', brief)[0])
+PYCODE
+) || fail 'brief omitted the database format owner help pointer'
+  project_root="$home/other-project"
+  mkdir -p "$project_root"
+  help_out=$(cd "$project_root" && bash -c "$help_command" 2>&1) || fail "format owner help pointer failed from a project worktree: $help_out"
+  assert_contains "$help_out" 'creation-time OID' 'format owner help pointer did not reach the record format owner'
   pass 'fm-brief: creation failure preserves pre-existing databases; successful creation registers exact ownership'
 }
 test_database_registration_scaffold

@@ -695,7 +695,7 @@ $RULE1
 2. Stay inside this worktree; modify nothing outside it.
    If you create a temporary directory outside this worktree, record its absolute path so teardown can remove it: \`echo <absolute-path> >> $TEMP_TARGETS\`.
    Create and register each task-only local PostgreSQL scratch database through \`$DATABASE_TOOL --create $DATABASES "\$task_database"\`.
-   \`bin/fm-task-databases.sh --help\` owns the identity record format and creation-time OID capture; never register a failed creation or backfill a missing identity during cleanup.
+   \`$DATABASE_TOOL --help\` owns the identity record format and creation-time OID capture; never register a failed creation or backfill a missing identity during cleanup.
    Never register shared development, production or pool-slot databases; these remain for reuse.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 $REVIEW_CONTRACT
