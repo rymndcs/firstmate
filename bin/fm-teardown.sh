@@ -89,7 +89,8 @@
 # remain under state/jira/ until fm-jira.sh publishes them successfully.
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
-# an Orca target from ambient CLI state.
+# an Orca target from ambient CLI state. A landed Orca ship cleans its recorded
+# task databases first and refuses removal while that cleanup is incomplete.
 # A Herdr presentation journal never authorizes cleanup. Teardown still closes
 # only the exact task pane from ordinary endpoint metadata and never calls
 # `workspace close`. It retires the non-authoritative journal only when a
@@ -119,8 +120,10 @@
 # A landed ship teardown (the landed-work guards ran and passed, so never with
 # --force and never for a scout) stops the slot's processes and deletes its
 # ignored files and the temporary directories the task recorded while the slot
-# is still leased, then returns it. A cleanup that cannot finish is reported
-# and the return proceeds, leaving what remained.
+# is still leased, then returns it. Incomplete ignored-artifact or database
+# cleanup refuses return and keeps task metadata and ownership records for retry.
+# Exact task database records are owned by bin/fm-task-databases.sh; pool-slot
+# databases are retained. Unregistered databases are never inferred or swept.
 # bin/fm-worktree-cleanup.sh owns writer stopping, selection, retention, the
 # task's temporary-target record (state/<task-id>.temp-targets) and reporting.
 # Ship tasks returning to Treehouse first remove registered nested worktrees,
@@ -2014,6 +2017,17 @@ remove_secondmate_registry_entry() {
   return "$rc"
 }
 
+if [ "$KIND" = ship ] && [ "$FORCE" != --force ]; then
+  if { [ -e "$STATE/$ID.databases" ] || [ -L "$STATE/$ID.databases" ]; } && [ ! -d "$WT" ]; then
+    echo "REFUSED: registered task databases lack an inspectable worktree; retaining task metadata and database record for retry" >&2
+    exit 1
+  fi
+  if [ -d "$WT" ] && [ "$(canonical_existing_dir "$WT")" = "$(canonical_existing_dir "$PROJ")" ]; then
+    echo "REFUSED: task cleanup cannot return the primary project clone $PROJ" >&2
+    exit 1
+  fi
+fi
+
 validate_pr_poll_cleanup "$STATE" "$ID" || exit 1
 
 if [ "$KIND" = secondmate ]; then
@@ -2127,17 +2141,19 @@ fi
 
 remove_nested_ship_worktrees || exit 1
 
-if [ -d "$WT" ] && [ "$KIND" = ship ]; then
-  "$SCRIPT_DIR/fm-protected-paths.sh" remove "$WT" "$ID" || exit 1
-fi
-
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
     require_orca_worktree_path_match_if_present "$ORCA_WORKTREE_ID" "$WT" || exit 1
     ORCA_PATH_MATCH_VERIFIED=1
   fi
+  if [ "$KIND" = ship ] && [ "$FORCE" != --force ]; then
+    "$SCRIPT_DIR/fm-task-databases.sh" "$META" "$STATE/$ID.databases" || exit 1
+  fi
   if [ -d "$WT" ]; then
+    if [ "$KIND" = ship ]; then
+      "$SCRIPT_DIR/fm-protected-paths.sh" remove "$WT" "$ID" || exit 1
+    fi
     branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
     if [ "$branch" != "HEAD" ]; then
       if git -C "$WT" checkout --detach -q 2>/dev/null; then
@@ -2154,8 +2170,17 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   landed_guards_passed=0
   if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ]; then
     landed_guards_passed=1
-    "$SCRIPT_DIR/fm-worktree-cleanup.sh" --worktree "$WT" "$TASK_TMP" "$STATE/$ID.temp-targets" \
-      || echo "teardown: ignored cleanup incomplete for $ID; returning the slot with the leftovers reported above" >&2
+    "$SCRIPT_DIR/fm-worktree-cleanup.sh" --worktree "$WT" "$TASK_TMP" "$STATE/$ID.temp-targets" || {
+      echo "teardown: ignored cleanup incomplete for $ID; retaining the slot and task metadata for retry" >&2
+      exit 1
+    }
+    "$SCRIPT_DIR/fm-task-databases.sh" "$META" "$STATE/$ID.databases" || {
+      echo "teardown: database cleanup incomplete for $ID; retaining the slot and task metadata for retry" >&2
+      exit 1
+    }
+  fi
+  if [ "$KIND" = ship ]; then
+    "$SCRIPT_DIR/fm-protected-paths.sh" remove "$WT" "$ID" || exit 1
   fi
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then
@@ -2317,6 +2342,9 @@ fm_backend_clear_transition "$BACKEND" "$STATE" "$T" || true
 remove_pr_poll_artifacts "$STATE" "$ID" || exit 1
 retire_busy_state "$STATE" "$ID" "$BUSY_GEN" || exit 1
 cleanup_gate_backup_refs || true
+if [ "$KIND" = ship ] && [ "$FORCE" != --force ]; then
+  rm -f "$STATE/$ID.databases"
+fi
 rm -f "$STATE/$ID.status" "$STATE/$ID.turn-ended" "$STATE/$ID.meta" \
   "$STATE/$ID.pi-ext.ts" "$STATE/$ID.grok-turnend-token" \
   "$STATE/$ID.kimi-turnend-token" "$STATE/$ID.temp-targets" "$STATE/$ID.steered"

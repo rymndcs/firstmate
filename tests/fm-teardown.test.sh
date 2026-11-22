@@ -3570,6 +3570,7 @@ test_cleanup_readonly_modes() {
 test_cleanup_partial_failure() {
   local c made
   c=$(cleanup_fixture partial-failure)
+  add_return_probe "$c"
   made="$c/made-by-task"
   mkdir -p "$made/ro"
   printf 'object\n' > "$made/ro/obj"
@@ -3578,19 +3579,403 @@ test_cleanup_partial_failure() {
   printf '%s\n' "$made" > "$c/state/task-x1.temp-targets"
   ln -s "$made" "$c/wt/target"
   printf 'old\n' > "$c/wt/zzz.log"
-  run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'partial cleanup failure blocked teardown'
+  if CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err"; then fail 'partial cleanup failure did not retain slot'; fi
+  [ ! -e "$c/scratch-at-return" ] || fail 'artifact failure returned the slot'
   [ "$(mode_of "$made/ro")" = 555 ] || fail 'cleanup changed permissions outside the worktree'
   chmod -R u+w "$made"
   [ -f "$made/ro/obj" ] || fail 'read-only fixture outside the worktree was removed'
   [ ! -e "$made/zz-removable" ] || fail 'cleanup stopped at the first failure'
   [ ! -e "$c/wt/zzz.log" ] || fail 'cleanup skipped entries after a failure'
-  [ ! -e "$c/state/task-x1.meta" ] || fail 'cleanup failure blocked the rest of teardown'
+  [ -f "$c/state/task-x1.meta" ] || fail 'cleanup failure erased retry metadata'
   grep -Eq "^cleanup: removed [1-9][0-9]* ignored entries .*; freed ~[1-9][0-9]* bytes; failed: '[^']*/made-by-task/ro/obj' \\(" "$c/out" \
     || fail 'partial failure did not report completed removals, freed space and the failing path'
   [ "$(grep -o 'made-by-task/ro/obj' "$c/out" | wc -l | tr -d ' ')" = 1 ] || fail "partial failure reported the failing path more than once: $(cat "$c/out")"
   ! grep -q 'kept temporary' "$c/out" || fail 'partial failure also reported the recorded directory as kept'
   grep -q 'ignored cleanup incomplete' "$c/err" || fail 'teardown did not warn about incomplete cleanup'
-  pass 'a failed path is reported with completed removals and freed space, and teardown continues'
+  pass 'a failed path is reported with completed removals and freed space, and teardown retains the task'
+}
+
+database_fixture() {
+  local c=$1
+  printf '%s\n' 'fm8081_test|101|0|8192' 'adv_r2_rac341_scratch|102|0|4096' 'unregistered_scratch|103|0|1024' > "$c/catalog"
+  cat > "$c/fakebin/psql" <<'SH'
+#!/usr/bin/env bash
+[ ! -f "$CLEANUP_CASE/meta-change" ] || printf 'branch=changed\n' >> "$CLEANUP_CASE/state/task-x1.meta"
+[ ! -f "$CLEANUP_CASE/query-fails" ] || exit 1
+[ ! -f "$CLEANUP_CASE/record-change" ] || printf 'extra_scratch\t108\n' >> "$CLEANUP_CASE/state/task-x1.databases"
+printf '%s\n' "$*" >> "$CLEANUP_CASE/queries"
+python3 - "$CLEANUP_CASE/catalog" "${!#}" <<'PYCODE'
+from pathlib import Path
+import re, sys
+name = re.search("d.datname = '([^']+)'", sys.argv[2])[1]
+for row in Path(sys.argv[1]).read_text().splitlines():
+    if '|' not in row or row.split('|')[0] == name:
+        print(row.split('|')[1] if sys.argv[2].startswith('SELECT d.oid ') else row)
+PYCODE
+SH
+  cat > "$c/fakebin/dropdb" <<'SH'
+#!/usr/bin/env bash
+[ "$#" -eq 1 ] || exit 9
+printf '%s\n' "$1" >> "$CLEANUP_CASE/drops"
+[ ! -f "$CLEANUP_CASE/drop-fails" ] || exit 1
+python3 - "$CLEANUP_CASE/catalog" "$1" <<'PYCODE'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+p.write_text(''.join(row + '\n' for row in p.read_text().splitlines() if row.split('|')[0] != sys.argv[2]))
+PYCODE
+SH
+  cat > "$c/fakebin/treehouse" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' return >> "$CLEANUP_CASE/returns"
+[ ! -e "$CLEANUP_CASE/wt/target" ] || exit 7
+SH
+  chmod +x "$c/fakebin/psql" "$c/fakebin/dropdb" "$c/fakebin/treehouse"
+}
+
+test_cleanup_databases() {
+  local c
+  c=$(cleanup_fixture databases)
+  database_fixture "$c"
+  printf '%s\n' $'fm8081_test\t101' $'adv_r2_rac341_scratch\t102' $'fm8081_test\t101' $'already_removed\t106' > "$c/state/task-x1.databases"
+  mkdir -p "$c/wt/target"
+  printf 'output\n' > "$c/wt/target/object"
+  CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'registered DB teardown failed'
+  [ "$(cat "$c/drops")" = $'fm8081_test\nadv_r2_rac341_scratch' ] || fail 'did not drop exactly the recorded existing DBs once each'
+  [ "$(cat "$c/catalog")" = 'unregistered_scratch|103|0|1024' ] || fail 'unregistered DB was changed'
+  [ ! -e "$c/state/task-x1.databases" ] || fail 'completed teardown retained DB record'
+  grep -q 'freed ~12288 bytes' "$c/out" || fail 'missing DB space report'
+  pass 'teardown drops only exact registered databases before returning a clean slot'
+}
+
+test_cleanup_database_creation() {
+  local c
+  c=$(cleanup_fixture database-creation)
+  database_fixture "$c"
+  FM_HOME="$c" FM_STATE_OVERRIDE="$c/state" FM_DATA_OVERRIDE="$c/data" "$ROOT/bin/fm-brief.sh" task-x1 sample --mode local-only --checks targeted > "$c/brief-out" 2> "$c/brief-err" || fail 'creation brief failed'
+  python3 - "$c/data/task-x1/brief.md" "$c/create.sh" <<'PYCODE'
+from pathlib import Path
+import re, sys
+brief = Path(sys.argv[1]).read_text()
+commands = re.findall(r'`([^`]*(?:createdb|fm-task-databases.sh[^`]*--create)[^`]*)`', brief)
+if commands:
+    command = commands[0]
+else:
+    record = re.search(r'Record each task-only local PostgreSQL database you create in (.*?), one exact', brief)[1]
+    command = 'printf "%s\\n" "$task_database" >> ' + record + '\ncreatedb "$task_database"'
+Path(sys.argv[2]).write_text(command + '\n')
+PYCODE
+  cat > "$c/fakebin/createdb" <<'SH'
+#!/usr/bin/env bash
+[ "$1" != preexisting_scratch ] || { echo 'createdb: database already exists' >&2; exit 1; }
+printf '%s|105|0|4096\n' "$1" >> "$CLEANUP_CASE/catalog"
+SH
+  chmod +x "$c/fakebin/createdb"
+  printf 'preexisting_scratch|104|0|8192\n' > "$c/catalog"
+  if CLEANUP_CASE="$c" PATH="$c/fakebin:$PATH" task_database=preexisting_scratch bash "$c/create.sh" > "$c/create-out" 2> "$c/create-err"; then fail 'collision creation succeeded'; fi
+  CLEANUP_CASE="$c" PATH="$c/fakebin:$PATH" task_database=new_task_scratch bash "$c/create.sh" || fail 'new scratch creation failed'
+  CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'creation cleanup failed'
+  [ "$(cat "$c/drops")" = new_task_scratch ] || fail 'cleanup dropped a database whose creation failed'
+  [ "$(cat "$c/catalog")" = 'preexisting_scratch|104|0|8192' ] || fail 'failed-creation database was not preserved'
+  [ ! -e "$c/state/task-x1.databases" ] && [ -f "$c/returns" ] || fail 'successful cleanup retained ownership or slot'
+  pass 'generated creation instructions preserve pre-existing databases through landed teardown'
+}
+
+test_cleanup_database_peer_copies() {
+  local c mode name suffix
+  for mode in project linked fresh missing; do
+    c=$(cleanup_fixture "database-peer-$mode")
+    database_fixture "$c"
+    git clone -q "$c/project" "$c/independent-copy"
+    git -C "$c/independent-copy" worktree add -q --detach "$c/independent-task"
+    case "$mode" in
+      project|fresh) name="$c/independent-copy" ;;
+      linked) name="$c/independent-task" ;;
+      missing) name= ;;
+    esac
+    if [ -n "$name" ]; then
+      suffix=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:32])' "$name")
+      name="racingr_wms_test_$suffix"
+    else
+      name=fm8081_test
+    fi
+    printf '%s\t101\n' "$name" > "$c/state/task-x1.databases"
+    printf '%s|101|0|8192\n' "$name" > "$c/catalog"
+    if [ "$mode" = fresh ]; then
+      mv "$c/fakebin/psql" "$c/fakebin/psql-base"
+      cat > "$c/fakebin/psql" <<'SH'
+#!/usr/bin/env bash
+printf 'project=%s\nworktree=%s\n' "$CLEANUP_CASE/independent-copy" "$CLEANUP_CASE/independent-copy" > "$CLEANUP_CASE/state/peer.meta"
+exec "$CLEANUP_CASE/fakebin/psql-base" "$@"
+SH
+      chmod +x "$c/fakebin/psql"
+    elif [ "$mode" = missing ]; then
+      printf 'project=%s\nworktree=%s\n' "$c/missing-project" "$c/missing-task" > "$c/state/peer.meta"
+    else
+      printf 'project=%s\nworktree=%s\n' "$c/independent-copy" "$c/independent-task" > "$c/state/peer.meta"
+    fi
+    if [ "$mode" = missing ]; then
+      CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err" || fail 'missing peer copy prevented owned scratch cleanup'
+      [ "$(cat "$c/drops")" = fm8081_test ] || fail 'missing peer changed exact scratch cleanup'
+      continue
+    fi
+    if CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err"; then fail "$mode peer checkout database reported cleaned"; fi
+    [ ! -e "$c/drops" ] || fail "$mode peer checkout database was dropped"
+    [ -f "$c/state/task-x1.meta" ] && [ -f "$c/state/task-x1.databases" ] || fail 'peer refusal lost retry records'
+    [ ! -e "$c/returns" ] || fail 'peer refusal returned the slot'
+    printf '%s\n' $'fm8081_test\t101' > "$c/state/task-x1.databases"
+    printf 'fm8081_test|101|0|8192\n' >> "$c/catalog"
+    CLEANUP_CASE="$c" run_teardown "$c" > "$c/out2" 2> "$c/err2" || fail 'corrected peer registration did not retry'
+    [ "$(cat "$c/drops")" = fm8081_test ] || fail 'retry dropped peer database'
+    [ "$(cat "$c/catalog")" = "$name|101|0|8192" ] || fail 'retry changed peer database'
+  done
+  pass 'recorded independent project copies and linked worktrees are protected, including fresh discovery'
+}
+
+test_cleanup_database_peer_diagnostic() {
+  local c entry
+  for entry in '' '--force'; do
+    c=$(cleanup_fixture "database-peer-diagnostic-${entry:-blank}")
+    database_fixture "$c"
+    printf '%s\n' $'fm8081_test\t101' > "$c/state/task-x1.databases"
+    printf 'project=%s\nworktree=%s\n' "$c/project" "$c/wt" > "$c/state/peer.meta"
+    printf 'scratch_other\t107\nscratch_other\t107\n%s\n' "$entry" > "$c/state/peer.databases"
+    if CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err"; then fail 'malformed peer record allowed teardown'; fi
+    assert_grep "$c/state/peer.databases" "$c/err" 'invalid peer diagnostic omitted the blocking record'
+    assert_grep "line 3: '$entry'" "$c/err" 'invalid peer diagnostic omitted original line and invalid entry'
+    [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] && [ ! -e "$c/drops" ] || fail 'malformed peer record lost identity or allowed cleanup'
+    printf 'scratch_other\t107\n' > "$c/state/peer.databases"
+    CLEANUP_CASE="$c" run_teardown "$c" > "$c/out2" 2> "$c/err2" || fail 'corrected peer record prevented retry'
+    [ "$(cat "$c/drops")" = fm8081_test ] || fail 'peer repair changed exact cleanup scope'
+  done
+  pass 'malformed peer records identify the exact file, line and entry while preserving refusal and retry'
+}
+
+test_cleanup_protection_retry() {
+  local c mode gitdir
+  for mode in database artifact orca; do
+    c=$(cleanup_fixture "protection-retry-$mode")
+    database_fixture "$c"
+    printf '%s\n' $'fm8081_test\t101' > "$c/state/task-x1.databases"
+    case "$mode" in
+      database) printf 'fm8081_test|101|1|8192\n' > "$c/catalog" ;;
+      artifact)
+        mkdir -p "$c/made-by-task/ro"
+        printf 'object\n' > "$c/made-by-task/ro/obj"
+        chmod 0555 "$c/made-by-task/ro"
+        printf '%s\n' "$c/made-by-task" > "$c/state/task-x1.temp-targets"
+        ln -s "$c/made-by-task" "$c/wt/target"
+        ;;
+      orca)
+        fm_write_meta "$c/state/task-x1.meta" \
+          'window=fm-task-x1' 'endpoint_task_id=task-x1' 'terminal=term-test' \
+          "worktree=$c/wt" "project=$c/project" 'kind=ship' 'mode=local-only' \
+          'backend=orca' 'orca_worktree_id=wt-test'
+        printf 'fm8081_test|101|1|8192\n' > "$c/catalog"
+        cat > "$c/fakebin/orca" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  'worktree show') printf '{"ok":true,"result":{"worktree":{"id":"wt-test","path":"%s"}}}\n' "$CLEANUP_CASE/wt" ;;
+  *) printf '{"ok":true}\n' ;;
+esac
+SH
+        chmod +x "$c/fakebin/orca"
+        ;;
+    esac
+    FM_HOME="$c" FM_DATA_OVERRIDE="$c/data" "$ROOT/bin/fm-protected-paths.sh" install "$c/wt" task-x1 fm/task-x1 || fail 'protected hook install failed'
+    gitdir=$(git -C "$c/wt" rev-parse --absolute-git-dir)
+    if CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err"; then fail "$mode cleanup unexpectedly succeeded"; fi
+    case "$mode" in
+      artifact) assert_grep 'ignored cleanup incomplete' "$c/err" 'artifact fixture did not reach cleanup refusal' ;;
+      *) assert_grep 'open connection(s)' "$c/out" "$mode fixture did not reach connected-database refusal: $(cat "$c/out" "$c/err")" ;;
+    esac
+    printf 'instruction change\n' > "$c/wt/CLAUDE.md"
+    git -C "$c/wt" add -f CLAUDE.md
+    git -C "$c/wt" commit -qm 'disposable protected change after cleanup refusal'
+    if git -C "$c/wt" push origin HEAD:refs/heads/protected-after > "$c/push-after" 2>&1; then fail "$mode cleanup refusal disabled protected-path enforcement"; fi
+    assert_grep 'CLAUDE.md' "$c/push-after" 'push failed for a reason other than protected-path enforcement'
+    [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] || fail 'cleanup refusal lost task identity'
+    git -C "$c/project" update-ref refs/heads/main "$(git -C "$c/wt" rev-parse HEAD)"
+    chmod -R u+w "$c/made-by-task" 2>/dev/null || true
+    printf 'fm8081_test|101|0|8192\n' > "$c/catalog"
+    CLEANUP_CASE="$c" run_teardown "$c" > "$c/out2" 2> "$c/err2" || fail "$mode cleanup retry failed: $(cat "$c/out2" "$c/err2")"
+    [ ! -e "$gitdir/fm-agent-file-task.json" ] || fail 'completed cleanup retained protected task marker'
+    git -C "$c/wt" push origin HEAD:refs/heads/protected-after > "$c/push-final" 2>&1 || fail 'successful cleanup retained protected enforcement'
+    [ ! -e "$c/state/task-x1.meta" ] || fail 'successful retry retained task metadata'
+  done
+  pass 'artifact and database cleanup refusals preserve protected-file enforcement through successful retry on both runtimes'
+}
+
+test_cleanup_database_retry() {
+  local c
+  c=$(cleanup_fixture database-retry)
+  database_fixture "$c"
+  printf '%s\n' $'fm8081_test\t101' $'adv_r2_rac341_scratch\t102' > "$c/state/task-x1.databases"
+  printf '%s\n' 'fm8081_test|101|1|8192' 'adv_r2_rac341_scratch|102|0|4096' > "$c/catalog"
+  if CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err"; then fail 'busy DB reported complete'; fi
+  [ "$(cat "$c/drops")" = adv_r2_rac341_scratch ] || fail 'connected DB was dropped or sibling was skipped'
+  [ ! -f "$c/returns" ] || fail 'busy DB returned slot'
+  [ -f "$c/state/task-x1.meta" ] && [ -f "$c/state/task-x1.databases" ] || fail 'busy DB erased retry records'
+  [ "$(git -C "$c/wt" branch --show-current)" = fm/task-x1 ] || fail 'busy DB detached branch before cleanup finished'
+  grep -q 'fm8081_test.*connection' "$c/out" || fail 'connected DB not reported'
+  printf '%s\n' 'fm8081_test|101|0|8192' > "$c/catalog"
+  CLEANUP_CASE="$c" run_teardown "$c" > "$c/out2" 2> "$c/err2" || fail 'retry failed after connection cleared'
+  [ "$(cat "$c/drops")" = $'adv_r2_rac341_scratch\nfm8081_test' ] || fail 'retry repeated an already completed drop'
+  [ ! -e "$c/state/task-x1.meta" ] || fail 'successful retry did not finish'
+  pass 'busy databases retain the slot and records; retry finishes only remaining drops'
+}
+
+test_cleanup_database_replacement() {
+  local c mode
+  for mode in completed registered; do
+    c=$(cleanup_fixture "database-replacement-$mode")
+    database_fixture "$c"
+    printf '%s\n' $'fm8081_test\t101' $'adv_r2_rac341_scratch\t102' > "$c/state/task-x1.databases"
+    printf '%s\n' 'fm8081_test|101|0|8192' 'adv_r2_rac341_scratch|102|1|4096' > "$c/catalog"
+    if CLEANUP_CASE="$c" run_teardown "$c" > "$c/first-out" 2> "$c/first-err"; then fail 'partial cleanup reported complete'; fi
+    [ "$(cat "$c/drops")" = fm8081_test ] || fail 'partial cleanup did not preserve the connected original'
+    if [ "$mode" = completed ]; then
+      printf '%s\n' 'fm8081_test|201|0|65536' 'adv_r2_rac341_scratch|102|0|4096' > "$c/catalog"
+    else
+      printf '%s\n' 'adv_r2_rac341_scratch|202|0|65536' > "$c/catalog"
+    fi
+    if CLEANUP_CASE="$c" run_teardown "$c" > "$c/retry-out" 2> "$c/retry-err"; then fail "$mode replacement DB reported complete"; fi
+    assert_grep 'identity changed' "$c/retry-err" 'replacement refusal omitted the identity mismatch'
+    if [ "$mode" = completed ]; then
+      [ "$(cat "$c/catalog")" = 'fm8081_test|201|0|65536' ] || fail 'completed-name replacement changed or matching sibling was skipped'
+      [ "$(cat "$c/drops")" = $'fm8081_test\nadv_r2_rac341_scratch' ] || fail 'completed replacement was dropped again'
+    else
+      [ "$(cat "$c/catalog")" = 'adv_r2_rac341_scratch|202|0|65536' ] || fail 'still-registered replacement changed'
+      [ "$(cat "$c/drops")" = fm8081_test ] || fail 'still-registered replacement was dropped'
+    fi
+    [ "$(cat "$c/state/task-x1.databases")" = $'fm8081_test\t101\nadv_r2_rac341_scratch\t102' ] || fail 'replacement refusal rewrote creation identities'
+    [ -f "$c/state/task-x1.meta" ] && [ -f "$c/state/task-x1.databases" ] && [ ! -e "$c/returns" ] || fail 'replacement refusal lost retry identity or returned slot'
+  done
+  pass 'database replacements after partial cleanup retain both completed and still-registered identities'
+}
+
+test_cleanup_database_identity() {
+  local c entry
+  c=$(cleanup_fixture database-identity)
+  database_fixture "$c"
+  for entry in fm8081_test $'fm8081_test\t' $'fm8081_test\t0' $'fm8081_test\t-1' $'fm8081_test\tbad' $'fm8081_test\t4294967296' $'fm8081_test\t101\textra'; do
+    printf '%s\n' "$entry" > "$c/state/task-x1.databases"
+    if CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err"; then fail 'malformed identity allowed cleanup'; fi
+    assert_grep 'invalid database identity' "$c/err" 'malformed identity was not refused as an identity record'
+    assert_grep "$c/state/task-x1.databases" "$c/err" 'malformed identity omitted its record'
+    [ ! -e "$c/queries" ] && [ ! -e "$c/drops" ] || fail 'malformed identity queried or dropped a current database'
+    [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] || fail 'malformed identity lost task or slot'
+  done
+  printf 'fm8081_test\t101\n' > "$c/state/task-x1.databases"
+  for entry in 'fm8081_test|bad|0|8192' 'fm8081_test|0|0|8192' 'fm8081_test|101|bad|8192' 'fm8081_test|101|0|bad' $'fm8081_test|101|0|8192\nfm8081_test|101|0|8192'; do
+    printf '%s\n' "$entry" > "$c/catalog"
+    if CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err"; then fail 'malformed catalog identity allowed cleanup'; fi
+    assert_grep 'database catalog result' "$c/err" 'malformed catalog did not reach catalog validation'
+    [ ! -e "$c/drops" ] && [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/returns" ] || fail 'malformed catalog lost task or allowed a drop'
+  done
+  pass 'missing and malformed identities refuse before lookup; malformed catalogs preserve task and slot'
+}
+
+test_cleanup_database_failure() {
+  local c mode
+  for mode in query drop malformed symlink hardlink invalid protected shared meta-change record-change; do
+    c=$(cleanup_fixture "database-failure-$mode")
+    database_fixture "$c"
+    printf '%s\n' $'fm8081_test\t101' > "$c/state/task-x1.databases"
+    case "$mode" in
+      query) touch "$c/query-fails" ;;
+      record-change) touch "$c/record-change" ;;
+      meta-change) touch "$c/meta-change" ;;
+      hardlink) ln "$c/state/task-x1.databases" "$c/elsewhere" ;;
+      drop) touch "$c/drop-fails" ;;
+      malformed) printf 'broken query output\n' > "$c/catalog" ;;
+      symlink) mv "$c/state/task-x1.databases" "$c/elsewhere"; ln -s "$c/elsewhere" "$c/state/task-x1.databases" ;;
+      invalid) printf '%s\n' $'fm8081_test\t101' '--force' > "$c/state/task-x1.databases" ;;
+      protected) printf '%s\n' $'thanos_development\t101' > "$c/state/task-x1.databases" ;;
+      shared) printf '%s\n' $'fm8081_test\t101' > "$c/state/other.databases"; printf 'project=%s\nworktree=%s\n' "$c/project" "$c/wt" > "$c/state/other.meta" ;;
+    esac
+    if CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err"; then fail "$mode DB failure reported complete"; fi
+    [ ! -e "$c/returns" ] && [ -f "$c/state/task-x1.meta" ] || fail "$mode DB failure lost retry identity or returned slot"
+    if [ "$mode" = shared ]; then assert_grep 'protected or shared database fm8081_test' "$c/err" 'shared claim did not reach the ownership assertion'; fi
+    if [ "$mode" != drop ]; then [ ! -e "$c/drops" ] || fail "$mode allowed a drop"; fi
+  done
+  pass 'query, drop, unsafe records and uncertain ownership preserve task and slot'
+}
+
+test_cleanup_database_orca() {
+  local c
+  c=$(cleanup_fixture database-orca)
+  database_fixture "$c"
+  fm_write_meta "$c/state/task-x1.meta" \
+    'window=fm-task-x1' 'endpoint_task_id=task-x1' 'terminal=term-test' \
+    "worktree=$c/wt" "project=$c/project" 'kind=ship' 'mode=local-only' \
+    'backend=orca' 'orca_worktree_id=wt-test'
+  printf '%s\n' $'fm8081_test\t101' > "$c/state/task-x1.databases"
+  cat > "$c/fakebin/orca" <<'SH'
+#!/usr/bin/env bash
+case "$1 $2" in
+  'worktree show') printf '{"ok":true,"result":{"worktree":{"id":"wt-test","path":"%s"}}}\n' "$CLEANUP_CASE/wt" ;;
+  'worktree rm')
+    [ -f "$CLEANUP_CASE/drops" ] || exit 8
+    printf '%s\n' removed > "$CLEANUP_CASE/orca-removed"
+    printf '{"ok":true}\n'
+    ;;
+  *) printf '{"ok":true}\n' ;;
+esac
+SH
+  chmod +x "$c/fakebin/orca"
+  touch "$c/query-fails"
+  if CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err"; then fail 'Orca removed worktree after DB failure'; fi
+  [ -f "$c/state/task-x1.meta" ] && [ ! -e "$c/orca-removed" ] || fail 'Orca DB failure lost slot identity'
+  rm -f "${c:?}"/query-fails
+  CLEANUP_CASE="$c" run_teardown "$c" > "$c/out2" 2> "$c/err2" || fail 'Orca DB retry failed'
+  [ -f "$c/orca-removed" ] && [ ! -e "$c/state/task-x1.databases" ] || fail 'Orca successful cleanup retained ownership record'
+  pass 'Orca task database cleanup finishes before worktree removal and retains failed work for retry'
+}
+
+test_cleanup_database_missing_tree() {
+  local c
+  c=$(cleanup_fixture database-missing-tree)
+  database_fixture "$c"
+  printf '%s\n' $'fm8081_test\t101' > "$c/state/task-x1.databases"
+  mv "$c/wt" "$c/moved-wt"
+  if CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err"; then fail 'missing DB task tree erased identity'; fi
+  [ -f "$c/state/task-x1.meta" ] && [ -f "$c/state/task-x1.databases" ] || fail 'missing tree lost DB record'
+  [ ! -e "$c/drops" ] || fail 'missing tree dropped DB without landed proof'
+  pass 'missing task trees retain registered databases and their ownership records'
+}
+
+test_cleanup_database_primary() {
+  local c
+  c=$(cleanup_fixture database-primary)
+  database_fixture "$c"
+  python3 - "$c/state/task-x1.meta" "$c" <<'PYCODE'
+from pathlib import Path
+import sys
+p = Path(sys.argv[1])
+p.write_text(p.read_text().replace('worktree=' + sys.argv[2] + '/wt', 'worktree=' + sys.argv[2] + '/project'))
+PYCODE
+  git -C "$c/project" read-tree -mu HEAD
+  if CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err"; then fail 'primary clone accepted as task cleanup target'; fi
+  [ ! -e "$c/returns" ] || fail 'returned primary clone'
+  [ -f "$c/state/task-x1.meta" ] || fail 'primary clone lost task identity'
+  pass 'task cleanup refuses a primary clone before any removal or return'
+}
+
+test_cleanup_database_pool() {
+  local c suffix name
+  c=$(cleanup_fixture database-pool)
+  database_fixture "$c"
+  suffix=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:32])' "$c/wt")
+  for name in "racingr_wms_test_$suffix-1" thanos_test_wt thanos_development thanos_template racingr_wms_dev production postgres; do
+    printf '%s\t101\n' "$name" > "$c/state/task-x1.databases"
+    printf '%s|101|0|1000\n' "$name" > "$c/catalog"
+    if CLEANUP_CASE="$c" run_teardown "$c" > "$c/out" 2> "$c/err"; then fail "protected DB $name reported complete"; fi
+    [ ! -e "$c/drops" ] || fail "protected DB $name dropped"
+    [ ! -e "$c/queries" ] || fail "protected DB $name was queried before rejection"
+    [ -f "$c/state/task-x1.meta" ] || fail 'protected DB lost metadata'
+  done
+  pass 'registered pool-slot, live-development and production databases remain protected'
 }
 
 test_cleanup_recorded_target() {
@@ -4820,12 +5205,12 @@ if [ "${1:-}" = cleanup ]; then
   if [ "$#" -gt 0 ]; then
     "test_cleanup_$1"
   else
-    for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children rails_keys tracked_agent_config tracked_codex_config tracked_dependency_install tracked_nested_project deps_contexts; do "test_cleanup_$cleanup_case"; done
+    for cleanup_case in database_creation database_peer_copies database_peer_diagnostic protection_retry databases database_retry database_replacement database_identity database_failure database_pool database_orca database_missing_tree database_primary outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children rails_keys tracked_agent_config tracked_codex_config tracked_dependency_install tracked_nested_project deps_contexts; do "test_cleanup_$cleanup_case"; done
   fi
   exit 0
 fi
 run_nested_tests
-for cleanup_case in outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children rails_keys tracked_agent_config tracked_codex_config tracked_dependency_install tracked_nested_project deps_contexts; do "test_cleanup_$cleanup_case"; done
+for cleanup_case in database_creation database_peer_copies database_peer_diagnostic protection_retry databases database_retry database_replacement database_identity database_failure database_pool database_orca database_missing_tree database_primary outputs keep unlanded symlinks force free leased protected_targets link_cycle reservations unavailable changed_pool lock free_unlanded nested_repository unattributed_target external_links slot_identity hardlinks gate dangling_build scout writers stubborn_writer caller_in_worktree caller_modules caller_modules_pythonpath caller_dir_deleted scan_denied unkillable_writer grace_wait readonly readonly_modes partial_failure recorded_target record_bounds lock_lifetime rust_deps nested_deps recorded_unlinked recorded_parent recorded_protections record_user_temp recorded_writer recorded_writer_protections ignored_only_directory kept_listed_children rails_keys tracked_agent_config tracked_codex_config tracked_dependency_install tracked_nested_project deps_contexts; do "test_cleanup_$cleanup_case"; done
 
 test_shared_daemon_restored_after_a_successful_return
 test_landed_task_clears_only_its_gate_backups

@@ -584,16 +584,23 @@ test_delivery_requires_registration_before_posting() {
   pass "typed delivery refuses to post when its cleanup registration is missing"
 }
 
+make_teardown_task() {
+  local home=$1
+  fm_git_init_commit "$home/projects/project"
+  git -C "$home/projects/project" worktree add -q --detach "$home/projects/worktree"
+}
+
 test_secondmate_teardown_requires_parent_binding() {
   local parent child registry_before marker_before
   parent=$(make_home teardown-parent)
   child=$(make_home teardown-child)
+  make_teardown_task "$child"
   printf '%s\n' mate > "$child/.fm-secondmate-home"
   seed_commitment "$parent" pf-teardown req-teardown x secondmate:mate work-child
   fm_write_meta "$parent/state/mate.meta" "kind=secondmate" "home=$child"
   fm_write_meta "$child/state/work-child.meta" \
     "window=firstmate:fm-work-child" "endpoint_task_id=work-child" \
-    "worktree=$child" "project=$child" "kind=ship" "mode=local-only"
+    "worktree=$child/projects/worktree" "project=$child/projects/project" "kind=ship" "mode=local-only"
 
   PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_DATA_OVERRIDE="$child/data" \
@@ -606,6 +613,7 @@ test_secondmate_teardown_requires_parent_binding() {
 
   parent=$(make_home teardown-valid-parent)
   child=$(make_home teardown-valid-child)
+  make_teardown_task "$child"
   printf '%s\n' mate > "$child/.fm-secondmate-home"
   printf -- '- mate - synthetic (id is legacy); preserve this (home: %s; scope: synthetic (child); semicolon remains meaningful; projects: ; added 2026-07-30)\n' \
     "$child" > "$parent/data/secondmates.md"
@@ -617,7 +625,7 @@ test_secondmate_teardown_requires_parent_binding() {
   fm_write_meta "$parent/state/mate.meta" "kind=secondmate" "home=$child"
   fm_write_meta "$child/state/work-child.meta" \
     "window=firstmate:fm-work-child" "endpoint_task_id=work-child" \
-    "worktree=$child" "project=$child" "kind=ship" "mode=local-only"
+    "worktree=$child/projects/worktree" "project=$child/projects/project" "kind=ship" "mode=local-only"
 
   PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_DATA_OVERRIDE="$child/data" \
@@ -641,7 +649,7 @@ test_secondmate_teardown_requires_parent_binding() {
 test_relay_disabled_unmarked_teardown_skips_public_path() {
   local home tasks_log out rc
   home=$(make_home teardown-disabled-unmarked relay-off)
-  fm_git_init_commit "$home/projects/worktree"
+  make_teardown_task "$home"
   tasks_log="$home/tasks-axi.log"; : > "$tasks_log"
   printf 'manual\n' > "$home/config/backlog-backend"
   cat > "$home/fakebin/tasks-axi" <<'SH'
@@ -652,7 +660,7 @@ SH
   chmod +x "$home/fakebin/tasks-axi"
   fm_write_meta "$home/state/work-disabled.meta" \
     "window=firstmate:fm-work-disabled" "endpoint_task_id=work-disabled" \
-    "worktree=$home/projects/worktree" "project=$home/projects/worktree" \
+    "worktree=$home/projects/worktree" "project=$home/projects/project" \
     "kind=ship" "mode=local-only"
 
   rc=0
@@ -673,7 +681,7 @@ test_relay_disabled_parent_allows_marked_child_teardown() {
   local parent child tasks_log out rc
   parent=$(make_home teardown-disabled-parent relay-off)
   child=$(make_home teardown-disabled-child relay-off)
-  fm_git_init_commit "$child/projects/worktree"
+  make_teardown_task "$child"
   printf '%s\n' disabled-mate > "$child/.fm-secondmate-home"
   printf -- '- disabled-mate - synthetic (home: %s; scope: synthetic; projects: ; added 2026-07-30)\n' \
     "$child" > "$parent/data/secondmates.md"
@@ -688,7 +696,7 @@ SH
   chmod +x "$child/fakebin/tasks-axi"
   fm_write_meta "$child/state/work-disabled.meta" \
     "window=firstmate:fm-work-disabled" "endpoint_task_id=work-disabled" \
-    "worktree=$child/projects/worktree" "project=$child/projects/worktree" \
+    "worktree=$child/projects/worktree" "project=$child/projects/project" \
     "kind=ship" "mode=local-only"
 
   rc=0
@@ -710,6 +718,7 @@ test_secondmate_parent_binding_matches_literal_id() {
   local parent child
   parent=$(make_home teardown-literal-parent)
   child=$(make_home teardown-literal-child)
+  make_teardown_task "$child"
   printf '%s\n' 'mate.id' > "$child/.fm-secondmate-home"
   printf -- '- mateXid - synthetic (home: %s; scope: synthetic; projects: ; added 2026-07-30)\n' \
     "$child" > "$parent/data/secondmates.md"
@@ -717,7 +726,7 @@ test_secondmate_parent_binding_matches_literal_id() {
   fm_write_meta "$parent/state/mate.id.meta" "kind=secondmate" "home=$child"
   fm_write_meta "$child/state/work-literal.meta" \
     "window=firstmate:fm-work-literal" "endpoint_task_id=work-literal" \
-    "worktree=$child" "project=$child" "kind=ship" "mode=local-only"
+    "worktree=$child/projects/worktree" "project=$child/projects/project" "kind=ship" "mode=local-only"
 
   PATH="$child/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$child" \
     FM_STATE_OVERRIDE="$child/state" FM_DATA_OVERRIDE="$child/data" \
