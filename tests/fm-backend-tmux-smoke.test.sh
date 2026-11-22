@@ -38,7 +38,7 @@ trap 'cleanup_all; fm_test_environment_cleanup' EXIT
 
 cleanup_all() {
   "$REAL_TMUX" -L "$SOCKET" kill-server >/dev/null 2>&1 || true
-  [ -n "${SHIM_DIR:-}" ] && rm -rf "$SHIM_DIR"
+  [ -n "${SHIM_DIR:-}" ] && rm -rf "${SHIM_DIR:?}"
 }
 
 # A `tmux` shim on PATH that transparently redirects every call to the private
@@ -63,8 +63,18 @@ TARGET="$SESSION:$WINDOW"
 
 # --- create session ----------------------------------------------------------
 
-tmux new-session -d -s "$SESSION" -x 200 -y 50 \
+tmux -f /dev/null new-session -d -s "$SESSION" -x 200 -y 50 /bin/bash --noprofile --norc -i \
   || fail "real tmux: new-session failed"
+mkfifo "$SHIM_DIR/startup"
+exec 9<> "$SHIM_DIR/startup"
+cat > "$SHIM_DIR/task-shell" <<'SH'
+printf 'startup-%s\n' pending
+IFS= read -r start < "$1"
+exec env HISTFILE=/dev/null PS1='smoke-ready> ' /bin/bash --noprofile --norc -i
+SH
+printf -v TASK_SHELL_Q '%q %q' "$SHIM_DIR/task-shell" "$SHIM_DIR/startup"
+tmux set-option -t "$SESSION" default-shell /bin/bash
+tmux set-option -t "$SESSION" default-command "exec env -u BASH_ENV /bin/bash --noprofile --norc $TASK_SHELL_Q"
 fm_backend_tmux_create_task "$SESSION" "$WINDOW" "$HOME" \
   || fail "fm_backend_tmux_create_task failed to create the task window"
 tmux list-windows -t "$SESSION" -F '#{window_name}' | grep -qx "$WINDOW" \
@@ -79,21 +89,13 @@ pass "real tmux: fm_backend_tmux_create_task creates a window and refuses a dupl
 
 # --- send text + Enter -------------------------------------------------------
 
-# A newly-created interactive shell can exist before its startup files and line
-# editor are ready to accept Enter. Prove command execution with an output token
-# that does not appear contiguously in the command, retrying the harmless probe
-# until the shell acknowledges it.
-SHELL_READY=false
-for _ in $(seq 1 100); do
-  tmux send-keys -t "$TARGET" C-c
-  tmux send-keys -t "$TARGET" -l "printf 'shell-%s\\n' ready"
-  tmux send-keys -t "$TARGET" Enter
-  if wait_for_capture_text "$TARGET" "shell-ready" 10; then
-    SHELL_READY=true
-    break
-  fi
-done
-[ "$SHELL_READY" = true ] || fail "the tmux task shell did not become ready"
+wait_for_capture_text "$TARGET" "startup-pending" || fail "the delayed task shell did not start"
+printf 'start\n' >&9
+exec 9>&-
+wait_for_capture_text "$TARGET" "smoke-ready>" || fail "the tmux task shell did not become interactive"
+tmux send-keys -t "$TARGET" -l "printf 'shell-%s\\n' ready"
+tmux send-keys -t "$TARGET" Enter
+wait_for_capture_text "$TARGET" "shell-ready" || fail "the tmux task shell did not execute the readiness command"
 
 tmux send-keys -t "$TARGET" "cd /tmp && PS1='smoke\$ ' && clear && printf 'setup-%s\\n' ready" Enter
 wait_for_capture_text "$TARGET" "setup-ready" || fail "the tmux task shell did not complete setup"
