@@ -67,12 +67,15 @@ tmux -f /dev/null new-session -d -s "$SESSION" -x 200 -y 50 /bin/bash --noprofil
   || fail "real tmux: new-session failed"
 mkfifo "$SHIM_DIR/startup"
 exec 9<> "$SHIM_DIR/startup"
+mkfifo "$SHIM_DIR/schedule"
+exec 8<> "$SHIM_DIR/schedule"
 cat > "$SHIM_DIR/task-shell" <<'SH'
 printf 'startup-%s\n' pending
+IFS= read -r scheduler < "$2"
 IFS= read -r start < "$1"
 exec env HISTFILE=/dev/null PS1='smoke-ready> ' /bin/bash --noprofile --norc -i
 SH
-printf -v TASK_SHELL_Q '%q %q' "$SHIM_DIR/task-shell" "$SHIM_DIR/startup"
+printf -v TASK_SHELL_Q '%q %q %q' "$SHIM_DIR/task-shell" "$SHIM_DIR/startup" "$SHIM_DIR/schedule"
 tmux set-option -t "$SESSION" default-shell /bin/bash
 tmux set-option -t "$SESSION" default-command "exec env -u BASH_ENV /bin/bash --noprofile --norc $TASK_SHELL_Q"
 fm_backend_tmux_create_task "$SESSION" "$WINDOW" "$HOME" \
@@ -91,8 +94,10 @@ pass "real tmux: fm_backend_tmux_create_task creates a window and refuses a dupl
 
 wait_for_capture_text "$TARGET" "startup-pending" || fail "the delayed task shell did not start"
 printf 'start\n' >&9
-exec 9>&-
+printf 'resume\n' >&8
 wait_for_capture_text "$TARGET" "smoke-ready>" || fail "the tmux task shell did not become interactive"
+exec 9>&-
+exec 8>&-
 tmux send-keys -t "$TARGET" -l "printf 'shell-%s\\n' ready"
 tmux send-keys -t "$TARGET" Enter
 wait_for_capture_text "$TARGET" "shell-ready" || fail "the tmux task shell did not execute the readiness command"
