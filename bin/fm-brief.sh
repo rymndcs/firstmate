@@ -693,7 +693,9 @@ If the top-level path is the primary checkout or not the worktree you were launc
 $RULE1
 2. Stay inside this worktree; modify nothing outside it.
    If you create a temporary directory outside this worktree, record its absolute path so teardown can remove it: \`echo <absolute-path> >> $TEMP_TARGETS\`.
-   Record each task-only local PostgreSQL database you create in $DATABASES, one exact database name per line, before creating it, so teardown can drop it.
+   Record each task-only local PostgreSQL database you create in $DATABASES, one exact database name per line, only after creation succeeds, so teardown can drop it.
+   A failed creation never grants ownership; do not register that name.
+   For example, with task_database set to your exact scratch name: \`createdb "\$task_database" && printf '%s\\n' "\$task_database" >> $DATABASES\`.
    Never register shared development, production or pool-slot databases; these remain for reuse.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 $REVIEW_CONTRACT

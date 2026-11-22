@@ -2140,10 +2140,6 @@ fi
 
 remove_nested_ship_worktrees || exit 1
 
-if [ -d "$WT" ] && [ "$KIND" = ship ]; then
-  "$SCRIPT_DIR/fm-protected-paths.sh" remove "$WT" "$ID" || exit 1
-fi
-
 # Best-effort: drop the local task branch so the shared repo does not accumulate refs.
 if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
   if [ "$ORCA_PATH_MATCH_VERIFIED" != 1 ]; then
@@ -2154,6 +2150,9 @@ if [ "$BACKEND" = orca ] && [ "$KIND" != secondmate ]; then
     "$SCRIPT_DIR/fm-task-databases.sh" "$META" "$STATE/$ID.databases" || exit 1
   fi
   if [ -d "$WT" ]; then
+    if [ "$KIND" = ship ]; then
+      "$SCRIPT_DIR/fm-protected-paths.sh" remove "$WT" "$ID" || exit 1
+    fi
     branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
     if [ "$branch" != "HEAD" ]; then
       if git -C "$WT" checkout --detach -q 2>/dev/null; then
@@ -2178,6 +2177,9 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
       echo "teardown: database cleanup incomplete for $ID; retaining the slot and task metadata for retry" >&2
       exit 1
     }
+  fi
+  if [ "$KIND" = ship ]; then
+    "$SCRIPT_DIR/fm-protected-paths.sh" remove "$WT" "$ID" || exit 1
   fi
   branch=$(git -C "$WT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$branch" != "HEAD" ]; then

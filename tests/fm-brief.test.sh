@@ -61,7 +61,31 @@ test_database_registration_scaffold() {
   assert_contains "$brief" "$home/state/database-task.databases" 'brief omitted exact DB registration path'
   assert_contains "$brief" 'one exact database name per line' 'brief omitted DB record format'
   assert_contains "$brief" 'pool-slot databases' 'brief omitted pool DB exclusion'
-  pass 'fm-brief: task database creation records exact names and excludes shared databases'
+  mkdir -p "$home/fakebin" "$home/state"
+  cat > "$home/fakebin/createdb" <<'SH'
+#!/usr/bin/env bash
+[ "$1" != preexisting_scratch ] || { echo 'createdb: database already exists' >&2; exit 1; }
+printf '%s\n' "$1" >> "$CREATED_DATABASES"
+SH
+  chmod +x "$home/fakebin/createdb"
+  python3 - "$home/data/database-task/brief.md" "$home/create.sh" <<'PYCODE'
+from pathlib import Path
+import re, sys
+brief = Path(sys.argv[1]).read_text()
+commands = re.findall(r'`([^`]*createdb[^`]*)`', brief)
+if commands:
+    command = commands[0]
+else:
+    record = re.search(r'Record each task-only local PostgreSQL database you create in (.*?), one exact', brief)[1]
+    command = 'printf "%s\\n" "$task_database" >> ' + record + '\ncreatedb "$task_database"'
+Path(sys.argv[2]).write_text(command + '\n')
+PYCODE
+  if PATH="$home/fakebin:$PATH" CREATED_DATABASES="$home/created" task_database=preexisting_scratch bash "$home/create.sh" > "$home/out" 2> "$home/err"; then fail 'failed creation reported success'; fi
+  [ ! -s "$home/state/database-task.databases" ] || fail 'failed creation registered a pre-existing database for deletion'
+  PATH="$home/fakebin:$PATH" CREATED_DATABASES="$home/created" task_database=new_task_scratch bash "$home/create.sh" || fail 'successful creation failed'
+  [ "$(cat "$home/created")" = new_task_scratch ] || fail 'fixture did not create the new database'
+  [ "$(cat "$home/state/database-task.databases")" = new_task_scratch ] || fail 'successful creation did not register the exact owned database'
+  pass 'fm-brief: creation failure preserves pre-existing databases; successful creation registers exact ownership'
 }
 test_database_registration_scaffold
 

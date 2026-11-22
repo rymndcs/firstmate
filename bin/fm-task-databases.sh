@@ -5,8 +5,8 @@
 # URLs, connection options, pool-slot databases or shared development databases.
 # Missing records do nothing. Duplicate names drop once; absent names are complete.
 # Names are never inferred from task IDs, ticket numbers, branches or patterns.
-# Protected database names, databases derived from existing project worktrees,
-# and names claimed by another recorded task are refused even when registered.
+# Protected database names, databases derived from existing recorded project
+# copies and their worktrees, and names claimed by another task are refused.
 # Each drop is one `dropdb <name>` invocation against localhost:5432, never FORCE.
 # A fresh catalog query counts all connections before each drop; connected names
 # are reported and retained. PostgreSQL also refuses a drop if a connection opens
@@ -41,11 +41,12 @@ def read_record(path):
     return path.read_bytes()
 
 
-def names_from(raw):
-    names = list(dict.fromkeys(raw.decode().splitlines()))
-    if any(not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_-]{0,62}', name) for name in names):
-        raise ValueError('invalid database name in task record')
-    return names
+def names_from(raw, path):
+    names = raw.decode().splitlines()
+    for line, name in enumerate(names, 1):
+        if not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_-]{0,62}', name):
+            raise ValueError(f'invalid database name in {path} at line {line}: {name!r}')
+    return list(dict.fromkeys(names))
 
 
 def metadata(path):
@@ -99,8 +100,14 @@ def ownership(meta, record, raw, meta_raw):
     other_names = set()
     for peer in record.parent.glob('*.meta'):
         peer_record = peer.with_suffix('.databases')
-        if peer != meta and os.path.lexists(peer_record):
-            other_names.update(names_from(read_record(peer_record)))
+        if peer == meta:
+            continue
+        if os.path.lexists(peer_record):
+            other_names.update(names_from(read_record(peer_record), peer_record))
+        peer_values = metadata(peer)
+        for path in set(peer_values.values()):
+            if Path(path).is_dir():
+                slots.update(checkout_names(path, path))
     return slots, other_names
 
 
@@ -111,7 +118,7 @@ def main():
     if not os.path.lexists(record):
         return True
     raw = read_record(record)
-    names = names_from(raw)
+    names = names_from(raw, record)
     if not names:
         return True
     meta_raw = read_record(meta)
