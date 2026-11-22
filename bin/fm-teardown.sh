@@ -89,7 +89,8 @@
 # remain under state/jira/ until fm-jira.sh publishes them successfully.
 # Orca tasks use the same safety checks, then close the recorded terminal and
 # remove the recorded worktree through `orca worktree rm`; teardown never guesses
-# an Orca target from ambient CLI state.
+# an Orca target from ambient CLI state. A landed Orca ship cleans its recorded
+# task databases first and refuses removal while that cleanup is incomplete.
 # A Herdr presentation journal never authorizes cleanup. Teardown still closes
 # only the exact task pane from ordinary endpoint metadata and never calls
 # `workspace close`. It retires the non-authoritative journal only when a
