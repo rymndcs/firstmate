@@ -53,6 +53,18 @@ test_requirement_scaffold() {
 
 test_requirement_scaffold
 
+test_database_registration_scaffold() {
+  local home brief
+  home="$TMP_ROOT/database-home"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" database-task sample --mode local-only --checks targeted >/dev/null 2>&1 || fail 'DB brief failed'
+  brief=$(cat "$home/data/database-task/brief.md")
+  assert_contains "$brief" "$home/state/database-task.databases" 'brief omitted exact DB registration path'
+  assert_contains "$brief" 'one exact database name per line' 'brief omitted DB record format'
+  assert_contains "$brief" 'pool-slot databases' 'brief omitted pool DB exclusion'
+  pass 'fm-brief: task database creation records exact names and excludes shared databases'
+}
+test_database_registration_scaffold
+
 # The script itself must always parse under the ambient bash. That is Bash 5 in
 # CI and locally, where the issue #958/#1069 parser bug does not fire, so this
 # is a weak guard on its own; test_no_heredoc_in_command_substitution and the
