@@ -317,6 +317,7 @@ shell_quote() {
 STATUS_FILE=$(shell_quote "$STATE/$ID.status")
 TEMP_TARGETS=$(shell_quote "$STATE/$ID.temp-targets")
 DATABASES=$(shell_quote "$STATE/$ID.databases")
+DATABASE_TOOL=$(shell_quote "$FM_ROOT/bin/fm-task-databases.sh")
 DECISION_HOLD_CMD="FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-decision-hold.sh")"
 
 project_local_rules() {
@@ -693,9 +694,8 @@ If the top-level path is the primary checkout or not the worktree you were launc
 $RULE1
 2. Stay inside this worktree; modify nothing outside it.
    If you create a temporary directory outside this worktree, record its absolute path so teardown can remove it: \`echo <absolute-path> >> $TEMP_TARGETS\`.
-   Record each task-only local PostgreSQL database you create in $DATABASES, one exact database name per line, only after creation succeeds, so teardown can drop it.
-   A failed creation never grants ownership; do not register that name.
-   For example, with task_database set to your exact scratch name: \`createdb "\$task_database" && printf '%s\\n' "\$task_database" >> $DATABASES\`.
+   Create and register each task-only local PostgreSQL scratch database through \`$DATABASE_TOOL --create $DATABASES "\$task_database"\`.
+   \`bin/fm-task-databases.sh --help\` owns the identity record format and creation-time OID capture; never register a failed creation or backfill a missing identity during cleanup.
    Never register shared development, production or pool-slot databases; these remain for reuse.
 3. Use gh-axi for GitHub operations and chrome-devtools-axi for browser operations.
 $REVIEW_CONTRACT

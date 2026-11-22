@@ -59,7 +59,6 @@ test_database_registration_scaffold() {
   FM_HOME="$home" "$ROOT/bin/fm-brief.sh" database-task sample --mode local-only --checks targeted >/dev/null 2>&1 || fail 'DB brief failed'
   brief=$(cat "$home/data/database-task/brief.md")
   assert_contains "$brief" "$home/state/database-task.databases" 'brief omitted exact DB registration path'
-  assert_contains "$brief" 'one exact database name per line' 'brief omitted DB record format'
   assert_contains "$brief" 'pool-slot databases' 'brief omitted pool DB exclusion'
   mkdir -p "$home/fakebin" "$home/state"
   cat > "$home/fakebin/createdb" <<'SH'
@@ -67,12 +66,18 @@ test_database_registration_scaffold() {
 [ "$1" != preexisting_scratch ] || { echo 'createdb: database already exists' >&2; exit 1; }
 printf '%s\n' "$1" >> "$CREATED_DATABASES"
 SH
-  chmod +x "$home/fakebin/createdb"
+  cat > "$home/fakebin/psql" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' queried >> "$CREATED_DATABASES.queries"
+[ "${CREATE_OID_RESPONSE:-101}" != refusal ] || exit 1
+printf '%s' "${CREATE_OID_RESPONSE-101}"
+SH
+  chmod +x "$home/fakebin/createdb" "$home/fakebin/psql"
   python3 - "$home/data/database-task/brief.md" "$home/create.sh" <<'PYCODE'
 from pathlib import Path
 import re, sys
 brief = Path(sys.argv[1]).read_text()
-commands = re.findall(r'`([^`]*createdb[^`]*)`', brief)
+commands = re.findall(r'`([^`]*(?:createdb|fm-task-databases.sh[^`]*--create)[^`]*)`', brief)
 if commands:
     command = commands[0]
 else:
@@ -84,7 +89,25 @@ PYCODE
   [ ! -s "$home/state/database-task.databases" ] || fail 'failed creation registered a pre-existing database for deletion'
   PATH="$home/fakebin:$PATH" CREATED_DATABASES="$home/created" task_database=new_task_scratch bash "$home/create.sh" || fail 'successful creation failed'
   [ "$(cat "$home/created")" = new_task_scratch ] || fail 'fixture did not create the new database'
-  [ "$(cat "$home/state/database-task.databases")" = new_task_scratch ] || fail 'successful creation did not register the exact owned database'
+  [ "$(cat "$home/state/database-task.databases")" = $'new_task_scratch\t101' ] || fail 'successful creation did not register the creation OID'
+  [ "$(cat "$home/created.queries")" = queried ] || fail 'failed creation queried an uncreated identity'
+  local response
+  for response in '' refusal 0 4294967296 bad $'101\n102' $'101|bad'; do
+    if PATH="$home/fakebin:$PATH" CREATED_DATABASES="$home/created" CREATE_OID_RESPONSE="$response" task_database=capture_failure bash "$home/create.sh" > "$home/out" 2> "$home/err"; then fail "invalid creation OID '$response' registered"; fi
+    [ "$(cat "$home/state/database-task.databases")" = $'new_task_scratch\t101' ] || fail 'failed capture changed ownership records'
+  done
+  PATH="$home/fakebin:$PATH" CREATED_DATABASES="$home/created" CREATE_OID_RESPONSE=102 task_database=second_scratch bash "$home/create.sh" || fail 'second creation failed'
+  [ "$(cat "$home/state/database-task.databases")" = $'new_task_scratch\t101\nsecond_scratch\t102' ] || fail 'second creation lost an identity'
+  local before entry
+  before=$(cat "$home/created")
+  if PATH="$home/fakebin:$PATH" CREATED_DATABASES="$home/created" task_database=--force bash "$home/create.sh" > "$home/out" 2> "$home/err"; then fail 'unsafe creation name accepted'; fi
+  [ "$(cat "$home/created")" = "$before" ] || fail 'unsafe creation name reached createdb'
+  for entry in new_task_scratch $'new_task_scratch\t0'; do
+    printf '%s\n' "$entry" > "$home/state/database-task.databases"
+    if PATH="$home/fakebin:$PATH" CREATED_DATABASES="$home/created" task_database=third_scratch bash "$home/create.sh" > "$home/out" 2> "$home/err"; then fail 'creation accepted a malformed ownership record'; fi
+    [ "$(cat "$home/created")" = "$before" ] || fail 'malformed ownership record reached createdb'
+    [ "$(cat "$home/state/database-task.databases")" = "$entry" ] || fail 'creation backfilled a malformed ownership record'
+  done
   pass 'fm-brief: creation failure preserves pre-existing databases; successful creation registers exact ownership'
 }
 test_database_registration_scaffold
