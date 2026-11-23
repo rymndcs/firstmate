@@ -53,13 +53,19 @@ export PROBE="$LAB" FM_HOME="$LAB/home" FM_STATE_OVERRIDE="$LAB/home/state" FM_R
 export FM_SUPERVISOR_TARGET='%42' FM_SUPERVISOR_BACKEND=tmux OMPCODE=1
 export PATH="$LAB/fakebin:$PATH"
 echo empty > "$LAB/mode"
+check_refuses() {
+  local reason=$1 message=$2 err
+  shift 2
+  if err=$("$@" check "$$" 2>&1 >/dev/null); then fail "$message"; fi
+  assert_contains "$err" "$reason" "$message: the refusal must name its unmet condition"
+}
 for signal in flag owner; do
   if [ "$signal" = flag ]; then
     touch "$LAB/home/state/.afk"
   else
     printf 'none\t-\tomp\n' > "$LAB/home/state/.afk-daemon-terminal"
   fi
-  if "$HELPER" check "$$"; then fail "$signal permitted reset readiness while away"; fi
+  check_refuses 'away mode is active' "$signal permitted reset readiness while away" "$HELPER"
   "$HELPER" recover-check "$$" || fail "$signal suppressed owned-home supervision recovery"
   if "$HELPER" submit 12345678-1234-1234-1234-123456789abc "$$"; then fail "$signal permitted reset transport while away"; fi
   [ ! -e "$LAB/sent" ] || fail "$signal typed a reset trigger while away"
@@ -95,19 +101,19 @@ assert_contains "$(cat "$LAB/sent")" $'\033[?9001;4660;22136;4660;4660;4660;4660
 fm_git_worktree "$LAB/task-repo" "$LAB/task" fm-task
 touch "$LAB/task/AGENTS.md"
 mkdir -p "$LAB/task/bin"
-if env FM_ROOT_OVERRIDE="$LAB/task" "$HELPER" check "$$"; then fail 'task directory was accepted as a primary'; fi
+check_refuses 'not the home primary checkout' 'task directory was accepted as a primary' env FM_ROOT_OVERRIDE="$LAB/task" "$HELPER"
 printf '1\n' > "$LAB/home/state/.lock"
-if "$HELPER" check "$$"; then fail 'another lock holder was accepted'; fi
+check_refuses 'does not hold the home session lock' 'another lock holder was accepted' "$HELPER"
 printf '%s\n' "$$" > "$LAB/home/state/.lock"
 for bad in 'bad nonce' abc123 12345678123412341234123456789abc ''; do
   rc=0
   "$HELPER" submit "$bad" "$$" || rc=$?
   [ "$rc" -eq 2 ] || fail 'malformed nonce must be rejected as a usage error before encoding'
 done
-if env -u FM_SUPERVISOR_TARGET -u FM_SUPERVISOR_BACKEND -u TMUX_PANE -u HERDR_ENV -u HERDR_PANE_ID \
-  "$HELPER" check "$$"; then fail 'transport guessed a pane'; fi
+check_refuses 'primary pane could not be found' 'transport guessed a pane' \
+  env -u FM_SUPERVISOR_TARGET -u FM_SUPERVISOR_BACKEND -u TMUX_PANE -u HERDR_ENV -u HERDR_PANE_ID "$HELPER"
 touch "$LAB/home/state/.captain-hold"
 if "$HELPER" submit 12345678-1234-1234-1234-123456789abc "$$"; then fail 'transport ignored global hold'; fi
-if "$HELPER" check "$$"; then fail 'readiness check ignored global hold'; fi
+check_refuses 'a captain hold is active' 'readiness check ignored global hold' "$HELPER"
 if "$HELPER" recover-check "$$"; then fail 'recovery ignored global hold'; fi
 pass 'omp reset transport: one literal trigger, no external Enter, no guessed pane or global hold bypass'

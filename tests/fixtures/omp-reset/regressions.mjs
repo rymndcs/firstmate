@@ -82,17 +82,12 @@ function input(data) {
   if (value === '\r') { submitted.push(editor); editor = ''; }
   else editor += value;
 }
-async function arm({ command = 'exec bin/fm-watch-arm.sh', status = 'watcher: started pid=42 (beacon fresh)', receipt = true, receiptSession = session, receiptCall = 'arm-call', outputStatus = status, nativeState = 'running', nativeError = false, proof = 'proc', format = 'plain', keepRunning = false, readPath } = {}) {
+async function arm({ command = 'exec bin/fm-watch-arm.sh', status = 'watcher: started pid=42 (beacon fresh)', receipt = true, receiptSession = session, receiptCall = 'arm-call', nativeState = 'running', nativeError = false, keepRunning = false } = {}) {
   jobs = { running: [{id:'watcher', type:'bash', command}], recent: [], delivery: { queued:0, delivering:false, pendingJobIds:[] } };
   await emit('tool_call', {toolName:'bash', input:{command,async:true,timeout:0}});
   await emit('tool_result', {toolName:'bash',toolCallId:'arm-call',input:{command,async:true,timeout:0},details:{async:{state:nativeState,jobId:'watcher',type:'bash'}},content:[{type:'text',text:'Async job running: watcher'}],isError:nativeError});
   if (receipt) writeFileSync(`${home}/state/.omp-watch-arm-result`, `${receiptSession}\n${receiptCall}\n${status}\n`);
   else if (existsSync(`${home}/state/.omp-watch-arm-result`)) unlinkSync(`${home}/state/.omp-watch-arm-result`);
-  const path = readPath ?? (proof === 'file' ? `${home}/state/.omp-watch-arm-result${format === 'raw' ? ':raw' : ''}` : 'proc://watcher');
-  const text = proof !== 'file' ? outputStatus : format === 'formatted'
-    ? `[state/.omp-watch-arm-result#VZPM]\n1:${receiptSession}\n2:${receiptCall}\n3:${outputStatus}\n`
-    : `${receiptSession}\n${receiptCall}\n${outputStatus}\n`;
-  await emit('tool_result', {toolName:'read',input:{path},content:[{type:'text',text}],isError:false});
   const seeded = spawnSync(`${home}/bin/fm-omp-watch-transition.sh`, ['arm', 'work-pending', 'registered extension fixture'], {
     env: { ...process.env, OMPCODE: '1', PI_SESSION_ID: session, PI_TOOL_CALL_ID: 'arm-call' }, encoding: 'utf8',
   });
@@ -157,35 +152,64 @@ mkdirSync(`${home}/state/classifier-away`, { recursive: true });
 writeFileSync(`${home}/state/classifier-away/.afk`, '');
 assert.deepEqual(classify('I am back; please show the investigation results.'), ['', '', 'yes'], 'a real human return must remain unmarked and end away mode');
 await emit('session_start');
-if (scenario.startsWith('arm-file-')) {
-  const [format, kind] = scenario.slice('arm-file-'.length).split('-');
-  assert.ok(['plain', 'formatted', 'raw'].includes(format), `unknown saved-file read form ${format}`);
-  const selector = format === 'raw' ? ':raw' : '';
+const refusalText = result => result.content.map(x => x.text ?? '').join('\n');
+if (scenario.startsWith('arm-result-')) {
+  const kind = scenario.slice('arm-result-'.length);
   const options = {
-    valid: {}, attached: {status:'watcher: attached pid=42 (beacon 0s)'},
-    relative: {readPath:`state/.omp-watch-arm-result${selector}`}, foreign: {readPath:`${home}/state/unrelated${selector}`},
-    range: {readPath:`${home}/state/.omp-watch-arm-result:1-3`}, suffix: {readPath:`${home}/state/.omp-watch-arm-result:raw:raw`},
+    valid: {}, attached: {status:'watcher: attached pid=42 (beacon 0s)'}, running: {keepRunning:true}, delivered: {keepRunning:true},
     session: {receiptSession:'previous-session'}, call: {receiptCall:'another-call'},
-    missing: {receipt:false}, status: {status:'watcher: pending confirmation'},
-    output: {outputStatus:'unrelated output'}, completed: {nativeState:'completed'},
-    error: {nativeError:true},
+    missing: {receipt:false}, pending: {status:'watcher: pending confirmation'},
+    failed: {status:'watcher: FAILED - no live watcher with a fresh beacon'},
+    completed: {nativeState:'completed'}, error: {nativeError:true},
   }[kind];
-  assert.ok(options, `unknown saved-file proof case ${kind}`);
-  await arm({...options, proof:'file', format, keepRunning:true});
-  const accepted = ['valid', 'attached', 'relative'].includes(kind);
-  assert.equal((await call({action:'prepare'})).isError, accepted ? undefined : true,
-    `${scenario}: only current session/call-matched running arm output may prove eligibility through the saved file`);
-  if (accepted) {
+  assert.ok(options, `unknown arm result case ${kind}`);
+  const named = {
+    session: /latest watcher arm belongs to another session/,
+    call: /not a native async job started in this session/, completed: /not a native async job started in this session/,
+    error: /not a native async job started in this session/,
+    missing: /no watcher arm result exists/,
+    pending: /has not confirmed a live cycle \(watcher: pending confirmation\)/,
+    failed: /has not confirmed a live cycle \(watcher: FAILED - no live watcher with a fresh beacon\)/,
+  }[kind];
+  await arm(options);
+  if (kind === 'delivered') jobs = {running:[], recent:[{id:'watcher',status:'completed',command:'exec bin/fm-watch-arm.sh'}], delivery:{queued:0,delivering:false,pendingJobIds:[]}};
+  const prepared = await call({action:'prepare'});
+  if (!named) {
+    assert.equal(prepared.isError, undefined, `${scenario}: the arm's own confirmed result must make reset eligible without any status read; ${refusalText(prepared)}`);
     await ready();
     await emit('session_switch');
-    await emit('tool_result', {toolName:'read',input:{path:`${home}/state/.omp-watch-arm-result`},
-      content:[{type:'text',text:readFileSync(`${home}/state/.omp-watch-arm-result`, 'utf8')}],isError:false});
-    assert.equal((await call({action:'prepare'})).isError, true, 'a saved result cannot replay after session state is cleared');
+    const replay = await call({action:'prepare'});
+    assert.equal(replay.isError, true, 'a saved result cannot replay after session state is cleared');
+    assert.match(refusalText(replay), /not a native async job started in this session/);
     unlinkSync(`${home}/state/.omp-reset-handoff.json`);
+  } else {
+    assert.equal(prepared.isError, true, `${scenario}: only this session's confirmed native arm may make reset eligible`);
+    assert.equal(prepared.details.nonce, undefined, 'refused preparation must not return a nonce');
+    assert.match(refusalText(prepared), named, `${scenario}: refusal must name its unmet condition`);
   }
-} else if (scenario === 'arm-proc-numbered') {
-  await arm({outputStatus:'3:watcher: started pid=42 (beacon fresh)', keepRunning:true});
-  assert.equal((await call({action:'prepare'})).isError, true, 'a numbered status line proves eligibility only through the saved file');
+} else if (scenario.startsWith('refusal-')) {
+  const kind = scenario.slice('refusal-'.length);
+  await arm({keepRunning:true});
+  const named = {
+    sub: /not the main interactive omp session/,
+    away: /away mode is active/,
+    queued: /input is queued/,
+    draft: /composer holds a draft/,
+    'foreign-job': /async job unrelated-job is still running/,
+    delivery: /async job result is still waiting for delivery/,
+  }[kind];
+  assert.ok(named, `unknown refusal case ${kind}`);
+  let context = ctx;
+  if (kind === 'sub') context = {...ctx, agent:{kind:'sub'}};
+  if (kind === 'away') writeFileSync(`${home}/state/.afk`, '');
+  if (kind === 'queued') queued = true;
+  if (kind === 'draft') editor = 'Wai';
+  if (kind === 'foreign-job') jobs.running.push({id:'unrelated-job',type:'bash',command:'sleep 20'});
+  if (kind === 'delivery') jobs.delivery.pendingJobIds = ['watcher'];
+  const prepared = await call({action:'prepare'}, context);
+  assert.equal(prepared.isError, true, `${scenario}: unmet readiness must refuse preparation`);
+  assert.match(refusalText(prepared), named, `${scenario}: refusal must name its unmet condition`);
+  if (kind === 'away') unlinkSync(`${home}/state/.afk`);
 } else if (scenario === 'named-arm' || scenario === 'unnamed-arm') {
   for (const command of ['exec bin/fm-watch-arm.sh', '[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh', 'exec bin/fm-"watch"-arm.sh']) {
     const named = scenario === 'named-arm';
@@ -535,7 +559,7 @@ if (scenario.startsWith('arm-file-')) {
   assert.equal((await call({action:'prepare'})).isError, true, 'failed arm must not unlock reset');
   await arm({command:'printf fake-status',receipt:false});
   assert.equal((await call({action:'prepare'})).isError, true, 'status from a different command must not unlock reset');
-  for (const provenance of [{receipt:false},{receiptSession:'previous-session'},{receiptCall:'other-call'},{outputStatus:'unrelated result'},{nativeState:'completed'},{nativeError:true}]) {
+  for (const provenance of [{receipt:false},{receiptSession:'previous-session'},{receiptCall:'other-call'},{nativeState:'completed'},{nativeError:true}]) {
     await emit('session_start');
     await arm(provenance);
     assert.equal((await call({action:'prepare'})).isError,true,'unrelated or historical arm result must not unlock reset');

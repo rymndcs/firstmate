@@ -54,7 +54,6 @@ async function arm() {
   jobs = {running:[{id:'watcher',command:'exec bin/fm-watch-arm.sh'}],recent:[],delivery:{queued:0,delivering:false,pendingJobIds:[]}};
   await emit('tool_result',{toolName:'bash',toolCallId:'arm-call',input:{},details:{async:{state:'running',jobId:'watcher',type:'bash'}},isError:false,content:[]});
   writeFileSync(`${home}/state/.omp-watch-arm-result`, `${session}\narm-call\nwatcher: started pid=42 (beacon fresh)\n`);
-  await emit('tool_result',{toolName:'read',input:{path:'proc://watcher'},isError:false,content:[{type:'text',text:'watcher: started pid=42 (beacon fresh)'}]});
   jobs = null;
 }
 await arm();

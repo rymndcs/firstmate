@@ -89,6 +89,7 @@ In normal mode at other transitions, when all instructions have reached the work
 Otherwise continue work, then arm using the omp protocol with the explicit transition declaration owned by `bin/fm-watch-arm.sh --help`; unknown state permits arming with a visible warning.
 The last message must be answered, every question still waiting on the captain must be durably recorded in the home's decision inbox or backlog, or as a mockup question with an open captain decision hold, and no push, merge, cleanup or steer may be half done; any unanswered question living only in chat or the handoff blocks reset until recorded.
 If not already prepared, call its `prepare` action first; at 40% or below, or when usage is unavailable, it refuses and directs a plain re-arm without stowing or clearing.
+Any other refusal names its unmet condition; resolve that condition or continue supervision in this session.
 Complete this skill, then call `ready` with its Completion receipt in `stowReceipt` using the tool schema, the returned nonce, all three true attestations (`stowComplete`, `onlyKeepingWatch`, and `pendingQuestionsRecorded`), and a compact handoff of open-thread pointers, already-reported outcomes, and the immediate supervision action.
 The extension independently reruns the budget report at readiness and refuses an incomplete, mismatched or over-budget receipt.
 An incomplete stow or unresolved exception means cancel the reset and continue supervision in the current session.
