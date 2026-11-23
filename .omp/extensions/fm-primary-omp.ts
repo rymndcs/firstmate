@@ -134,14 +134,17 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   const env = { ...process.env, FM_HOME: home, FM_STATE_OVERRIDE: state, OMPCODE: "1" };
   let request: Request | undefined;
   let attempt: Request | undefined;
-  let eligible = false;
   const armedJobs = new Set<string>();
-  const jobCalls = new Map<string, string>();
+  const asyncCalls = new Map<string, string>();
   let removeInputListener: (() => void) | undefined;
   const fresh = () => request?.readyAt !== undefined && Date.now() - request.readyAt < 30_000;
   const sessionId = (ctx: ExtensionContext) => ctx.sessionManager.getSessionId();
   const main = (ctx: ExtensionContext) => ctx?.agent?.kind === "main" && ctx.mode === "tui";
-  const check = () => spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["check", String(process.pid)], { env }).status === 0;
+  const checkRefusal = () => {
+    const result = spawnSync(`${root}/bin/fm-omp-reset-submit.sh`, ["check", String(process.pid)], { env, encoding: "utf8" });
+    if (result.status === 0) return undefined;
+    return result.stderr?.trim().split("\n").at(-1) || "the primary ownership check failed";
+  };
   const budget = () => {
     const result = spawnSync(`${root}/bin/fm-startup-memory-budget.sh`, ["report"], { env, encoding: "utf8" });
     if (result.status !== 0 || !/^budget_status=within-budget$/m.test(result.stdout)
@@ -150,12 +153,50 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     const totalTokensAfter = result.stdout.match(/^total_estimated_tokens=(0|[1-9][0-9]*)$/m)?.[1];
     return effectiveBudgetTokens && totalTokensAfter !== undefined ? { effectiveBudgetTokens, totalTokensAfter } : undefined;
   };
-  const available = (ctx: ExtensionContext) => {
-    if (!main(ctx)) return false;
+  const mainRefusal = (ctx: ExtensionContext) =>
+    main(ctx) ? undefined : "this tool works only in the main interactive omp session";
+  const readinessRefusal = (ctx: ExtensionContext) => {
+    const notMain = mainRefusal(ctx);
+    if (notMain) return notMain;
+    const ownership = checkRefusal();
+    if (ownership) return ownership;
+    if (ctx.hasPendingMessages()) return "input is queued for this session; handle it first";
+    if (ctx.ui.getEditorText() !== "") return "the composer holds a draft; handle it first";
     const jobs = ctx.getAsyncJobSnapshot();
-    return check() && !ctx.hasPendingMessages() && ctx.ui.getEditorText() === ""
-      && (jobs === null || (jobs.running.every(job => armedJobs.has(job.id))
-        && jobs.delivery.queued === 0 && !jobs.delivery.delivering && jobs.delivery.pendingJobIds.length === 0));
+    if (jobs === null) return undefined;
+    const others = jobs.running.filter(job => !armedJobs.has(job.id)).map(job => job.id);
+    if (others.length) return `async job ${others.join(", ")} is still running and is not this session's confirmed watcher arm; leave it to the supervision protocol and prepare again at a later transition`;
+    if (jobs.delivery.queued !== 0 || jobs.delivery.delivering || jobs.delivery.pendingJobIds.length !== 0) {
+      return "an async job result is still waiting for delivery; handle it first";
+    }
+    return undefined;
+  };
+  const available = (ctx: ExtensionContext) => readinessRefusal(ctx) === undefined;
+  const latestArm = (ctx: ExtensionContext): { job: string } | { refusal: string } => {
+    let sourceSession: string, call: string, status: string;
+    try {
+      [sourceSession, call, status] = readFileSync(`${state}/.omp-watch-arm-result`, "utf8").split("\n");
+    } catch {
+      return { refusal: "no watcher arm result exists; finish startup and arm supervision first" };
+    }
+    if (sourceSession !== sessionId(ctx)) return { refusal: "the latest watcher arm belongs to another session; arm supervision in this session first" };
+    const job = asyncCalls.get(call);
+    if (job === undefined) return { refusal: "the latest watcher arm was not a native async job started in this session; arm supervision as a plain async job, end the turn, and prepare again at the next transition" };
+    if (status === "watcher: pending confirmation") {
+      if (!ctx.getAsyncJobSnapshot()?.running.some(running => running.id === job)) {
+        return { refusal: "the latest watcher arm ended without recording started or attached; fix supervision and re-arm first" };
+      }
+      return { refusal: "the latest watcher arm is still pending confirmation: its started or attached status has not been recorded yet; keep this session and prepare again at the next transition" };
+    }
+    if (!/^watcher: (started|attached) pid=[0-9]+ /.test(status)) {
+      return { refusal: `the latest watcher arm reported ${status || "no status"} instead of started or attached; fix supervision and re-arm first` };
+    }
+    return { job };
+  };
+  const recordLatestArm = (ctx: ExtensionContext) => {
+    const arm = latestArm(ctx);
+    if ("job" in arm) armedJobs.add(arm.job);
+    return "refusal" in arm ? arm.refusal : undefined;
   };
   const valid = (ctx: ExtensionContext) => request?.session === sessionId(ctx) && fresh() && available(ctx);
   const operationalInput = (kind: "session-start" | "watcher", content: string) =>
@@ -275,9 +316,10 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
           return result("Reset unavailable: context usage must be above 40%. At 40% or below, or when usage is unavailable, do a plain re-arm instead; keep this session without stowing or clearing.", true);
         }
       }
-      if (!eligible || !available(ctx)) {
+      const refusal = mainRefusal(ctx) ?? recordLatestArm(ctx) ?? readinessRefusal(ctx);
+      if (refusal) {
         request = undefined;
-        return result("Reset unavailable: remain in normal mode, finish startup and arm supervision, or handle pending input/work first. Continue supervision in this session.", true);
+        return result(`Reset unavailable: ${refusal}. Continue supervision in this session.`, true);
       }
       if (params.action === "prepare") {
         const identity = spawnSync(`${root}/bin/fm-omp-watch-transition.sh`, ["identity", sessionId(ctx)], { env, encoding: "utf8" });
@@ -307,9 +349,8 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   const beginSession = (_event: unknown, ctx: ExtensionContext) => {
     if (!main(ctx)) return;
     request = undefined;
-    eligible = false;
     armedJobs.clear();
-    jobCalls.clear();
+    asyncCalls.clear();
     listen(ctx);
   };
   pi.on("session_start", beginSession);
@@ -321,35 +362,14 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   });
   pi.on("tool_call", (event, ctx) => {
     if (!main(ctx) || event.toolName === "firstmate_watch_reset") return;
+    if (event.toolName === "bash") recordLatestArm(ctx);
     if (request?.readyAt !== undefined) request = undefined;
   });
   pi.on("tool_result", (event, ctx) => {
-    if (!main(ctx) || event.isError) return;
-    const jobs = ctx.getAsyncJobSnapshot();
-    for (const id of jobCalls.keys()) {
-      if (!jobs?.running.some(job => job.id === id)) jobCalls.delete(id);
-    }
-    if (event.toolName === "bash") {
-      const async = event.details?.async;
-      if (async?.state === "running" && jobs?.running.some(job => job.id === async.jobId)) {
-        jobCalls.set(async.jobId, event.toolCallId);
-      }
-      return;
-    }
-    if (event.toolName !== "read") return;
-    try {
-      const [sourceSession, call, status] = readFileSync(`${state}/.omp-watch-arm-result`, "utf8").split("\n");
-      if (sourceSession !== sessionId(ctx) || !/^watcher: (started|attached) pid=[0-9]+ /.test(status)) return;
-      const savedResult = resolve(root, event.input.path.replace(/:raw$/, "")) === resolve(state, ".omp-watch-arm-result");
-      const job = jobs?.running.find(job => call === jobCalls.get(job.id)
-        && (savedResult || event.input.path === `proc://${job.id}`));
-      if (!job) return;
-      const lines = event.content.flatMap(part => part.type === "text" ? part.text.split("\n") : []);
-      if (lines.includes(status) || (savedResult && lines.includes(`3:${status}`))) {
-        eligible = true;
-        armedJobs.add(job.id);
-      }
-    } catch {
+    if (!main(ctx) || event.isError || event.toolName !== "bash") return;
+    const async = event.details?.async;
+    if (async?.state === "running" && ctx.getAsyncJobSnapshot()?.running.some(job => job.id === async.jobId)) {
+      asyncCalls.set(event.toolCallId, async.jobId);
     }
   });
 
@@ -364,7 +384,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
       }
       request = undefined;
       ready.switching = true;
-      eligible = false;
+      asyncCalls.clear();
       try {
         const switched = await ctx.newSession({
           parentSession: ctx.sessionManager.getSessionFile(),
