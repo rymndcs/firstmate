@@ -1005,6 +1005,51 @@ test_absent_branch_keeps_the_default_shape() {
   pass "fm-brief.sh: without --branch the scaffold keeps the fm/<task-id> shape and records nothing"
 }
 
+# Swivel Cards moves a Thanos card only from the card key in the PR title or at
+# the start of the branch (or right after a slash), so a Thanos ship brief whose
+# branch carries a key tells the worker that exact key for the PR title. Branches
+# with no key, briefs with no --branch (help-center follow-ups) and other
+# projects get no such line.
+test_thanos_card_key_reaches_the_pr_title() {
+  local home n=0 repo branch expect brief
+  home="$TMP_ROOT/card-key-home"
+  mkdir -p "$home/data"
+  while IFS='|' read -r repo branch expect; do
+    [ -n "$repo" ] || continue
+    n=$((n + 1))
+    if [ -n "$branch" ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "brief-card-$n" "$repo" --mode no-mistakes --checks targeted --branch "$branch" >/dev/null 2>&1 \
+        || fail "card key row $n: scaffold exited non-zero"
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "brief-card-$n" "$repo" --mode direct-PR --checks targeted >/dev/null 2>&1 \
+        || fail "card key row $n: scaffold exited non-zero"
+    fi
+    brief="$home/data/brief-card-$n/brief.md"
+    if [ -n "$expect" ]; then
+      assert_grep "   Swivel Cards moves card \`$expect\` from this PR: keep \`$expect\` at the start of the branch and in the PR title in capitals as a whole word (\`$expect: <what the user gets>\`); if the PR opens without it in its title, fix the title with \`gh-axi pr edit\`." "$brief" \
+        "card key row $n: $repo branch $branch did not name $expect for the PR title"
+    else
+      assert_no_grep 'Swivel Cards' "$brief" "card key row $n: $repo branch ${branch:-none} must not name a card"
+    fi
+  done <<'ROWS'
+thanos|swvl-8118-mcp-bulk-undo|SWVL-8118
+thanos|rcs/card-12-fix|CARD-12
+projects/thanos|CARD-7|CARD-7
+thanos|rcs/sfb-1163-roster|SFB-1163
+thanos|prd-4-copy|PRD-4
+thanos|ron/RLSE-9|RLSE-9
+thanos|SFB-2-x|SFB-2
+thanos|ron/PRD-3|PRD-3
+thanos|rlse-5-y|RLSE-5
+thanos|help-center-update|
+thanos|fix-card-12|
+thanos|card-12x-fix|
+thanos||
+some-proj|rcs/card-12-fix|
+ROWS
+  pass "fm-brief.sh: a Thanos branch's card key reaches the PR title instruction, and nothing else gets one"
+}
+
 # An unusable branch name must stop the scaffold, not reach the worker's
 # `git checkout -b` after the brief already committed to that name. A scout never
 # branches and a charter has no task branch, so both refuse rather than accept and
@@ -1465,6 +1510,7 @@ test_check_contract_covers_both_places_tests_run
 test_ship_mode_is_explicit_not_registry
 test_supplied_branch_replaces_the_default_everywhere
 test_absent_branch_keeps_the_default_shape
+test_thanos_card_key_reaches_the_pr_title
 test_branch_is_validated_and_refused_where_it_does_not_apply
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review

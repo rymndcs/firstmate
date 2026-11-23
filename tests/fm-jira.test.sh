@@ -18,51 +18,41 @@ FAKE
 done
 export JIRA_DENIED_LOG="$PR_TMP/denied.log"
 export PATH="$PR_TMP/fakebin:$PR_TMP/denybin:$PATH"
-export JIRA_LOG="$PR_TMP/jira.log"
-: > "$JIRA_LOG"
 printf '%s\n' '- thanos [no-mistakes] - team review' > "$FM_HOME/data/projects.md"
-cat > "$PR_TMP/fakebin/jira" <<'FAKE'
-#!/usr/bin/env bash
-printf '%s|%s|%s|%s\n' "$@" >> "$JIRA_LOG"
-exit "${JIRA_EXIT:-0}"
-FAKE
-chmod +x "$PR_TMP/fakebin/jira"
-for service in gh jira; do
-  [ -x "$PR_TMP/fakebin/$service" ] && [ "$(command -v "$service")" = "$PR_TMP/fakebin/$service" ] \
-    || fail "initial fixture must resolve executable fake $service"
-done
+[ "$(command -v jira)" = "$PR_TMP/denybin/jira" ] || fail 'every jira call must reach the denied inventory'
+[ -x "$PR_TMP/fakebin/gh" ] && [ "$(command -v gh)" = "$PR_TMP/fakebin/gh" ] \
+  || fail 'initial fixture must resolve executable fake gh'
 write_pr_task task-a 'project=/projects/thanos' 'branch=rcs/swvl-8080-contact-created'
-register_pr task-a
-[ "$(cat "$JIRA_LOG")" = 'issue|move|SWVL-8080|Ready for Review' ] || fail 'recording a Thanos PR must move only its ticket status to Ready for Review'
-register_pr task-a
-[ "$(wc -l < "$JIRA_LOG" | tr -d ' ')" = 1 ] || fail 'repeated registration must not repeat the ready move'
-pass 'PR recording moves the Thanos ticket to Ready for Review once'
+"$PR_CODE/bin/fm-pr-check.sh" task-a "$url" > /dev/null 2> "$PR_TMP/register-a.err" || fail 'registration failed'
+assert_no_grep 'JIRA' "$PR_TMP/register-a.err" 'recording a Thanos PR must not ask for a ticket move'
+assert_absent "$FM_HOME/state/jira/github.com/advisorfirst/thanos/42" 'recording a Thanos PR must not write a status receipt'
+"$PR_CODE/bin/fm-jira.sh" transition task-a in-review > /dev/null 2>&1 || true
+assert_absent "$FM_HOME/state/jira/github.com/advisorfirst/thanos/42" 'the retired transition verb must write nothing'
+pass 'PR recording leaves ticket status to the PR itself'
 drain_pr > /dev/null
 FM_TEST_GH_STATE=MERGED
-[ "$(poll_pr)" = merged ] || fail 'Jira must preserve the exact merge result'
-[ "$(wc -l < "$JIRA_LOG" | tr -d ' ')" = 2 ] || fail 'an externally merged PR must move its Jira ticket'
-[ "$(sed -n '2p' "$JIRA_LOG")" = 'issue|move|SWVL-8080|Done' ] || fail 'external merge must move only status to Done'
+[ "$(poll_pr 2> "$PR_TMP/merged-a.err")" = merged ] || fail 'follow-ups must preserve the exact merge result'
+assert_no_grep 'JIRA' "$PR_TMP/merged-a.err" 'an external merge must not ask for a ticket move'
 drain_pr > "$PR_TMP/followups-wake"
 assert_grep "$url" "$PR_TMP/followups-wake" 'follow-ups must identify their merged PR'
 assert_grep 'check MCP covers what changed unless explicitly skipped; put any MCP gap in a separate follow-up PR' "$PR_TMP/followups-wake" 'Thanos merge must name the MCP follow-up and separate PR'
 assert_grep 'update /help-center with the change' "$PR_TMP/followups-wake" 'Thanos merge must name the help-center follow-up'
+assert_no_grep 'jira:' "$PR_TMP/followups-wake" 'a merge must not queue a manual ticket-move wake'
+assert_absent "$FM_HOME/state/jira/github.com/advisorfirst/thanos/42/transitions" 'a merge must not write a status receipt'
 poll_pr > /dev/null
 register_pr task-a
-[ "$(wc -l < "$JIRA_LOG" | tr -d ' ')" = 2 ] || fail 'repeated merge wake or registration must never repeat or reverse Done'
 drain_pr > "$PR_TMP/followups-repeat"
 assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/followups-repeat" 'repeated merge must not repeat follow-ups after consumption'
-pass 'external merge delivers both follow-ups once and preserves Done deduplication'
+pass 'external merge delivers both follow-ups once'
 write_pr_task task-duplicate 'project=/projects/thanos' 'branch=rcs/swvl-8080-contact-created'
 register_pr task-duplicate
 poll_pr > /dev/null
-[ "$(wc -l < "$JIRA_LOG" | tr -d ' ')" = 2 ] || fail 'two registrations for one PR must not repeat a Jira move'
 drain_pr > "$PR_TMP/followups-duplicate"
 assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/followups-duplicate" 'duplicate task registration must share the PR follow-up receipt'
-pass 'duplicate PR registrations share transition and follow-up receipts'
+pass 'duplicate PR registrations share the follow-up receipt'
 write_pr_task task-other 'project=/projects/wms' 'branch=rcs/swvl-9090-not-thanos'
 "$PR_CODE/bin/fm-pr-check.sh" task-other https://github.com/advisorfirst/thanos/pull/43 > /dev/null 2>&1
 poll_pr 43 > /dev/null
-[ "$(wc -l < "$JIRA_LOG" | tr -d ' ')" = 2 ] || fail 'non-Thanos work must not reach Jira'
 drain_pr > "$PR_TMP/other-wake"
 assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/other-wake" 'non-Thanos merge must not receive follow-ups'
 assert_absent "$FM_HOME/state/jira/github.com/advisorfirst/thanos/43/followups.owed" 'other projects must not acquire owed reminders'
@@ -80,65 +70,38 @@ assert_absent "$FM_HOME/state/jira/github.com/advisorfirst/help-center/287/follo
 drain_pr > "$PR_TMP/help-center-direct"
 assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/help-center-direct" 'direct reminder publication must stay scoped to Thanos'
 pass 'help-center merges and direct publication stay silent even under a Thanos task'
-write_pr_task task-fail 'project=/projects/thanos' 'branch=rcs/swvl-8081-appointment'
-JIRA_EXIT=1 "$PR_CODE/bin/fm-pr-check.sh" task-fail https://github.com/advisorfirst/thanos/pull/44 > "$PR_TMP/fail.out" 2> "$PR_TMP/fail.err" || fail 'Jira failure must not fail registration'
-assert_grep 'move SWVL-8081 to Ready for Review yourself' "$PR_TMP/fail.err" 'failure must identify the manual ticket move'
-[ "$(grep -c '^JIRA:' "$PR_TMP/fail.err")" = 1 ] || fail 'Jira failure must print exactly one diagnostic'
-pass 'CLI failure prints one manual move and leaves lifecycle successful'
-write_pr_task task-missing 'project=/projects/thanos' 'branch=rcs/swvl-8082-missing'
-printf 'pr=%s\n' https://github.com/advisorfirst/thanos/pull/45 >> "$FM_HOME/state/task-missing.meta"
-mkdir "$PR_TMP/missingbin"
-for tool in bash perl dirname sed tr awk stat uname mkdir mktemp chmod mv cat grep rm readlink ps date ln sleep basename rmdir base64; do
-  ln -s "$(command -v "$tool")" "$PR_TMP/missingbin/$tool"
-done
-missing_out=$(PATH="$PR_TMP/missingbin" "$PR_CODE/bin/fm-jira.sh" transition task-missing 'done' 2>&1) || fail 'missing CLI must exit 0'
-assert_contains "$missing_out" 'move SWVL-8082 to Done yourself' 'missing CLI must name the manual move'
-pass 'missing CLI prints the manual move and exits 0'
 cat > "$PR_TMP/fakebin/gh-axi" <<'FAKE'
 #!/usr/bin/env bash
 case "$1 $2" in
-  'api /repos/advisorfirst/thanos/pulls/46'|'api /repos/advisorfirst/thanos/pulls/52')
-    [ "$3" = --jq ] && [ "$4" = '.title + " " + .head.ref' ] || exit 2
-    printf 'api_response:\n  body: %s\n  truncated: false\n' "${FAKE_GH_TITLE-fix: SWVL-8083 title fallback}" ;;
   'pr merge') exit "${MERGE_EXIT:-0}" ;;
   *) exit 1 ;;
 esac
 FAKE
 chmod +x "$PR_TMP/fakebin/gh-axi"
-write_pr_task task-title 'project=/projects/thanos' 'branch=generic-branch'
-"$PR_CODE/bin/fm-pr-check.sh" task-title https://github.com/advisorfirst/thanos/pull/46 > /dev/null 2>&1
-assert_grep 'issue|move|SWVL-8083|Ready for Review' "$JIRA_LOG" 'title must resolve when the task branch carries no ticket'
-[ "$(cat "$FM_HOME/state/jira/github.com/advisorfirst/thanos/46/transitions")" = in-review ] || fail 'lookup output must not leak into the transition receipt'
-pass 'ticket resolution falls back to the PR title'
 fm_fake_exit0 "$PR_CODE/bin" fm-protected-paths.sh
 write_pr_task task-merge 'project=/projects/thanos' 'branch=rcs/swvl-8084-merge'
-"$PR_CODE/bin/fm-pr-merge.sh" task-merge https://github.com/advisorfirst/thanos/pull/47 > /dev/null 2>&1 || fail 'successful merge must remain successful'
+"$PR_CODE/bin/fm-pr-merge.sh" task-merge https://github.com/advisorfirst/thanos/pull/47 > /dev/null 2> "$PR_TMP/direct-merge.err" || fail 'successful merge must remain successful'
+assert_no_grep 'JIRA' "$PR_TMP/direct-merge.err" 'an explicit merge must not ask for a ticket move'
 drain_pr > "$PR_TMP/direct-followups"
 assert_grep 'MERGE FOLLOW-UPS: https://github.com/advisorfirst/thanos/pull/47' "$PR_TMP/direct-followups" 'direct merge must deliver the same follow-ups'
-assert_grep 'issue|move|SWVL-8084|Done' "$JIRA_LOG" 'explicit successful merge must move to Done'
-count=$(wc -l < "$JIRA_LOG")
 poll_pr 47 > /dev/null
-[ "$(wc -l < "$JIRA_LOG")" = "$count" ] || fail 'poll after explicit merge must not repeat Done'
 drain_pr > "$PR_TMP/direct-repeat"
 assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/direct-repeat" 'polling a direct merge must not repeat its follow-ups'
-pass 'explicit merge and external merge share Done and follow-up receipts'
+pass 'explicit merge and external merge share the follow-up receipt'
 write_pr_task task-auto 'project=/projects/thanos' 'branch=rcs/swvl-8085-auto'
 "$PR_CODE/bin/fm-pr-merge.sh" task-auto https://github.com/advisorfirst/thanos/pull/48 -- --auto > /dev/null 2>&1
-assert_no_grep 'issue|move|SWVL-8085|Done' "$JIRA_LOG" 'queued auto-merge must not close Jira'
 write_pr_task task-rejected 'project=/projects/thanos' 'branch=rcs/swvl-8086-failed'
 if MERGE_EXIT=1 "$PR_CODE/bin/fm-pr-merge.sh" task-rejected https://github.com/advisorfirst/thanos/pull/49 > /dev/null 2>&1; then
   fail 'failed merge must retain its failure'
 fi
-assert_no_grep 'issue|move|SWVL-8086|Done' "$JIRA_LOG" 'failed merge must not close Jira'
 FM_TEST_GH_STATE=CLOSED
 poll_pr 49 > /dev/null
-assert_no_grep 'issue|move|SWVL-8086|Done' "$JIRA_LOG" 'closed unmerged PR must not close Jira'
 drain_pr > "$PR_TMP/unmerged-wake"
 assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/unmerged-wake" 'queued, failed and closed unmerged PRs must not trigger follow-ups'
 for number in 48 49; do
   assert_absent "$FM_HOME/state/jira/github.com/advisorfirst/thanos/$number/followups.owed" 'unmerged PRs must not acquire owed reminders'
 done
-pass 'queued, failed and closed unmerged PRs do not move to Done or trigger follow-ups'
+pass 'queued, failed and closed unmerged PRs do not trigger follow-ups'
 write_pr_task task-concurrent 'project=/projects/thanos' 'branch=rcs/swvl-8087-concurrent'
 "$PR_CODE/bin/fm-pr-check.sh" task-concurrent https://github.com/advisorfirst/thanos/pull/50 > /dev/null 2>&1
 FM_TEST_GH_STATE=MERGED
@@ -148,155 +111,38 @@ poll_pr 50 > /dev/null &
 second=$!
 wait "$first"
 wait "$second"
-[ "$(grep -c 'issue|move|SWVL-8087|Done' "$JIRA_LOG")" = 1 ] || fail 'overlapping polls must move Jira once'
 [ "$(grep -c 'MERGE FOLLOW-UPS: https://github.com/advisorfirst/thanos/pull/50' "$FM_HOME/state/.wake-queue")" = 1 ] || fail 'concurrent publication must enqueue once before drain deduplication'
 drain_pr > "$PR_TMP/concurrent-followups"
 [ "$(grep -c 'MERGE FOLLOW-UPS:' "$PR_TMP/concurrent-followups")" = 1 ] || fail 'overlapping observations must enqueue follow-ups once'
-pass 'overlapping merge observations serialize one Jira move and follow-up notification'
-write_pr_task task-merge-fail 'project=/projects/thanos' 'branch=rcs/swvl-8088-outage'
-"$PR_CODE/bin/fm-pr-check.sh" task-merge-fail https://github.com/advisorfirst/thanos/pull/51 > /dev/null 2>&1
-[ "$(JIRA_EXIT=1 poll_pr 51 2>/dev/null)" = merged ] || fail 'Jira outage must preserve merged output'
-drain_pr > "$PR_TMP/manual-wake"
-assert_grep 'MERGE FOLLOW-UPS: https://github.com/advisorfirst/thanos/pull/51' "$PR_TMP/manual-wake" 'Jira outage must not suppress follow-ups'
-assert_grep 'move SWVL-8088 to Done yourself' "$PR_TMP/manual-wake" 'merge polling discards stderr, so manual Jira move must survive in the wake'
-JIRA_EXIT=1 poll_pr 51 > /dev/null 2>&1
-drain_pr > "$PR_TMP/manual-repeat"
-assert_no_grep 'move SWVL-8088' "$PR_TMP/manual-repeat" 'repeated wake must not duplicate the manual-move notification'
-pass 'merge-poll failures deliver the manual move durably once'
-count=$(wc -l < "$JIRA_LOG")
+pass 'overlapping merge observations serialize one follow-up notification'
 write_pr_task task-no-key 'project=/projects/thanos' 'branch=generic'
-FAKE_GH_TITLE='ordinary maintenance' "$PR_CODE/bin/fm-pr-check.sh" task-no-key https://github.com/advisorfirst/thanos/pull/52 > /dev/null 2>&1
-[ "$(wc -l < "$JIRA_LOG")" = "$count" ] || fail 'a Thanos PR without an SWVL key must not move an unrelated issue'
-FAKE_GH_TITLE='ordinary maintenance' poll_pr 52 > /dev/null
+"$PR_CODE/bin/fm-pr-check.sh" task-no-key https://github.com/advisorfirst/thanos/pull/52 > /dev/null 2>&1
+poll_pr 52 > /dev/null
 drain_pr > "$PR_TMP/no-ticket-followups"
-assert_grep 'MERGE FOLLOW-UPS: https://github.com/advisorfirst/thanos/pull/52' "$PR_TMP/no-ticket-followups" 'Thanos follow-ups must not require a Jira ticket key'
+assert_grep 'MERGE FOLLOW-UPS: https://github.com/advisorfirst/thanos/pull/52' "$PR_TMP/no-ticket-followups" 'Thanos follow-ups must not require a ticket key'
 write_pr_task task-unregistered 'project=/projects/thanos' 'branch=rcs/swvl-8089-unregistered'
 printf '%s\n' '- wms [no-mistakes]' > "$FM_HOME/data/projects.md"
 "$PR_CODE/bin/fm-pr-check.sh" task-unregistered https://github.com/advisorfirst/thanos/pull/53 > /dev/null 2>&1
 poll_pr 53 > /dev/null
-[ "$(wc -l < "$JIRA_LOG")" = "$count" ] || fail 'Jira moves require the Thanos registry entry'
 drain_pr > "$PR_TMP/unregistered-followups"
 assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/unregistered-followups" 'unregistered projects must remain silent'
 printf '%s\n' '- thanos [no-mistakes]' > "$FM_HOME/data/projects.md"
-pass 'missing ticket keys and unregistered projects stay silent'
-write_pr_task task-done-first 'project=/projects/thanos' 'branch=rcs/swvl-8090-done-first'
-printf 'pr=%s\n' https://github.com/advisorfirst/thanos/pull/54 >> "$FM_HOME/state/task-done-first.meta"
-poll_pr 54 > /dev/null
-assert_grep 'issue|move|SWVL-8090|Done' "$JIRA_LOG" 'merge seen before registration must still move to Done'
-"$PR_CODE/bin/fm-pr-check.sh" task-done-first https://github.com/advisorfirst/thanos/pull/54 > /dev/null 2>&1
-assert_no_grep 'issue|move|SWVL-8090|Ready for Review' "$JIRA_LOG" 'a later ready event must never reopen Done'
-pass 'a merge observed first cannot be reversed by later registration'
+pass 'missing ticket keys still get follow-ups and unregistered projects stay silent'
 
-jira_ordering_regression() {
-  write_pr_task task-order 'project=/projects/thanos' 'branch=rcs/swvl-9998-order'
-  printf 'pr=%s\n' https://github.com/advisorfirst/thanos/pull/60 >> "$FM_HOME/state/task-order.meta"
-  export JIRA_MERGE_OUTPUT="$PR_TMP/merge-order.out"
-  cat > "$PR_TMP/fakebin/jira" <<'FAKE'
-#!/usr/bin/env bash
-[ "$(cat "$JIRA_MERGE_OUTPUT")" = merged ] || printf 'jira-before-merged\n' >> "$JIRA_LOG"
-exit 0
-FAKE
-  poll_pr 60 > "$JIRA_MERGE_OUTPUT"
-  assert_no_grep jira-before-merged "$JIRA_LOG" 'merged must be visible before Jira starts, not merely returned eventually'
-  [ "$(cat "$JIRA_MERGE_OUTPUT")" = merged ] || fail 'merge-first output must remain exactly merged'
-  pass 'merge output is visible before the Jira executable starts'
-}
-
-jira_deadline_regressions() {
+bounded_command_installed_deadlines() {
   # shellcheck source=bin/fm-watch.sh
   . "$PR_CODE/bin/fm-watch.sh"
   CHECK_TIMEOUT=4
   export FM_CHECK_FORCE_FALLBACK=1 FM_JIRA_TIMEOUT=1
-  export JIRA_BLOCK_FIFO="$PR_TMP/jira-block"
-  mkfifo "$JIRA_BLOCK_FIFO"
-  cat > "$PR_TMP/fakebin/jira" <<'FAKE'
-#!/usr/bin/env bash
-printf '%s|%s|%s|%s\n' "$@" >> "$JIRA_LOG"
-if [ "$4" = Done ]; then
-  trap '' TERM
-  read -r _ < "$JIRA_BLOCK_FIFO"
-fi
-exit 0
-FAKE
-  write_pr_task task-stalled 'project=/projects/thanos' 'branch=rcs/swvl-9999-stalled'
-  stalled_url=https://github.com/advisorfirst/thanos/pull/61
-  "$PR_CODE/bin/fm-pr-check.sh" task-stalled "$stalled_url" > /dev/null 2>&1
-  write_pr_task task-stalled-duplicate 'project=/projects/thanos' 'branch=rcs/swvl-9999-stalled'
-  printf 'pr=%s\n' "$stalled_url" >> "$FM_HOME/state/task-stalled-duplicate.meta"
-  for attempt in 1 2; do
-    run_check_capture "$PR_CODE/bin/fm-pr-poll.sh" --validated github "$stalled_url" github.com advisorfirst/thanos 61
-    [ "$FM_CHECK_RESULT" = merged ] || fail "stalled Jira attempt $attempt must return exactly merged through production capture"
-    drain_pr > "$PR_TMP/stalled-wake-$attempt"
-    assert_grep 'move SWVL-9999 to Done yourself' "$PR_TMP/stalled-wake-$attempt" 'stalled Jira must deliver the manual instruction before the production deadline'
-    assert_no_grep 'done' "$FM_HOME/state/jira/github.com/advisorfirst/thanos/61/transitions" 'a timed-out move must remain retryable'
-    assert_absent "$FM_HOME/state/jira/github.com/advisorfirst/thanos/61/transition.lock" 'a timed-out move must release its own transition lock'
-    for pending in "$FM_HOME/state/jira/github.com/advisorfirst/thanos/61"/.transition.*; do
-      assert_absent "$pending" 'a timed-out move must remove its partial receipt'
-    done
-  done
-  [ "$(grep -c 'issue|move|SWVL-9999|Done' "$JIRA_LOG")" = 2 ] || fail 'each observation may retry a timed-out Jira move only once'
-  pass 'two stalled FIFO moves preserve merged, durable manual instructions, and one attempt per wake'
-
-  "$PR_CODE/bin/fm-jira.sh" transition task-stalled 'done' > "$PR_TMP/stalled.out" 2> "$PR_TMP/stalled.err"
-  [ ! -s "$PR_TMP/stalled.out" ] || fail 'Jira timeout must not add stdout'
-  assert_grep 'move SWVL-9999 to Done yourself' "$PR_TMP/stalled.err" 'timeout must preserve the existing stderr instruction'
-  pass 'a Jira deadline preserves the stderr manual instruction and exits successfully'
-
-  cat > "$PR_TMP/fakebin/jira" <<'FAKE'
-#!/usr/bin/env bash
-printf '%s|%s|%s|%s\n' "$@" >> "$JIRA_LOG"
-exit 0
-FAKE
-  run_check_capture "$PR_CODE/bin/fm-pr-poll.sh" --validated github "$stalled_url" github.com advisorfirst/thanos 61
-  [ "$FM_CHECK_RESULT" = merged ] || fail 'immediate-success Jira control must preserve merged'
-  assert_grep 'done' "$FM_HOME/state/jira/github.com/advisorfirst/thanos/61/transitions" 'the fast control must publish Done'
-  count=$(wc -l < "$JIRA_LOG")
-  poll_pr 61 > /dev/null
-  [ "$(wc -l < "$JIRA_LOG")" = "$count" ] || fail 'successful retry must restore receipt deduplication'
-  pass 'immediate-success control completes the move and deduplicates later observations'
-
-  write_pr_task task-locked 'project=/projects/thanos' 'branch=rcs/swvl-9997-lock'
-  printf 'pr=%s\n' https://github.com/advisorfirst/thanos/pull/62 >> "$FM_HOME/state/task-locked.meta"
-  lock="$FM_HOME/state/jira/github.com/advisorfirst/thanos/62/transition.lock"
-  mkdir -p "$(dirname "$lock")"
-  fm_lock_try_acquire "$lock" || fail 'fixture must own a live transition lock'
-  lock_owner=$FM_LOCK_OWNER_DIR
-  run_check_capture "$PR_CODE/bin/fm-pr-poll.sh" --validated github https://github.com/advisorfirst/thanos/pull/62 github.com advisorfirst/thanos 62
-  [ "$FM_CHECK_RESULT" = merged ] || fail 'transition-lock wait must not swallow merged'
-  drain_pr > "$PR_TMP/locked-wake"
-  assert_grep 'MERGE FOLLOW-UPS: https://github.com/advisorfirst/thanos/pull/62' "$PR_TMP/locked-wake" 'a blocked Jira status move must not suppress merge follow-ups'
-  assert_grep 'move SWVL-9997 to Done yourself' "$PR_TMP/locked-wake" 'transition-lock deadline must deliver the manual instruction'
-  fm_lock_points_to_owner "$lock" "$lock_owner" || fail 'deadline must preserve another live lock owner'
-  fm_lock_release "$lock"
-  pass 'a live transition lock has a deadline and retains its existing owner'
-
-  cat > "$PR_TMP/fakebin/gh-axi" <<'FAKE'
+  export STUCK_BLOCK_FIFO="$PR_TMP/installed-stuck-block" STUCK_PID_FILE="$PR_TMP/installed-stuck.pid"
+  mkfifo "$STUCK_BLOCK_FIFO"
+  cat > "$PR_TMP/fakebin/stuck-command" <<'FAKE'
 #!/usr/bin/env bash
 trap '' TERM
-read -r _ < "$JIRA_BLOCK_FIFO"
+printf '%s\n' "$$" > "$STUCK_PID_FILE"
+read -r _ < "$STUCK_BLOCK_FIFO"
 FAKE
-  write_pr_task task-lookup 'project=/projects/thanos' 'branch=generic'
-  printf 'pr=%s\n' https://github.com/advisorfirst/thanos/pull/63 >> "$FM_HOME/state/task-lookup.meta"
-  run_check_capture "$PR_CODE/bin/fm-pr-poll.sh" --validated github https://github.com/advisorfirst/thanos/pull/63 github.com advisorfirst/thanos 63
-  [ "$FM_CHECK_RESULT" = merged ] || fail 'stalled title lookup must not swallow merged'
-  drain_pr > "$PR_TMP/lookup-wake"
-  assert_grep 'move https://github.com/advisorfirst/thanos/pull/63 to Done yourself' "$PR_TMP/lookup-wake" 'an unresolved lookup timeout must identify its PR in the manual instruction'
-  pass 'a stalled prerequisite lookup delivers merged and identifies the PR for its manual move'
-}
-
-jira_installed_deadlines() {
-  # shellcheck source=bin/fm-watch.sh
-  . "$PR_CODE/bin/fm-watch.sh"
-  CHECK_TIMEOUT=4
-  export FM_CHECK_FORCE_FALLBACK=1 FM_JIRA_TIMEOUT=1
-  export JIRA_BLOCK_FIFO="$PR_TMP/installed-jira-block" JIRA_PID_FILE="$PR_TMP/installed-jira.pid"
-  mkfifo "$JIRA_BLOCK_FIFO"
-  cat > "$PR_TMP/fakebin/jira" <<'FAKE'
-#!/usr/bin/env bash
-trap '' TERM
-printf '%s\n' "$$" > "$JIRA_PID_FILE"
-read -r _ < "$JIRA_BLOCK_FIFO"
-FAKE
+  chmod +x "$PR_TMP/fakebin/stuck-command"
   cat > "$PR_TMP/deadline" <<'FAKE'
 #!/usr/bin/env perl
 use strict;
@@ -322,49 +168,27 @@ while (waitpid($pid, 0) < 0) {}
 exit($? >> 8);
 FAKE
   chmod +x "$PR_TMP/deadline"
-  cat > "$PR_TMP/bounded-jira.sh" <<'FAKE'
+  cat > "$PR_TMP/bounded-command.sh" <<'FAKE'
 #!/usr/bin/env bash
 . "$FM_ROOT_OVERRIDE/bin/fm-dispatch-axi-lib.sh"
-fm_axi_bounded_run "$FM_JIRA_TIMEOUT" jira issue move SWVL-9996 Done && exit 1
+fm_axi_bounded_run "$FM_JIRA_TIMEOUT" stuck-command && exit 1
 printf 'bounded\n'
 FAKE
   mkdir "$PR_TMP/deadlinebin"
-  for tool in bash perl dirname sed tr awk stat uname mkdir mktemp chmod mv cat grep rm readlink ps date ln sleep basename rmdir base64 gh jira gh-axi; do
+  for tool in bash perl dirname sed tr awk stat uname mkdir mktemp chmod mv cat grep rm readlink ps date ln sleep basename rmdir base64 stuck-command; do
     ln -s "$(command -v "$tool")" "$PR_TMP/deadlinebin/$tool"
   done
   for deadline_tool in timeout gtimeout; do
     cp "$PR_TMP/deadline" "$PR_TMP/deadlinebin/$deadline_tool"
-    write_pr_task "task-$deadline_tool" 'project=/projects/thanos' 'branch=rcs/swvl-9996-hard-deadline'
-    printf 'pr=%s\n' https://github.com/advisorfirst/thanos/pull/64 >> "$FM_HOME/state/task-$deadline_tool.meta"
-    PATH="$PR_TMP/deadlinebin" run_check_capture "$PR_CODE/bin/fm-pr-poll.sh" --validated github https://github.com/advisorfirst/thanos/pull/64 github.com advisorfirst/thanos 64
-    [ "$FM_CHECK_RESULT" = merged ] || fail "$deadline_tool must preserve merged"
-    drain_pr > "$PR_TMP/$deadline_tool-wake"
-    assert_grep 'move SWVL-9996 to Done yourself' "$PR_TMP/$deadline_tool-wake" "$deadline_tool must force termination and publish the manual move within the check budget"
-    jira_pid=$(cat "$JIRA_PID_FILE")
-    if kill -0 "$jira_pid" 2>/dev/null; then
-      kill -KILL "$jira_pid" 2>/dev/null || true
-      fail "$deadline_tool must not leave its Jira child running after returning"
-    fi
-    assert_absent "$FM_HOME/state/jira/github.com/advisorfirst/thanos/64/transition.lock" "$deadline_tool must release its own transition lock"
-    cp "$PR_TMP/fakebin/jira" "$PR_TMP/fakebin/gh-axi"
-    write_pr_task task-installed-lookup 'project=/projects/thanos' 'branch=generic'
-    printf 'pr=%s\n' https://github.com/advisorfirst/thanos/pull/65 >> "$FM_HOME/state/task-installed-lookup.meta"
-    PATH="$PR_TMP/deadlinebin" run_check_capture "$PR_CODE/bin/fm-pr-poll.sh" --validated github https://github.com/advisorfirst/thanos/pull/65 github.com advisorfirst/thanos 65
-    [ "$FM_CHECK_RESULT" = merged ] || fail "$deadline_tool must preserve merged during prerequisite lookup"
-    drain_pr > "$PR_TMP/$deadline_tool-lookup-wake"
-    assert_grep 'move https://github.com/advisorfirst/thanos/pull/65 to Done yourself' "$PR_TMP/$deadline_tool-lookup-wake" "$deadline_tool lookup must deliver the manual instruction"
-    jira_pid=$(cat "$JIRA_PID_FILE")
-    if kill -0 "$jira_pid" 2>/dev/null; then
-      kill -KILL "$jira_pid" 2>/dev/null || true
-      fail "$deadline_tool must not leave its lookup child running after returning"
-    fi
-    for pending in "$FM_HOME/state/jira/github.com/advisorfirst/thanos/65"/.transition.*; do
-      assert_absent "$pending" "$deadline_tool must clean up its lookup output"
-    done
-    PATH="$PR_TMP/deadlinebin" run_check_capture "$PR_TMP/bounded-jira.sh"
+    PATH="$PR_TMP/deadlinebin" run_check_capture "$PR_TMP/bounded-command.sh"
     [ "$FM_CHECK_RESULT" = bounded ] || fail "$deadline_tool must force termination of a TERM-resistant command within the check budget"
+    stuck_pid=$(cat "$STUCK_PID_FILE")
+    if kill -0 "$stuck_pid" 2>/dev/null; then
+      kill -KILL "$stuck_pid" 2>/dev/null || true
+      fail "$deadline_tool must not leave its child running after returning"
+    fi
     rm -f "${PR_TMP:?}/deadlinebin/$deadline_tool"
-    pass "$deadline_tool terminates and cleans up Jira, prerequisite lookup, and a TERM-resistant command"
+    pass "$deadline_tool terminates a TERM-resistant command"
   done
 }
 
@@ -374,19 +198,12 @@ jira_publication_write_regression() {
   export FM_STATE_OVERRIDE="$FM_HOME/state" FM_DATA_OVERRIDE="$FM_HOME/data"
   mkdir -p "$FM_HOME/state" "$FM_HOME/data"
   printf '%s\n' '- thanos [no-mistakes]' > "$FM_HOME/data/projects.md"
-  cat > "$PR_TMP/fakebin/jira" <<'FAKE'
-#!/usr/bin/env bash
-printf '%s|%s|%s|%s\n' "$@" >> "$JIRA_LOG"
-FAKE
-  chmod +x "$PR_TMP/fakebin/jira"
   write_pr_task task-write 'project=/projects/thanos' 'branch=rcs/swvl-9990-write'
   printf 'pr=%s\n' https://github.com/advisorfirst/thanos/pull/70 >> "$FM_HOME/state/task-write.meta"
   mkdir "$FM_HOME/state/.wake-queue.seq"
   poll_pr 70 > "$PR_TMP/write.out" 2> "$PR_TMP/write.err"
-  assert_grep 'issue|move|SWVL-9990|Done' "$JIRA_LOG" 'reminder write failure must not prevent the healthy Jira Done update'
   [ "$(cat "$PR_TMP/write.out")" = merged ] || fail 'reminder failure must preserve the exact merged observation'
   assert_grep 'publication failed; retry on the next merge observation' "$PR_TMP/write.err" 'reminder failure must identify its own retry'
-  assert_no_grep 'JIRA:' "$PR_TMP/write.err" 'healthy Jira must not be reported as failed when only reminder publication fails'
   assert_absent "$FM_HOME/state/jira/github.com/advisorfirst/thanos/70/followups" 'failed publication must not write its receipt'
   if "$PR_CODE/bin/fm-jira.sh" followups https://github.com/advisorfirst/thanos/pull/70 > /dev/null 2> "$PR_TMP/write-readiness.err"; then
     fail 'terminal publication must report failure while the queue remains unwritable'
@@ -398,12 +215,7 @@ FAKE
   poll_pr 70 > /dev/null
   drain_pr > "$PR_TMP/write-repeat"
   assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/write-repeat" 'recovered publication must remain once per PR'
-  [ "$(grep -c 'issue|move|SWVL-9990|Done' "$JIRA_LOG")" = 1 ] || fail 'publication retry must not repeat healthy Jira work'
-  write_pr_task task-readiness 'project=/projects/thanos' 'branch=rcs/swvl-9992-readiness'
-  printf 'pr=%s\n' https://github.com/advisorfirst/thanos/pull/72 >> "$FM_HOME/state/task-readiness.meta"
-  "$PR_CODE/bin/fm-jira.sh" followups https://github.com/advisorfirst/thanos/pull/72
-  assert_no_grep 'issue|move|SWVL-9992' "$JIRA_LOG" 'terminal publication must never perform a Jira status move'
-  pass 'reminder write failure preserves Jira Done and retries reminder delivery once'
+  pass 'reminder write failure preserves the merged result and retries reminder delivery once'
 }
 
 jira_cleanup_regression() {
@@ -436,23 +248,18 @@ jira_cleanup_regression() {
 [ "$1 $2" = 'pr merge' ] || exit 97
 printf 'fake merge succeeded\n'
 FAKE
-    cat > "$PR_TMP/fakebin/jira" <<'FAKE'
-#!/usr/bin/env bash
-printf '%s|%s|%s|%s\n' "$@" >> "$JIRA_LOG"
-FAKE
     for tool in tmux treehouse; do
       fm_fake_exit0 "$PR_TMP/fakebin" "$tool"
     done
     fm_fake_exit0 "$PR_CODE/bin" fm-protected-paths.sh fm-fleet-sync.sh
-    chmod +x "$PR_TMP/fakebin/gh-axi" "$PR_TMP/fakebin/jira"
-    for tool in gh gh-axi jira tmux treehouse; do
+    chmod +x "$PR_TMP/fakebin/gh-axi"
+    for tool in gh gh-axi tmux treehouse; do
       [ -x "$PR_TMP/fakebin/$tool" ] && [ "$(command -v "$tool")" = "$PR_TMP/fakebin/$tool" ] \
         || fail "cleanup fixture must resolve executable fake $tool"
     done
     mkdir "$FM_HOME/state/.wake-queue.seq"
     "$PR_CODE/bin/fm-pr-merge.sh" task-cleanup "$task_url" > "$PR_TMP/cleanup-$mode.merge" 2> "$PR_TMP/cleanup-$mode.err"
     assert_grep 'fake merge succeeded' "$PR_TMP/cleanup-$mode.merge" 'direct merge must retain successful output'
-    assert_grep 'issue|move|SWVL-9993|Done' "$JIRA_LOG" 'queue failure must preserve healthy Jira Done'
     assert_absent "$dir/followups" 'failed direct publication must not write its receipt'
     if "$PR_CODE/bin/fm-jira.sh" retry-followups > "$PR_TMP/cleanup-$mode.retry-failed" 2>&1; then
       fail 'owed retry must report publication failure while the queue remains unwritable'
@@ -595,7 +402,6 @@ jira_help_center_offline_cleanup_regression() {
   "$PR_CODE/bin/fm-pr-check.sh" task-help "$task_url" > "$PR_TMP/help-offline.register" 2>&1
   "$PR_CODE/bin/fm-jira.sh" merged "$task_url" > "$PR_TMP/help-offline.merged" 2>&1 \
     || fail 'help-center fixture must observe the merged PR before GitHub becomes unavailable'
-  assert_grep 'issue|move|SWVL-1234|Done' "$JIRA_LOG" 'help-center fixture must complete the observed merge before cleanup'
   for tool in gh gh-axi; do
     cp "$PR_TMP/fakebin/$tool" "$PR_TMP/help-offline.$tool.saved"
     cat > "$PR_TMP/fakebin/$tool" <<'FAKE'
@@ -625,7 +431,7 @@ jira_cleanup_completed_status_regression() {
   local FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_JIRA_TIMEOUT FM_TEST_GH_STATE
   local scenario task_url dir tool
   export FM_JIRA_TIMEOUT=1 FM_TEST_GH_STATE=MERGED
-  for scenario in ${FM_JIRA_COMPLETED_SCENARIO:-external title direct pending}; do
+  for scenario in ${FM_JIRA_COMPLETED_SCENARIO:-external direct pending}; do
     export FM_HOME="$PR_TMP/completed-$scenario"
     export FM_STATE_OVERRIDE="$FM_HOME/state" FM_DATA_OVERRIDE="$FM_HOME/data" FM_CONFIG_OVERRIDE="$FM_HOME/config"
     mkdir -p "$FM_HOME/state" "$FM_HOME/data" "$FM_HOME/config"
@@ -636,36 +442,22 @@ jira_cleanup_completed_status_regression() {
     fm_write_meta "$FM_HOME/state/task-completed.meta" 'window=firstmate:fm-task-completed' \
       'endpoint_task_id=task-completed' 'backend=tmux' "worktree=$FM_HOME/task-tree" \
       "project=$FM_HOME/thanos" 'branch=rcs/swvl-9996-completed' 'kind=ship' 'mode=no-mistakes'
-    if [ "$scenario" = title ]; then
-      sed 's@branch=.*@branch=generic@' "$FM_HOME/state/task-completed.meta" > "$PR_TMP/completed.meta"
-      cp "$PR_TMP/completed.meta" "$FM_HOME/state/task-completed.meta"
-    fi
     task_url=https://github.com/advisorfirst/thanos/pull/76
     dir="$FM_HOME/state/jira/github.com/advisorfirst/thanos/76"
     export JIRA_COMPLETED_CALLS="$PR_TMP/completed-$scenario.calls"
     : > "$JIRA_COMPLETED_CALLS"
     cat > "$PR_TMP/fakebin/gh-axi" <<'FAKE'
 #!/usr/bin/env bash
-case "$1 $2" in
-  'pr merge') printf 'fake merge succeeded\n' ;;
-  'api /repos/advisorfirst/thanos/pulls/76')
-    printf 'api_response:\n  body: fix SWVL-9996 completed\n  truncated: false\n' ;;
-  *) exit 97 ;;
-esac
+[ "$1 $2" = 'pr merge' ] || exit 97
+printf 'fake merge succeeded\n'
 FAKE
-    cat > "$PR_TMP/fakebin/jira" <<'FAKE'
-#!/usr/bin/env bash
-printf '%s|%s|%s|%s\n' "$@" >> "$JIRA_LOG"
-FAKE
-    cp "$ROOT/bin/fm-jira.sh" "$PR_CODE/bin/fm-jira.sh"
     fm_fake_exit0 "$PR_CODE/bin" fm-linear.sh fm-protected-paths.sh fm-fleet-sync.sh
     for tool in tmux treehouse; do fm_fake_exit0 "$PR_TMP/fakebin" "$tool"; done
-    chmod +x "$PR_TMP/fakebin/gh-axi" "$PR_TMP/fakebin/jira"
-    for tool in gh gh-axi jira tmux treehouse; do
+    chmod +x "$PR_TMP/fakebin/gh-axi"
+    for tool in gh gh-axi tmux treehouse; do
       [ -x "$PR_TMP/fakebin/$tool" ] && [ "$(command -v "$tool")" = "$PR_TMP/fakebin/$tool" ] \
         || fail "completed cleanup fixture must resolve executable fake $tool"
     done
-    : > "$JIRA_LOG"
     if [ "$scenario" = pending ]; then mkdir "$FM_HOME/state/.wake-queue.seq"; fi
     if [ "$scenario" = direct ]; then
       "$PR_CODE/bin/fm-pr-merge.sh" task-completed "$task_url" > "$PR_TMP/completed-$scenario.merge" 2>&1
@@ -673,20 +465,12 @@ FAKE
       printf 'pr=%s\n' "$task_url" >> "$FM_HOME/state/task-completed.meta"
       [ "$(poll_pr 76 2> "$PR_TMP/completed-$scenario.merge.err")" = merged ] || fail 'completed status fixture must observe an external merge'
     fi
-    assert_grep 'issue|move|SWVL-9996|Done' "$JIRA_LOG" 'completed status fixture must really move Jira before cleanup'
-    assert_grep 'done' "$dir/transitions" 'completed status fixture must hold the existing Done receipt'
     if [ "$scenario" = pending ]; then
-      assert_present "$dir/followups.owed" 'failed reminder publication must retain its obligation despite completed status'
-      "$PR_CODE/bin/fm-jira.sh" transition task-completed in-review > "$PR_TMP/completed-review.out" 2> "$PR_TMP/completed-review.err"
-      assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/completed-review.err" 'ordinary status events must not acquire cleanup reminder recovery'
+      assert_present "$dir/followups.owed" 'failed reminder publication must retain its obligation'
       rmdir "$FM_HOME/state/.wake-queue.seq"
+    else
+      assert_grep "$task_url" "$dir/followups" 'completed fixture must publish its reminder at merge time'
     fi
-    cp "$PR_CODE/bin/fm-jira.sh" "$PR_CODE/bin/fm-jira-real.sh"
-    cat > "$PR_CODE/bin/fm-jira.sh" <<'FAKE'
-#!/usr/bin/env bash
-[ "${1:-}" != --attempt ] || printf 'jira-attempt\n' >> "$JIRA_COMPLETED_CALLS"
-exec "$(dirname "$0")/fm-jira-real.sh" "$@"
-FAKE
     cat > "$PR_CODE/bin/fm-linear.sh" <<'FAKE'
 #!/usr/bin/env bash
 printf 'linear\n' >> "$JIRA_COMPLETED_CALLS"
@@ -694,19 +478,15 @@ printf 'LINEAR: unexpected completed status replay\n' >&2
 FAKE
     cat > "$PR_TMP/fakebin/gh-axi" <<'FAKE'
 #!/usr/bin/env bash
-printf 'title-lookup\n' >> "$JIRA_COMPLETED_CALLS"
+printf 'gh-axi\n' >> "$JIRA_COMPLETED_CALLS"
 exit 1
 FAKE
-    chmod +x "$PR_CODE/bin/fm-jira.sh" "$PR_CODE/bin/fm-linear.sh" "$PR_TMP/fakebin/gh-axi"
-    : > "$JIRA_LOG"
+    chmod +x "$PR_CODE/bin/fm-linear.sh" "$PR_TMP/fakebin/gh-axi"
     "$PR_CODE/bin/fm-teardown.sh" task-completed > "$PR_TMP/completed-$scenario.cleanup" 2> "$PR_TMP/completed-$scenario.cleanup.err" \
       || fail 'completed status cleanup must succeed'
     assert_absent "$FM_HOME/state/task-completed.meta" 'completed status cleanup must remove task metadata'
-    [ ! -s "$JIRA_COMPLETED_CALLS" ] || fail 'completed status cleanup must call neither Linear nor the Jira attempt or title lookup'
-    [ ! -s "$JIRA_LOG" ] || fail 'completed status cleanup must not invoke Jira'
+    [ ! -s "$JIRA_COMPLETED_CALLS" ] || fail 'cleanup after a recorded reminder must call neither Linear nor gh-axi'
     assert_no_grep 'LINEAR:' "$PR_TMP/completed-$scenario.cleanup.err" 'completed status cleanup must not emit a Linear diagnostic'
-    assert_no_grep 'JIRA: move' "$PR_TMP/completed-$scenario.cleanup.err" 'completed status cleanup must not emit a manual Jira diagnostic'
-    assert_no_grep 'jira:' "$FM_HOME/state/.wake-queue" 'completed status cleanup must not queue a manual status wake'
     assert_grep "$task_url" "$dir/followups" 'completed status cleanup must publish its reminder before later retry'
     assert_absent "$dir/followups.owed" 'completed status cleanup must clear owed work after successful publication'
     "$PR_CODE/bin/fm-jira.sh" retry-followups
@@ -714,12 +494,10 @@ FAKE
     [ "$(grep -c 'MERGE FOLLOW-UPS:' "$PR_TMP/completed-$scenario.wake")" = 1 ] || fail 'completed status cleanup must preserve exactly one reminder'
     assert_grep 'check MCP covers what changed' "$PR_TMP/completed-$scenario.wake" 'completed status cleanup must preserve MCP work'
     assert_grep 'update /help-center' "$PR_TMP/completed-$scenario.wake" 'completed status cleanup must preserve help-center work'
-    assert_no_grep 'JIRA: move' "$PR_TMP/completed-$scenario.wake" 'completed status cleanup must not deliver a manual Jira wake'
     "$PR_CODE/bin/fm-jira.sh" retry-followups
     drain_pr > "$PR_TMP/completed-$scenario.repeat"
     assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/completed-$scenario.repeat" 'completed status retry must remain once per PR'
-    cp "$ROOT/bin/fm-jira.sh" "$PR_CODE/bin/fm-jira.sh"
-    pass "completed status cleanup replays no status work: $scenario"
+    pass "cleanup after a recorded reminder replays no status work: $scenario"
   done
   fm_fake_exit0 "$PR_CODE/bin" fm-linear.sh
 }
@@ -750,15 +528,11 @@ jira_cleanup_record_failure_regression() {
 [ "$1 $2" = 'pr merge' ] || exit 97
 printf 'fake merge succeeded\n'
 FAKE
-    cat > "$PR_TMP/fakebin/jira" <<'FAKE'
-#!/usr/bin/env bash
-printf '%s|%s|%s|%s\n' "$@" >> "$JIRA_LOG"
-FAKE
     cp "$ROOT/bin/fm-linear.sh" "$PR_CODE/bin/fm-linear.sh"
     for tool in tmux treehouse; do fm_fake_exit0 "$PR_TMP/fakebin" "$tool"; done
     fm_fake_exit0 "$PR_CODE/bin" fm-protected-paths.sh fm-fleet-sync.sh
-    chmod +x "$PR_TMP/fakebin/gh-axi" "$PR_TMP/fakebin/jira"
-    for tool in gh gh-axi jira tmux treehouse; do
+    chmod +x "$PR_TMP/fakebin/gh-axi"
+    for tool in gh gh-axi tmux treehouse; do
       [ -x "$PR_TMP/fakebin/$tool" ] && [ "$(command -v "$tool")" = "$PR_TMP/fakebin/$tool" ] \
         || fail "record cleanup fixture must resolve executable fake $tool"
     done
@@ -767,11 +541,9 @@ FAKE
       lock) fm_lock_try_acquire "$dir/followups.lock" || fail 'fixture must hold the actual reminder lock' ;;
       *) mkdir "$dir/followups.owed" ;;
     esac
-    : > "$JIRA_LOG"
     "$PR_CODE/bin/fm-pr-merge.sh" task-record "$task_url" > "$PR_TMP/record-$scenario.merge" 2> "$PR_TMP/record-$scenario.err" \
       || fail 'failed obligation recording must preserve successful direct merge'
     assert_grep 'fake merge succeeded' "$PR_TMP/record-$scenario.merge" 'direct merge must retain its successful output'
-    assert_no_grep 'issue|move|SWVL-9995|Done' "$JIRA_LOG" 'initial recording failure must defer Jira Done'
     assert_no_grep 'to Done yourself' "$PR_TMP/record-$scenario.err" 'initial recording failure must defer Linear Done'
     [ ! -f "$dir/followups.owed" ] || fail 'fixture must reproduce failure to establish the owed file'
     assert_absent "$dir/followups" 'initial recording failure must not acquire a publication receipt'
@@ -810,7 +582,6 @@ FAKE
       assert_present "$FM_HOME/state/task-record.meta" 'refused cleanup must preserve metadata discovery'
       assert_present "$FM_HOME/state/task-record.check.sh" 'refused cleanup must preserve poll discovery'
       assert_present "$FM_HOME/state/task-record.pr-poll" 'refused cleanup must preserve the canonical PR identity'
-      assert_no_grep 'issue|move|SWVL-9995|Done' "$JIRA_LOG" 'refused cleanup must keep Jira Done deferred'
       assert_no_grep 'to Done yourself' "$PR_TMP/record-$scenario.cleanup.err" 'refused cleanup must keep Linear Done deferred'
     fi
     case "$scenario" in
@@ -846,13 +617,11 @@ FAKE
         assert_absent "$dir/followups.owed" 'unmerged or other-project cleanup must not create owed work'
         assert_absent "$dir/followups" 'unmerged or other-project cleanup must not publish a reminder'
         assert_no_grep 'MERGE FOLLOW-UPS:' "$PR_TMP/record-$scenario.wake" 'unmerged or other-project cleanup must stay silent'
-        assert_no_grep 'issue|move|SWVL-9995|Done' "$JIRA_LOG" 'unmerged or other-project cleanup must not move Jira Done'
         assert_no_grep 'to Done yourself' "$PR_TMP/record-$scenario.recovery.err" 'unmerged or other-project cleanup must not move Linear Done' ;;
       *)
         if [ "$scenario" = record ]; then
           assert_grep 'LINEAR: no API key configured - move SWVL-9995 to Done yourself' "$PR_TMP/record-$scenario.recovery.err" 'failed owe recovery must replay deferred status through the existing Linear owner'
         fi
-        [ "$(grep -c 'issue|move|SWVL-9995|Done' "$JIRA_LOG")" = 1 ] || fail 'cleanup recovery must perform deferred Jira Done once'
         assert_grep "$task_url" "$dir/followups" 'recovery must leave a successful URL-bearing publication receipt'
         assert_absent "$dir/followups.owed" 'successful publication must clear owed state'
         [ "$(grep -c 'MERGE FOLLOW-UPS:' "$PR_TMP/record-$scenario.wake")" = 1 ] || fail 'cleanup recovery must deliver both follow-ups once'
@@ -902,13 +671,6 @@ jira_owed_contract_regression() {
     mkdir -p "$dir"
     export JIRA_CONTRACT_DIR="$dir" JIRA_CONTRACT_LOG="$PR_TMP/contract-$scenario.log"
     : > "$JIRA_CONTRACT_LOG"
-    cat > "$PR_TMP/fakebin/jira" <<'FAKE'
-#!/usr/bin/env bash
-if [ "$4" = Done ]; then
-  [ -f "$JIRA_CONTRACT_DIR/followups.owed" ] || [ -f "$JIRA_CONTRACT_DIR/followups" ] || printf 'jira-before-owed\n' >> "$JIRA_CONTRACT_LOG"
-  printf 'jira-done\n' >> "$JIRA_CONTRACT_LOG"
-fi
-FAKE
     cat > "$PR_CODE/bin/fm-linear.sh" <<'FAKE'
 #!/usr/bin/env bash
 if [ "$3" = done ]; then
@@ -916,8 +678,8 @@ if [ "$3" = done ]; then
   printf 'linear-done\n' >> "$JIRA_CONTRACT_LOG"
 fi
 FAKE
-    chmod +x "$PR_TMP/fakebin/jira" "$PR_CODE/bin/fm-linear.sh"
-    for tool in gh gh-axi jira; do
+    chmod +x "$PR_CODE/bin/fm-linear.sh"
+    for tool in gh gh-axi; do
       [ -x "$PR_TMP/fakebin/$tool" ] && [ "$(command -v "$tool")" = "$PR_TMP/fakebin/$tool" ] \
         || fail "contract fixture must resolve executable fake $tool"
     done
@@ -959,11 +721,6 @@ jira_publication_lock_regression() {
   unset FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
   mkdir -p "$FM_HOME/state" "$FM_HOME/data"
   printf '%s\n' '- thanos [no-mistakes]' > "$FM_HOME/data/projects.md"
-  cat > "$PR_TMP/fakebin/jira" <<'FAKE'
-#!/usr/bin/env bash
-printf '%s|%s|%s|%s\n' "$@" >> "$JIRA_LOG"
-FAKE
-  chmod +x "$PR_TMP/fakebin/jira"
   write_pr_task task-lock 'project=/projects/thanos' 'branch=rcs/swvl-9991-lock'
   "$PR_CODE/bin/fm-pr-check.sh" task-lock https://github.com/advisorfirst/thanos/pull/71 > /dev/null 2>&1
   printf '#!/usr/bin/env bash\nprintf "stop-cycle\\n"\n' > "$FM_HOME/state/z-stop.check.sh"
@@ -1022,7 +779,6 @@ FAKE
       || fail 'terminal poll must remain registered when its reminder was not durably published'
     assert_no_grep 'task-lock.check.sh: merged' "$PR_TMP/lock-watch.out" 'an unpublished reminder must not acknowledge terminal merge'
   fi
-  assert_grep 'issue|move|SWVL-9991|Done' "$JIRA_LOG" 'queue contention must not block independent Jira Done'
   FM_CHECK_INTERVAL=0 FM_CHECK_TIMEOUT=8 FM_POLL=0.02 FM_HEARTBEAT=999999 FM_SIGNAL_GRACE=0 \
     "$PR_CODE/bin/fm-watch.sh" > "$PR_TMP/lock-retry.out" 2> "$PR_TMP/lock-retry.err"
   [ -f "$receipt" ] || fail 'next watcher sweep must durably publish the reminder'
@@ -1031,21 +787,18 @@ FAKE
   [ "$(grep -c 'MERGE FOLLOW-UPS: https://github.com/advisorfirst/thanos/pull/71' "$PR_TMP/lock-wake")" = 1 ] || fail 'contention recovery must deliver one reminder'
   assert_grep 'check MCP covers what changed' "$PR_TMP/lock-wake" 'recovered reminder must retain MCP coverage'
   assert_grep 'update /help-center' "$PR_TMP/lock-wake" 'recovered reminder must retain help-center work'
-  [ "$(grep -c 'issue|move|SWVL-9991|Done' "$JIRA_LOG")" = 1 ] || fail 'watcher retry must not repeat Jira Done'
   pass 'real watcher retains a timed-out reminder poll then publishes once before retirement'
 }
 
 case "${FM_JIRA_TEST_CASE:-all}" in
-  all) jira_help_center_offline_cleanup_regression; jira_cleanup_completed_status_regression; jira_cleanup_record_failure_regression; jira_cleanup_regression; jira_owed_contract_regression; jira_ordering_regression; jira_deadline_regressions; jira_installed_deadlines; jira_publication_write_regression; jira_publication_lock_regression ;;
+  all) jira_help_center_offline_cleanup_regression; jira_cleanup_completed_status_regression; jira_cleanup_record_failure_regression; jira_cleanup_regression; jira_owed_contract_regression; bounded_command_installed_deadlines; jira_publication_write_regression; jira_publication_lock_regression ;;
   contract) jira_owed_contract_regression ;;
   cleanup) jira_cleanup_regression ;;
   completed-cleanup) jira_cleanup_completed_status_regression ;;
   record-cleanup) jira_cleanup_record_failure_regression ;;
   publication-write) jira_publication_write_regression ;;
   publication-lock) jira_publication_lock_regression ;;
-  ordering) jira_ordering_regression ;;
-  deadline) jira_deadline_regressions ;;
-  installed) jira_installed_deadlines ;;
+  installed) bounded_command_installed_deadlines ;;
 esac
 
 [ ! -s "$JIRA_DENIED_LOG" ] || fail "a service CLI escaped the private fake inventory: $(cat "$JIRA_DENIED_LOG")"
