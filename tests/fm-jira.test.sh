@@ -218,6 +218,41 @@ jira_publication_write_regression() {
   pass 'reminder write failure preserves the merged result and retries reminder delivery once'
 }
 
+# fm-jira.sh calls itself with --followups for each follow-up step (record the
+# owed reminder, then publish it). A wrapper in its place records any such step
+# that starts before the poll's merged result is visible, then hands over to the
+# real script, so the follow-ups still publish.
+jira_ordering_regression() {
+  local FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_JIRA_TIMEOUT FM_TEST_GH_STATE FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
+  export FM_HOME="$PR_TMP/order-home" FM_JIRA_TIMEOUT=5 FM_TEST_GH_STATE=MERGED
+  export FM_STATE_OVERRIDE="$FM_HOME/state" FM_DATA_OVERRIDE="$FM_HOME/data"
+  unset FM_WAKE_QUEUE FM_WAKE_QUEUE_LOCK
+  mkdir -p "$FM_HOME/state" "$FM_HOME/data"
+  printf '%s\n' '- thanos [no-mistakes]' > "$FM_HOME/data/projects.md"
+  write_pr_task task-order 'project=/projects/thanos' 'branch=rcs/swvl-9998-order'
+  printf 'pr=%s\n' https://github.com/advisorfirst/thanos/pull/60 >> "$FM_HOME/state/task-order.meta"
+  export JIRA_MERGE_OUTPUT="$PR_TMP/merge-order.out" JIRA_ORDER_LOG="$PR_TMP/merge-order.log"
+  : > "$JIRA_ORDER_LOG"
+  cp "$PR_CODE/bin/fm-jira.sh" "$PR_CODE/bin/fm-jira-real.sh"
+  cat > "$PR_CODE/bin/fm-jira.sh" <<'FAKE'
+#!/usr/bin/env bash
+if [ "${1:-}" = --followups ]; then
+  printf 'followups %s\n' "${3:-publish}" >> "$JIRA_ORDER_LOG"
+  [ "$(cat "$JIRA_MERGE_OUTPUT")" = merged ] || printf 'followups-before-merged\n' >> "$JIRA_ORDER_LOG"
+fi
+exec bash "$(dirname "$0")/fm-jira-real.sh" "$@"
+FAKE
+  poll_pr 60 > "$JIRA_MERGE_OUTPUT"
+  cp "$PR_CODE/bin/fm-jira-real.sh" "$PR_CODE/bin/fm-jira.sh"
+  rm -f "$PR_CODE/bin/fm-jira-real.sh"
+  assert_grep 'followups owe' "$JIRA_ORDER_LOG" 'the merge observation must record the owed reminder'
+  assert_grep 'followups publish' "$JIRA_ORDER_LOG" 'the merge observation must publish the follow-ups'
+  assert_no_grep followups-before-merged "$JIRA_ORDER_LOG" 'merged must be visible before merge follow-up work starts, not merely returned eventually'
+  [ "$(cat "$JIRA_MERGE_OUTPUT")" = merged ] || fail 'merge-first output must remain exactly merged'
+  assert_grep 'MERGE FOLLOW-UPS: https://github.com/advisorfirst/thanos/pull/60' "$FM_HOME/state/.wake-queue" 'the follow-ups must still reach the wake queue'
+  pass 'merge output is visible before merge follow-up work starts'
+}
+
 jira_cleanup_regression() {
   local FM_HOME FM_STATE_OVERRIDE FM_DATA_OVERRIDE FM_CONFIG_OVERRIDE FM_JIRA_TIMEOUT FM_TEST_GH_STATE
   local mode task_url dir tool parent_home retirement_home retirement_id pool_home
@@ -791,8 +826,9 @@ FAKE
 }
 
 case "${FM_JIRA_TEST_CASE:-all}" in
-  all) jira_help_center_offline_cleanup_regression; jira_cleanup_completed_status_regression; jira_cleanup_record_failure_regression; jira_cleanup_regression; jira_owed_contract_regression; bounded_command_installed_deadlines; jira_publication_write_regression; jira_publication_lock_regression ;;
+  all) jira_help_center_offline_cleanup_regression; jira_cleanup_completed_status_regression; jira_cleanup_record_failure_regression; jira_cleanup_regression; jira_owed_contract_regression; jira_ordering_regression; bounded_command_installed_deadlines; jira_publication_write_regression; jira_publication_lock_regression ;;
   contract) jira_owed_contract_regression ;;
+  ordering) jira_ordering_regression ;;
   cleanup) jira_cleanup_regression ;;
   completed-cleanup) jira_cleanup_completed_status_regression ;;
   record-cleanup) jira_cleanup_record_failure_regression ;;

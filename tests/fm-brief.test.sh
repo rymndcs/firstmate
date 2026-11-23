@@ -1007,9 +1007,9 @@ test_absent_branch_keeps_the_default_shape() {
 
 # Swivel Cards moves a Thanos card only from the card key in the PR title or at
 # the start of the branch (or right after a slash), so a Thanos ship brief whose
-# branch carries a key tells the worker that exact key for the PR title. Branches
-# with no key, briefs with no --branch (help-center follow-ups) and other
-# projects get no such line.
+# branch carries a key tells the worker to keep that branch name as written and
+# to put that exact key in the PR title. Branches with no key, briefs with no
+# --branch (help-center follow-ups) and other projects get no such line.
 test_thanos_card_key_reaches_the_pr_title() {
   local home n=0 repo branch expect brief
   home="$TMP_ROOT/card-key-home"
@@ -1026,8 +1026,10 @@ test_thanos_card_key_reaches_the_pr_title() {
     fi
     brief="$home/data/brief-card-$n/brief.md"
     if [ -n "$expect" ]; then
-      assert_grep "   Swivel Cards moves card \`$expect\` from this PR: keep \`$expect\` at the start of the branch and in the PR title in capitals as a whole word (\`$expect: <what the user gets>\`); if the PR opens without it in its title, fix the title with \`gh-axi pr edit\`." "$brief" \
+      assert_grep "   Swivel Cards moves card \`$expect\` from your branch name and PR title: keep the branch name \`$branch\` as written, and put \`$expect\` in the PR title in capitals as a whole word (\`$expect: <what the user gets>\`); if the PR opens without it in its title, fix the title with \`gh-axi pr edit\`." "$brief" \
         "card key row $n: $repo branch $branch did not name $expect for the PR title"
+      assert_no_grep 'at the start of the branch' "$brief" \
+        "card key row $n: branch $branch must be kept as written, not moved to carry the key at its start"
     else
       assert_no_grep 'Swivel Cards' "$brief" "card key row $n: $repo branch ${branch:-none} must not name a card"
     fi
@@ -1048,6 +1050,28 @@ thanos||
 some-proj|rcs/card-12-fix|
 ROWS
   pass "fm-brief.sh: a Thanos branch's card key reaches the PR title instruction, and nothing else gets one"
+}
+
+# The card line follows the delivery mode: a direct-PR task opens its own PR, so
+# it gets the PR title instruction, while a local-only task never opens a PR and
+# is only told to keep its keyed branch name.
+test_thanos_card_key_line_follows_the_delivery_mode() {
+  local home brief
+  home="$TMP_ROOT/card-key-mode-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-card-direct thanos --mode direct-PR --checks targeted --branch rcs/card-6-y >/dev/null 2>&1 \
+    || fail "card key direct-PR scaffold exited non-zero"
+  assert_grep "   Swivel Cards moves card \`CARD-6\` from your branch name and PR title: keep the branch name \`rcs/card-6-y\` as written, and put \`CARD-6\` in the PR title" \
+    "$home/data/brief-card-direct/brief.md" "a direct-PR Thanos brief must name the card key for its PR title"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-card-local thanos --mode local-only --checks targeted --branch card-5-x >/dev/null 2>&1 \
+    || fail "card key local-only scaffold exited non-zero"
+  brief="$home/data/brief-card-local/brief.md"
+  assert_grep "   Your branch name \`card-5-x\` carries Swivel Cards card \`CARD-5\`: keep the branch name as written." "$brief" \
+    "a local-only Thanos brief must still tell the worker to keep its keyed branch name"
+  assert_no_grep 'this PR' "$brief" "a local-only Thanos brief must not mention this PR"
+  assert_no_grep 'PR title' "$brief" "a local-only Thanos brief must not ask for a PR title"
+  assert_no_grep 'gh-axi pr edit' "$brief" "a local-only Thanos brief must not ask for a PR edit"
+  pass "fm-brief.sh: the Thanos card line is worded for the delivery mode in use"
 }
 
 # An unusable branch name must stop the scaffold, not reach the worker's
@@ -1511,6 +1535,7 @@ test_ship_mode_is_explicit_not_registry
 test_supplied_branch_replaces_the_default_everywhere
 test_absent_branch_keeps_the_default_shape
 test_thanos_card_key_reaches_the_pr_title
+test_thanos_card_key_line_follows_the_delivery_mode
 test_branch_is_validated_and_refused_where_it_does_not_apply
 test_delivery_flags_are_refused_where_they_do_not_apply
 test_faster_paths_use_configured_authority_without_stacked_review
