@@ -629,6 +629,12 @@ if (scenario.startsWith('arm-result-')) {
     assert.equal(typeof terminalInput, 'function', 'cancelled or thrown switch must restore the native input listener');
     if(switchMode === 'partial') assert.match(turns[0].message.content,/bin\/fm-session-start.sh/);
     assert.equal(switches,0);
+    const stale = await call({action:'prepare'});
+    assert.equal(stale.isError, true, `${scenario}: the arm consumed by the reset command must not make reset eligible again`);
+    assert.match(refusalText(stale), switchMode === 'partial' ? /belongs to another session/ : /not a native async job started in this session/,
+      `${scenario}: refusal must ask for a fresh arm`);
+    await arm();
+    assert.equal((await call({action:'prepare'})).isError, undefined, `${scenario}: a fresh confirmed arm must make reset eligible again`);
   }
 }
 for (const { message } of messages.filter(x => /^firstmate-reset-(start|recovery)$/.test(x.message.customType))) {
