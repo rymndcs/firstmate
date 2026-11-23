@@ -154,7 +154,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     return effectiveBudgetTokens && totalTokensAfter !== undefined ? { effectiveBudgetTokens, totalTokensAfter } : undefined;
   };
   const mainRefusal = (ctx: ExtensionContext) =>
-    main(ctx) ? undefined : "this is not the main interactive omp session; remain in normal mode";
+    main(ctx) ? undefined : "this tool works only in the main interactive omp session";
   const readinessRefusal = (ctx: ExtensionContext) => {
     const notMain = mainRefusal(ctx);
     if (notMain) return notMain;
@@ -165,7 +165,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     const jobs = ctx.getAsyncJobSnapshot();
     if (jobs === null) return undefined;
     const others = jobs.running.filter(job => !armedJobs.has(job.id)).map(job => job.id);
-    if (others.length) return `async job ${others.join(", ")} is still running and is not this session's confirmed watcher arm; let it finish first`;
+    if (others.length) return `async job ${others.join(", ")} is still running and is not this session's confirmed watcher arm; leave it to the supervision protocol and prepare again at a later transition`;
     if (jobs.delivery.queued !== 0 || jobs.delivery.delivering || jobs.delivery.pendingJobIds.length !== 0) {
       return "an async job result is still waiting for delivery; handle it first";
     }
@@ -181,9 +181,12 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     }
     if (sourceSession !== sessionId(ctx)) return "the latest watcher arm belongs to another session; arm supervision in this session first";
     const job = asyncCalls.get(call);
-    if (job === undefined) return "the latest watcher arm was not a native async job started in this session; arm supervision as a plain async job first";
+    if (job === undefined) return "the latest watcher arm was not a native async job started in this session; arm supervision as a plain async job, end the turn, and prepare again at the next transition";
+    if (status === "watcher: pending confirmation") {
+      return "the latest watcher arm is still pending confirmation: its started or attached status has not been recorded yet; keep this session and prepare again at the next transition";
+    }
     if (!/^watcher: (started|attached) pid=[0-9]+ /.test(status)) {
-      return `the latest watcher arm has not confirmed a live cycle (${status || "no status"}); fix supervision and re-arm first`;
+      return `the latest watcher arm reported ${status || "no status"} instead of started or attached; fix supervision and re-arm first`;
     }
     armedJobs.add(job);
     return undefined;

@@ -165,11 +165,12 @@ if (scenario.startsWith('arm-result-')) {
   assert.ok(options, `unknown arm result case ${kind}`);
   const named = {
     session: /latest watcher arm belongs to another session/,
-    call: /not a native async job started in this session/, completed: /not a native async job started in this session/,
-    error: /not a native async job started in this session/,
+    call: /not a native async job started in this session; arm supervision as a plain async job, end the turn, and prepare again at the next transition/,
+    completed: /not a native async job started in this session; arm supervision as a plain async job, end the turn, and prepare again at the next transition/,
+    error: /not a native async job started in this session; arm supervision as a plain async job, end the turn, and prepare again at the next transition/,
     missing: /no watcher arm result exists/,
-    pending: /has not confirmed a live cycle \(watcher: pending confirmation\)/,
-    failed: /has not confirmed a live cycle \(watcher: FAILED - no live watcher with a fresh beacon\)/,
+    pending: /latest watcher arm is still pending confirmation: its started or attached status has not been recorded yet; keep this session and prepare again at the next transition/,
+    failed: /latest watcher arm reported watcher: FAILED - no live watcher with a fresh beacon instead of started or attached; fix supervision and re-arm first/,
   }[kind];
   await arm(options);
   if (kind === 'delivered') jobs = {running:[], recent:[{id:'watcher',status:'completed',command:'exec bin/fm-watch-arm.sh'}], delivery:{queued:0,delivering:false,pendingJobIds:[]}};
@@ -186,16 +187,17 @@ if (scenario.startsWith('arm-result-')) {
     assert.equal(prepared.isError, true, `${scenario}: only this session's confirmed native arm may make reset eligible`);
     assert.equal(prepared.details.nonce, undefined, 'refused preparation must not return a nonce');
     assert.match(refusalText(prepared), named, `${scenario}: refusal must name its unmet condition`);
+    if (kind === 'pending') assert.doesNotMatch(refusalText(prepared), /re-arm/, 'a pending arm must not be told to re-arm');
   }
 } else if (scenario.startsWith('refusal-')) {
   const kind = scenario.slice('refusal-'.length);
   await arm({keepRunning:true});
   const named = {
-    sub: /not the main interactive omp session/,
+    sub: /this tool works only in the main interactive omp session/,
     away: /away mode is active/,
     queued: /input is queued/,
     draft: /composer holds a draft/,
-    'foreign-job': /async job unrelated-job is still running/,
+    'foreign-job': /async job unrelated-job is still running and is not this session's confirmed watcher arm; leave it to the supervision protocol and prepare again at a later transition/,
     delivery: /async job result is still waiting for delivery/,
   }[kind];
   assert.ok(named, `unknown refusal case ${kind}`);
