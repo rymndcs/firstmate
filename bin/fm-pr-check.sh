@@ -238,5 +238,3 @@ print_registry_entry
 # stderr when a configured update fails, and can never unmake the poll this
 # run already armed.
 "$SCRIPT_DIR/fm-linear.sh" transition "$ID" in-review || true
-
-"$SCRIPT_DIR/fm-jira.sh" transition "$ID" in-review || true

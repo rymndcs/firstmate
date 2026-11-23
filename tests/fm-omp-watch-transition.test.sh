@@ -815,7 +815,7 @@ if refused:
     result=call([drain]);assert result.returncode==0 and 'retained-r7-input' in result.stdout and 'after-r7-release' in result.stdout,'subsequent public drain must deliver retained and new wakes'
 PYROUND7
       ;;
-    caller-pid|claim-rollback|claim-foreign-pid|candidate-foreign-pid|selected-state|selected-state-link|selected-state-identity|bounded-append|bounded-non-omp|bounded-keys|legacy-release|legacy-dead|bounded-watch|bounded-procevent|bounded-procevent-start|bounded-jira)
+    caller-pid|claim-rollback|claim-foreign-pid|candidate-foreign-pid|selected-state|selected-state-link|selected-state-identity|bounded-append|bounded-non-omp|bounded-keys|legacy-release|legacy-dead|bounded-watch|bounded-procevent|bounded-procevent-start)
       arm
       drain
       python3 - "$LAB" "$ROOT" <<'PYROUND6'
@@ -975,7 +975,6 @@ exec /bin/sleep "$@"
     else:lock.write_text('unknown permanent obstruction\n')
     original_link=lock.readlink() if lock.is_symlink() else None
     if case=='bounded-keys':command=['bash','-ec','. "$1"; if fm_wake_queued_keys check; then exit 0; else exit $?; fi','_',lib]
-    elif case=='bounded-jira':command=[str(root/'bin/fm-jira.sh'),'--manual','fixture','r6','bounded refusal']
     elif case in ('bounded-procevent','bounded-procevent-start'):
         inbox=home/'state/procevent-inbox';inbox.mkdir()
         if case=='bounded-procevent':
@@ -1042,7 +1041,6 @@ exec /bin/sleep "$@"
             assert call([str(root/'bin/fm-procevent.sh'),'reconcile']).returncode==0,'captured result must remain eligible for publication'
             key='procevent:round6:1' if case=='bounded-procevent-start' else 'procevent:fixture:1'
             assert key in queue.read_text(),'retried process event must reach the wake queue'
-        elif case=='bounded-jira':assert call(command).returncode==0,'manual wake retry must remain available'
         assert call([drain]).returncode==0,'subsequent wake must remain deliverable'
 PYROUND6
       ;;
@@ -2640,7 +2638,7 @@ if [ -z "${FM_TRANSITION_CASE:-}" ]; then
 fi
 
 if [ -z "${FM_TRANSITION_CASE:-}" ] && [ -z "${FM_TRANSITION_LIFECYCLE_CASE:-}" ]; then
-  for scenario in claim-work live-recheck claim-publish-pid claim-publish-stamp claim-publish-child claim-publish-link churn-collision churn-refused-read churn-link-error contention-forty live-primary live-secondary live-death live-unknown live-legacy live-spent live-arm non-omp-primary-drain non-omp-primary-append non-omp-primary-watch non-omp-steal-drain non-omp-steal-append non-omp-steal-watch non-omp-deep-drain non-omp-deep-append non-omp-deep-watch non-omp-owner generic-lock steal-recheck-unstamped steal-absent-drain steal-absent-append steal-dead-drain steal-dead-append steal-primary steal-unknown steal-unstamped steal-live steal-budget steal-cross-drain steal-cross-append steal-replacement-budget steal-unknown-pipe caller-pid claim-rollback claim-foreign-pid candidate-foreign-pid selected-state selected-state-link selected-state-identity bounded-append bounded-non-omp bounded-keys legacy-release legacy-dead bounded-watch bounded-procevent bounded-procevent-start bounded-jira non-omp-stamped-owner nested-queue-lock foreign-lock-owner sequence-pipe queue-read-error log-read-error publication-temp-link publication-temp-replaced lock-other-lock queue-hardlink queue-outside-home queue-parent-link queue-directory queue-owner queue-snapshot-swap queue-content-change queue-inode-change lock-wrong-identity lock-owner-link lock-child-link lock-wrong-home lock-wrong-path arm-result-link unrelated-lock-target unrelated-queue-target missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
+  for scenario in claim-work live-recheck claim-publish-pid claim-publish-stamp claim-publish-child claim-publish-link churn-collision churn-refused-read churn-link-error contention-forty live-primary live-secondary live-death live-unknown live-legacy live-spent live-arm non-omp-primary-drain non-omp-primary-append non-omp-primary-watch non-omp-steal-drain non-omp-steal-append non-omp-steal-watch non-omp-deep-drain non-omp-deep-append non-omp-deep-watch non-omp-owner generic-lock steal-recheck-unstamped steal-absent-drain steal-absent-append steal-dead-drain steal-dead-append steal-primary steal-unknown steal-unstamped steal-live steal-budget steal-cross-drain steal-cross-append steal-replacement-budget steal-unknown-pipe caller-pid claim-rollback claim-foreign-pid candidate-foreign-pid selected-state selected-state-link selected-state-identity bounded-append bounded-non-omp bounded-keys legacy-release legacy-dead bounded-watch bounded-procevent bounded-procevent-start non-omp-stamped-owner nested-queue-lock foreign-lock-owner sequence-pipe queue-read-error log-read-error publication-temp-link publication-temp-replaced lock-other-lock queue-hardlink queue-outside-home queue-parent-link queue-directory queue-owner queue-snapshot-swap queue-content-change queue-inode-change lock-wrong-identity lock-owner-link lock-child-link lock-wrong-home lock-wrong-path arm-result-link unrelated-lock-target unrelated-queue-target missing-current-record missing-before-drain fresh-empty fresh-queued replacement-empty replacement-queued dead-lock-owner startup-same-call startup-cycle startup-unknown startup-failed-publication startup-missing-identity startup-invalid-record startup-contradiction missing-malformed-observation missing-observation-symlink dead-lock-obstruction unknown-lock-owner replacement-replay startup-invalid-decision startup-invalid-recovery startup-invalid-pid startup-observation-changed startup-legacy startup-blank-session startup-blank-call dead-lock-steal-pipe startup-dangling-canonical startup-contradiction-arm startup-corrupt-first; do
     FM_TRANSITION_LIFECYCLE_CASE="$scenario" bash "$0"
   done
 fi

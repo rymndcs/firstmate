@@ -81,7 +81,12 @@
 # recorded name alone, so a task scaffolded without it ships with its issue never
 # moving. This script still looks nothing up; the name is one firstmate already
 # holds at intake, and deriving it from an identifier in hand is fine while
-# fetching one is not. --branch is refused on scout and secondmate scaffolds: a
+# fetching one is not. Swivel Cards moves a Thanos card the same way, from a
+# card key (CARD-n, or an old Jira key such as SWVL-n) at the start of the branch
+# or right after a slash; a Thanos ship brief whose branch carries one tells the
+# worker to keep that branch name as written and, unless the task is local-only
+# and opens no PR, to put that key in the PR title, the other place Cards reads it.
+# --branch is refused on scout and secondmate scaffolds: a
 # scout works in a scratch worktree it never branches, and a charter has no task
 # branch.
 # There is no --yolo flag here. The worker never owns approval decisions, so yolo is
@@ -464,6 +469,16 @@ fi
 
 REPO=${POS[1]}
 
+CARD_KEY=
+if [ "${REPO##*/}" = thanos ]; then
+  CARD_KEY=$(printf '%s\n' "$BRANCH" | awk '
+    match($0, /(^|\/)(CARD|SWVL|SFB|PRD|RLSE|card|swvl|sfb|prd|rlse)-[0-9]+([^0-9A-Za-z]|$)/) {
+      key = substr($0, RSTART, RLENGTH)
+      sub(/^\//, "", key); sub(/[^0-9]$/, "", key)
+      print toupper(key)
+    }')
+fi
+
 if [ "$HERDR_LAB" -eq 1 ]; then
 HERDR_LAB_HELPER=$(shell_quote "$FM_ROOT/bin/fm-herdr-lab.sh")
 # shellcheck disable=SC2016  # single quotes are deliberate: these lines are literal brief text whose backtick-wrapped $(...) and "$HERDR_LAB_SESSION" snippets must reach the reading agent verbatim, not expand at scaffold time; only the '"$VAR"' break-outs interpolate.
@@ -615,6 +630,16 @@ That \`done:\` line does not apply while an accepted clarification or supersessi
 EOF
     ;;
 esac
+
+if [ -n "$CARD_KEY" ]; then
+  if [ "$MODE" = local-only ]; then
+    RULE1="$RULE1
+   Your branch name \`$BRANCH\` carries Swivel Cards card \`$CARD_KEY\`: keep the branch name as written."
+  else
+    RULE1="$RULE1
+   Swivel Cards moves card \`$CARD_KEY\` from your branch name and PR title: keep the branch name \`$BRANCH\` as written, and put \`$CARD_KEY\` in the PR title in capitals as a whole word (\`$CARD_KEY: <what the user gets>\`); if the PR opens without it in its title, fix the title with \`gh-axi pr edit\`."
+  fi
+fi
 
 # The check contract is generated in full from --checks, never written by hand.
 # It always names BOTH places a task's tests run: the project's local CI runner

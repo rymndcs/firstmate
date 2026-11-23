@@ -137,11 +137,12 @@ fi
 # task with no Linear identifier, nudges on stderr for a resolvable issue with
 # no API key configured, reports loudly on stderr when a configured update
 # fails, and can never unmake a merge that already landed. fm-pr-check.sh above
-# owns the In Review transition.
+# owns the In Review transition. bin/fm-jira.sh records a Thanos merge's
+# follow-up reminder before the Done move and publishes it after.
 if [ "$MERGE_STATUS" -eq 0 ] && ! caller_defers_merge "$@"; then
   if "$SCRIPT_DIR/fm-jira.sh" owe "$ID"; then
     "$SCRIPT_DIR/fm-linear.sh" transition "$ID" 'done' || true
-    "$SCRIPT_DIR/fm-jira.sh" transition "$ID" 'done' || true
+    "$SCRIPT_DIR/fm-jira.sh" publish "$ID" || true
   fi
 fi
 exit "$MERGE_STATUS"
