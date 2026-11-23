@@ -172,24 +172,31 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
     return undefined;
   };
   const available = (ctx: ExtensionContext) => readinessRefusal(ctx) === undefined;
-  const armRefusal = (ctx: ExtensionContext) => {
+  const latestArm = (ctx: ExtensionContext): { job: string } | { refusal: string } => {
     let sourceSession: string, call: string, status: string;
     try {
       [sourceSession, call, status] = readFileSync(`${state}/.omp-watch-arm-result`, "utf8").split("\n");
     } catch {
-      return "no watcher arm result exists; finish startup and arm supervision first";
+      return { refusal: "no watcher arm result exists; finish startup and arm supervision first" };
     }
-    if (sourceSession !== sessionId(ctx)) return "the latest watcher arm belongs to another session; arm supervision in this session first";
+    if (sourceSession !== sessionId(ctx)) return { refusal: "the latest watcher arm belongs to another session; arm supervision in this session first" };
     const job = asyncCalls.get(call);
-    if (job === undefined) return "the latest watcher arm was not a native async job started in this session; arm supervision as a plain async job, end the turn, and prepare again at the next transition";
+    if (job === undefined) return { refusal: "the latest watcher arm was not a native async job started in this session; arm supervision as a plain async job, end the turn, and prepare again at the next transition" };
     if (status === "watcher: pending confirmation") {
-      return "the latest watcher arm is still pending confirmation: its started or attached status has not been recorded yet; keep this session and prepare again at the next transition";
+      if (!ctx.getAsyncJobSnapshot()?.running.some(running => running.id === job)) {
+        return { refusal: "the latest watcher arm ended without recording started or attached; fix supervision and re-arm first" };
+      }
+      return { refusal: "the latest watcher arm is still pending confirmation: its started or attached status has not been recorded yet; keep this session and prepare again at the next transition" };
     }
     if (!/^watcher: (started|attached) pid=[0-9]+ /.test(status)) {
-      return `the latest watcher arm reported ${status || "no status"} instead of started or attached; fix supervision and re-arm first`;
+      return { refusal: `the latest watcher arm reported ${status || "no status"} instead of started or attached; fix supervision and re-arm first` };
     }
-    armedJobs.add(job);
-    return undefined;
+    return { job };
+  };
+  const recordLatestArm = (ctx: ExtensionContext) => {
+    const arm = latestArm(ctx);
+    if ("job" in arm) armedJobs.add(arm.job);
+    return "refusal" in arm ? arm.refusal : undefined;
   };
   const valid = (ctx: ExtensionContext) => request?.session === sessionId(ctx) && fresh() && available(ctx);
   const operationalInput = (kind: "session-start" | "watcher", content: string) =>
@@ -309,7 +316,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
           return result("Reset unavailable: context usage must be above 40%. At 40% or below, or when usage is unavailable, do a plain re-arm instead; keep this session without stowing or clearing.", true);
         }
       }
-      const refusal = mainRefusal(ctx) ?? armRefusal(ctx) ?? readinessRefusal(ctx);
+      const refusal = mainRefusal(ctx) ?? recordLatestArm(ctx) ?? readinessRefusal(ctx);
       if (refusal) {
         request = undefined;
         return result(`Reset unavailable: ${refusal}. Continue supervision in this session.`, true);
@@ -355,6 +362,7 @@ function registerWatchReset(pi: ExtensionAPI, root: string, home: string, state:
   });
   pi.on("tool_call", (event, ctx) => {
     if (!main(ctx) || event.toolName === "firstmate_watch_reset") return;
+    if (event.toolName === "bash") recordLatestArm(ctx);
     if (request?.readyAt !== undefined) request = undefined;
   });
   pi.on("tool_result", (event, ctx) => {

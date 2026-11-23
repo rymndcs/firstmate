@@ -158,7 +158,8 @@ if (scenario.startsWith('arm-result-')) {
   const options = {
     valid: {}, attached: {status:'watcher: attached pid=42 (beacon 0s)'}, running: {keepRunning:true}, delivered: {keepRunning:true},
     session: {receiptSession:'previous-session'}, call: {receiptCall:'another-call'},
-    missing: {receipt:false}, pending: {status:'watcher: pending confirmation'},
+    missing: {receipt:false}, pending: {status:'watcher: pending confirmation', keepRunning:true},
+    ended: {status:'watcher: pending confirmation', keepRunning:true},
     failed: {status:'watcher: FAILED - no live watcher with a fresh beacon'},
     completed: {nativeState:'completed'}, error: {nativeError:true},
   }[kind];
@@ -169,10 +170,12 @@ if (scenario.startsWith('arm-result-')) {
     completed: /not a native async job started in this session; arm supervision as a plain async job, end the turn, and prepare again at the next transition/,
     error: /not a native async job started in this session; arm supervision as a plain async job, end the turn, and prepare again at the next transition/,
     missing: /no watcher arm result exists/,
+    ended: /latest watcher arm ended without recording started or attached; fix supervision and re-arm first/,
     pending: /latest watcher arm is still pending confirmation: its started or attached status has not been recorded yet; keep this session and prepare again at the next transition/,
     failed: /latest watcher arm reported watcher: FAILED - no live watcher with a fresh beacon instead of started or attached; fix supervision and re-arm first/,
   }[kind];
   await arm(options);
+  if (kind === 'ended') jobs = {running:[], recent:[{id:'watcher',status:'completed',command:'exec bin/fm-watch-arm.sh'}], delivery:{queued:0,delivering:false,pendingJobIds:[]}};
   if (kind === 'delivered') jobs = {running:[], recent:[{id:'watcher',status:'completed',command:'exec bin/fm-watch-arm.sh'}], delivery:{queued:0,delivering:false,pendingJobIds:[]}};
   const prepared = await call({action:'prepare'});
   if (!named) {
@@ -212,6 +215,26 @@ if (scenario.startsWith('arm-result-')) {
   assert.equal(prepared.isError, true, `${scenario}: unmet readiness must refuse preparation`);
   assert.match(refusalText(prepared), named, `${scenario}: refusal must name its unmet condition`);
   if (kind === 'away') unlinkSync(`${home}/state/.afk`);
+} else if (scenario === 'two-running-arms' || scenario === 'two-running-arms-unconfirmed') {
+  const command = 'exec bin/fm-watch-arm.sh';
+  const delivery = {queued:0,delivering:false,pendingJobIds:[]};
+  const firstStatus = scenario === 'two-running-arms' ? 'watcher: started pid=42 (beacon fresh)' : 'watcher: pending confirmation';
+  jobs = {running:[{id:'job-a',type:'bash',command}],recent:[],delivery};
+  await emit('tool_call',{toolName:'bash',toolCallId:'call-a',input:{command,async:true,timeout:0}});
+  await emit('tool_result',{toolName:'bash',toolCallId:'call-a',input:{command,async:true,timeout:0},details:{async:{state:'running',jobId:'job-a',type:'bash'}},content:[],isError:false});
+  writeFileSync(`${home}/state/.omp-watch-arm-result`, `${session}\ncall-a\n${firstStatus}\n`);
+  await emit('input',{text:'an answered message'});
+  await emit('tool_call',{toolName:'bash',toolCallId:'call-b',input:{command,async:true,timeout:0}});
+  jobs = {running:[{id:'job-a',type:'bash',command},{id:'job-b',type:'bash',command}],recent:[],delivery};
+  await emit('tool_result',{toolName:'bash',toolCallId:'call-b',input:{command,async:true,timeout:0},details:{async:{state:'running',jobId:'job-b',type:'bash'}},content:[],isError:false});
+  writeFileSync(`${home}/state/.omp-watch-arm-result`, `${session}\ncall-b\nwatcher: attached pid=42 (beacon 0s)\n`);
+  const prepared = await call({action:'prepare'});
+  if (scenario === 'two-running-arms') {
+    assert.equal(prepared.isError, undefined, `an earlier confirmed arm still running beside an attached re-arm must not block reset; ${refusalText(prepared)}`);
+  } else {
+    assert.equal(prepared.isError, true, 'an earlier arm that never confirmed must still block reset');
+    assert.match(refusalText(prepared), /async job job-a is still running/);
+  }
 } else if (scenario === 'named-arm' || scenario === 'unnamed-arm') {
   for (const command of ['exec bin/fm-watch-arm.sh', '[ -f config/x-mode.env ] && . config/x-mode.env; exec bin/fm-watch-arm.sh', 'exec bin/fm-"watch"-arm.sh']) {
     const named = scenario === 'named-arm';
