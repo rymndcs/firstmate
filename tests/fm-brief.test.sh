@@ -1008,8 +1008,9 @@ test_absent_branch_keeps_the_default_shape() {
 # Swivel Cards moves a Thanos card only from the card key in the PR title or at
 # the start of the branch (or right after a slash), so a Thanos ship brief whose
 # branch carries a key tells the worker to keep that branch name as written and
-# to put that exact key in the PR title. Branches with no key, briefs with no
-# --branch (help-center follow-ups) and other projects get no such line.
+# to put that exact key in the PR title. The default fm/<task-id> branch counts
+# too, since Cards reads a key right after a slash. Branches with no key (such
+# as help-center-pr-<N> follow-ups) and other projects get no such line.
 test_thanos_card_key_reaches_the_pr_title() {
   local home n=0 repo branch expect brief
   home="$TMP_ROOT/card-key-home"
