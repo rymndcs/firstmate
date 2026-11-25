@@ -102,8 +102,8 @@
 # The FM_HOME directory name and absolute home/code-root paths name Firstmate itself,
 # including when its own posture is registered. The firstmate alias also names it
 # unless that name belongs to a registered project or an existing project clone.
-# Each resolved clone supplies CLAUDE.local.md; its directory name, with terminal
-# slashes and dot components removed lexically even for missing clones, selects
+# Each resolved clone supplies CLAUDE.local.md; its directory name, with trailing
+# slashes and single-dot components removed lexically even for missing clones, selects
 # data/<name>-rules.md under FM_DATA_OVERRIDE or FM_HOME/data.
 # Project-less charters read the home's rules; other charters read every listed
 # project's rules. Each existing file is read before writing a brief, then included
