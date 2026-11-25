@@ -1315,6 +1315,58 @@ test_ship_review_round_boundaries() {
   pass "fm-brief.sh: every ship path stops for a decision at open review boundaries"
 }
 
+test_home_project_rules_in_briefs() {
+  local home data projects availability kind form id project brief
+  local args=()
+  home="$TMP_ROOT/home-project-rules"
+  data="$TMP_ROOT/home-project-rules-data"
+  projects="$TMP_ROOT/home-project-rules-clones"
+  mkdir -p "$home/data" "$data" "$projects/sample" "$projects/other"
+  printf '%s\n' '- sample [no-mistakes] - sample project' > "$data/projects.md"
+  printf '%s\n' 'HOME_DATA_DECOY' > "$home/data/sample-rules.md"
+  printf '%s\n' 'OTHER_PROJECT_DECOY' > "$data/other-rules.md"
+  printf '%s\n' 'CLONE_RULE: preserve inputs.' > "$projects/sample/CLAUDE.local.md"
+  printf '%s\n' 'HOME_PROJECT_RULE: keep standing decisions.' 'SECOND_LINE: RAC-123 is historical context.' > "$data/sample-rules.md"
+  for availability in clone-and-rules rules-absent clone-absent; do
+    case "$availability" in
+      rules-absent) rm -f "${projects:?}/sample/CLAUDE.local.md" ;;
+      clone-absent) rmdir "${projects:?}/sample" ;;
+    esac
+    for kind in no-mistakes direct-PR local-only scout secondmate; do
+      for form in bare prefixed absolute absolute-dot absolute-double-slash absolute-combined; do
+        id="home-rules-$availability-$kind-$form"
+        case "$form" in
+          bare) project=sample ;;
+          prefixed) project=projects/sample ;;
+          absolute) project="$projects/sample/" ;;
+          absolute-dot) project="$projects/sample/." ;;
+          absolute-double-slash) project="$projects/sample//" ;;
+          absolute-combined) project="$projects/sample//././/" ;;
+        esac
+        case "$kind" in
+          scout) args=("$project" --scout) ;;
+          secondmate) args=(--secondmate "$project") ;;
+          *) args=("$project" --mode "$kind" --checks targeted) ;;
+        esac
+        FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" \
+          "$ROOT/bin/fm-brief.sh" "$id" "${args[@]}" >/dev/null 2>&1 || fail "$availability/$kind/$form scaffold failed"
+        brief="$data/$id/brief.md"
+        assert_grep "source: \`$data/sample-rules.md\`" "$brief" "$availability/$kind/$form omitted the home-local rules path"
+        assert_contains "$(cat "$brief")" "$(cat "$data/sample-rules.md")" "$availability/$kind/$form omitted full home-local rules"
+        if [ "$availability" = clone-and-rules ]; then
+          assert_grep 'CLONE_RULE: preserve inputs.' "$brief" "$kind/$form lost clone-local rules"
+        else
+          assert_grep 'ABSENT:' "$brief" "$availability/$kind/$form lost explicit absence"
+          assert_grep '/CLAUDE.local.md (no project-local personal rules).' "$brief" "$availability/$kind/$form lost clone-rule absence"
+        fi
+        assert_no_grep 'HOME_DATA_DECOY' "$brief" "$kind/$form ignored the data override"
+        assert_no_grep 'OTHER_PROJECT_DECOY' "$brief" "$kind/$form included another project's rules"
+      done
+    done
+  done
+  pass 'home-local rules follow equivalent project paths even when clone rules or the clone are missing'
+}
+
 test_local_rules_in_every_brief() {
   local fixture_home kind id brief rules
   fixture_home="$TMP_ROOT/local rules home"
@@ -1351,44 +1403,54 @@ test_local_rules_in_every_brief() {
 }
 
 test_local_rules_absent_and_unreadable_briefs() {
-  local fixture_home out rc kind shape brief
+  local fixture_home out rc kind shape brief source rules
   fixture_home="$TMP_ROOT/local-rules-errors"
   mkdir -p "$fixture_home/data" "$fixture_home/projects/sample"
   printf '%s\n' '- sample [no-mistakes] - fixture project' > "$fixture_home/data/projects.md"
   FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" absent-rules sample --mode local-only --checks targeted >/dev/null 2>&1
   brief="$fixture_home/data/absent-rules/brief.md"
   assert_grep "ABSENT: $fixture_home/projects/sample/CLAUDE.local.md" "$brief" 'missing rules silently dropped'
-  for shape in directory dangling permission fifo; do
-    case "$shape" in
-      directory) mkdir "$fixture_home/projects/sample/CLAUDE.local.md" ;;
-      dangling) ln -s "$fixture_home/missing-rules" "$fixture_home/projects/sample/CLAUDE.local.md" ;;
-      fifo) mkfifo "$fixture_home/projects/sample/CLAUDE.local.md" ;;
-      permission)
-        printf 'PRIVATE_RULE\n' > "$fixture_home/projects/sample/CLAUDE.local.md"
-        chmod 000 "$fixture_home/projects/sample/CLAUDE.local.md"
-        [ ! -r "$fixture_home/projects/sample/CLAUDE.local.md" ] || fail 'unreadable fixture is readable'
-        ;;
+  assert_grep "ABSENT: $fixture_home/data/sample-rules.md" "$brief" 'missing home-local rules silently dropped'
+  for source in clone home; do
+    case "$source" in
+      clone) rules="$fixture_home/projects/sample/CLAUDE.local.md" ;;
+      home) rules="$fixture_home/data/sample-rules.md" ;;
     esac
-    for kind in ship scout secondmate; do
-      rc=0
-      [ "$shape" != fifo ] || fm_fifo_feed "$fixture_home/projects/sample/CLAUDE.local.md" 'FIFO_RULE'
-      case "$kind" in
-        ship) out=$(FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "bad-$shape-$kind" sample --mode local-only --checks targeted 2>&1) || rc=$? ;;
-        scout) out=$(FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "bad-$shape-$kind" sample --scout 2>&1) || rc=$? ;;
-        secondmate) out=$(FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "bad-$shape-$kind" --secondmate sample 2>&1) || rc=$? ;;
+    for shape in directory dangling permission fifo; do
+      case "$shape" in
+        directory) mkdir "$rules" ;;
+        dangling) ln -s "$fixture_home/missing-rules" "$rules" ;;
+        fifo) mkfifo "$rules" ;;
+        permission)
+          printf 'PRIVATE_RULE\n' > "$rules"
+          chmod 000 "$rules"
+          [ ! -r "$rules" ] || fail 'unreadable fixture is readable'
+          ;;
       esac
-      [ "$shape" != fifo ] || fm_fifo_release "$fixture_home/projects/sample/CLAUDE.local.md"
-      [ "$rc" -ne 0 ] || fail "$kind accepted $shape local rules"
-      assert_contains "$out" 'unreadable' "$kind did not explain refusal"
-      assert_contains "$out" "$fixture_home/projects/sample/CLAUDE.local.md" "$kind omitted unreadable path"
-      assert_absent "$fixture_home/data/bad-$shape-$kind/brief.md" "$kind left a launchable brief after refusal"
+      for kind in ship scout secondmate; do
+        rc=0
+        [ "$shape" != fifo ] || fm_fifo_feed "$rules" 'FIFO_RULE'
+        case "$kind" in
+          ship) out=$(FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "bad-$source-$shape-$kind" sample --mode local-only --checks targeted 2>&1) || rc=$? ;;
+          scout) out=$(FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "bad-$source-$shape-$kind" sample --scout 2>&1) || rc=$? ;;
+          secondmate) out=$(FM_HOME="$fixture_home" "$ROOT/bin/fm-brief.sh" "bad-$source-$shape-$kind" --secondmate sample 2>&1) || rc=$? ;;
+        esac
+        [ "$shape" != fifo ] || fm_fifo_release "$rules"
+        [ "$rc" -ne 0 ] || fail "$kind accepted $shape local rules"
+        assert_contains "$out" 'unreadable' "$kind did not explain refusal"
+        assert_contains "$out" "$rules" "$kind omitted unreadable path"
+        assert_absent "$fixture_home/data/bad-$source-$shape-$kind/brief.md" "$kind left a launchable brief after refusal"
+      done
+      if [ "$shape" = directory ]; then
+        rmdir "$rules"
+      else
+        chmod 600 "$rules" 2>/dev/null || true
+        case "$source" in
+          clone) rm -f "${fixture_home:?}/projects/sample/CLAUDE.local.md" ;;
+          home) rm -f "${fixture_home:?}/data/sample-rules.md" ;;
+        esac
+      fi
     done
-    if [ "$shape" = directory ]; then
-      rmdir "$fixture_home/projects/sample/CLAUDE.local.md"
-    else
-      chmod 600 "$fixture_home/projects/sample/CLAUDE.local.md" 2>/dev/null || true
-      rm -f "${fixture_home:?}/projects/sample/CLAUDE.local.md"
-    fi
   done
   pass 'missing brief rules are explicit and unreadable rules stop every scaffold'
 }
@@ -1422,7 +1484,7 @@ test_local_rules_project_path_forms() {
     text=$(cat "$rules")
     assert_grep "source: \`$rules\`" "$brief" "$form brief named the wrong local-rules source"
     assert_grep "$text" "$brief" "$form brief omitted its local rules"
-    assert_no_grep 'ABSENT:' "$brief" "$form brief reported existing rules as absent"
+    assert_no_grep "ABSENT: $rules" "$brief" "$form brief reported existing rules as absent"
   done
   assert_no_grep 'CODE_ROOT_RULE' "$fixture_home/data/path-form-code-root/brief.md" \
     'code-root alias read the code root instead of the active home'
@@ -1449,7 +1511,7 @@ test_local_rules_follow_projects_override() {
     assert_grep "source: \`$rules\`" "$brief" "$form brief ignored FM_PROJECTS_OVERRIDE"
     assert_grep 'OVERRIDE_LOCATION_RULE:' "$brief" "$form brief omitted the configured clone's rules"
     assert_no_grep 'DEFAULT_LOCATION_RULE' "$brief" "$form brief read the default projects dir under an override"
-    assert_no_grep 'ABSENT:' "$brief" "$form brief reported configured rules as absent"
+    assert_no_grep "ABSENT: $rules" "$brief" "$form brief reported configured rules as absent"
   done
   pass 'bare and projects/<name> arguments read local rules from FM_PROJECTS_OVERRIDE'
 }
@@ -1514,6 +1576,7 @@ test_registered_operational_home_uses_home_rules() {
   pass 'the registered operational home reads its own rules rather than a nonexistent project clone'
 }
 
+test_home_project_rules_in_briefs
 test_registered_operational_home_uses_home_rules
 test_registered_project_name_wins_over_firstmate_alias
 test_local_rules_in_every_brief
