@@ -1316,7 +1316,7 @@ test_ship_review_round_boundaries() {
 }
 
 test_home_project_rules_in_briefs() {
-  local home data projects kind form id project brief
+  local home data projects availability kind form id project brief
   local args=()
   home="$TMP_ROOT/home-project-rules"
   data="$TMP_ROOT/home-project-rules-data"
@@ -1327,36 +1327,44 @@ test_home_project_rules_in_briefs() {
   printf '%s\n' 'OTHER_PROJECT_DECOY' > "$data/other-rules.md"
   printf '%s\n' 'CLONE_RULE: preserve inputs.' > "$projects/sample/CLAUDE.local.md"
   printf '%s\n' 'HOME_PROJECT_RULE: keep standing decisions.' 'SECOND_LINE: RAC-123 is historical context.' > "$data/sample-rules.md"
-  for kind in no-mistakes direct-PR local-only scout secondmate; do
-    for form in bare prefixed absolute; do
-      id="home-rules-$kind-$form"
-      case "$form" in
-        bare) project=sample ;;
-        prefixed) project=projects/sample ;;
-        absolute) project="$projects/sample/" ;;
-      esac
-      case "$kind" in
-        scout) args=("$project" --scout) ;;
-        secondmate) args=(--secondmate "$project") ;;
-        *) args=("$project" --mode "$kind" --checks targeted) ;;
-      esac
-      FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" \
-        "$ROOT/bin/fm-brief.sh" "$id" "${args[@]}" >/dev/null 2>&1 || fail "$kind/$form scaffold failed"
-      brief=$(cat "$data/$id/brief.md")
-      assert_contains "$brief" "source: \`$data/sample-rules.md\`" "$kind/$form omitted the home-local rules path"
-      assert_contains "$brief" "$(cat "$data/sample-rules.md")" "$kind/$form omitted full home-local rules"
-      assert_contains "$brief" 'CLONE_RULE: preserve inputs.' "$kind/$form lost clone-local rules"
-      assert_not_contains "$brief" 'HOME_DATA_DECOY' "$kind/$form ignored the data override"
-      assert_not_contains "$brief" 'OTHER_PROJECT_DECOY' "$kind/$form included another project's rules"
+  for availability in clone-and-rules rules-absent clone-absent; do
+    case "$availability" in
+      rules-absent) rm -f "${projects:?}/sample/CLAUDE.local.md" ;;
+      clone-absent) rmdir "${projects:?}/sample" ;;
+    esac
+    for kind in no-mistakes direct-PR local-only scout secondmate; do
+      for form in bare prefixed absolute absolute-dot absolute-double-slash absolute-combined; do
+        id="home-rules-$availability-$kind-$form"
+        case "$form" in
+          bare) project=sample ;;
+          prefixed) project=projects/sample ;;
+          absolute) project="$projects/sample/" ;;
+          absolute-dot) project="$projects/sample/." ;;
+          absolute-double-slash) project="$projects/sample//" ;;
+          absolute-combined) project="$projects/sample//././/" ;;
+        esac
+        case "$kind" in
+          scout) args=("$project" --scout) ;;
+          secondmate) args=(--secondmate "$project") ;;
+          *) args=("$project" --mode "$kind" --checks targeted) ;;
+        esac
+        FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" \
+          "$ROOT/bin/fm-brief.sh" "$id" "${args[@]}" >/dev/null 2>&1 || fail "$availability/$kind/$form scaffold failed"
+        brief="$data/$id/brief.md"
+        assert_grep "source: \`$data/sample-rules.md\`" "$brief" "$availability/$kind/$form omitted the home-local rules path"
+        assert_contains "$(cat "$brief")" "$(cat "$data/sample-rules.md")" "$availability/$kind/$form omitted full home-local rules"
+        if [ "$availability" = clone-and-rules ]; then
+          assert_grep 'CLONE_RULE: preserve inputs.' "$brief" "$kind/$form lost clone-local rules"
+        else
+          assert_grep 'ABSENT:' "$brief" "$availability/$kind/$form lost explicit absence"
+          assert_grep '/CLAUDE.local.md (no project-local personal rules).' "$brief" "$availability/$kind/$form lost clone-rule absence"
+        fi
+        assert_no_grep 'HOME_DATA_DECOY' "$brief" "$kind/$form ignored the data override"
+        assert_no_grep 'OTHER_PROJECT_DECOY' "$brief" "$kind/$form included another project's rules"
+      done
     done
   done
-  rm -f "${projects:?}/sample/CLAUDE.local.md"
-  FM_HOME="$home" FM_DATA_OVERRIDE="$data" FM_PROJECTS_OVERRIDE="$projects" \
-    "$ROOT/bin/fm-brief.sh" home-only sample --scout >/dev/null 2>&1 || fail 'home-only scaffold failed'
-  brief=$(cat "$data/home-only/brief.md")
-  assert_contains "$brief" "ABSENT: $projects/sample/CLAUDE.local.md" 'home-only brief lost clone absence'
-  assert_contains "$brief" "$(cat "$data/sample-rules.md")" 'absent clone rules hid home-local rules'
-  pass 'home-local project rules reach every brief through bare, prefixed and absolute project paths'
+  pass 'home-local rules follow equivalent project paths even when clone rules or the clone are missing'
 }
 
 test_local_rules_in_every_brief() {
