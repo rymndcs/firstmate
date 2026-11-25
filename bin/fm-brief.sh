@@ -96,12 +96,14 @@
 # "blocked:": pause for a known external wait expected to clear on its own,
 # blocked when firstmate must act.
 # All scaffolds carry the project-instruction boundary from AGENTS.md section 6.
-# This script owns per-brief CLAUDE.local.md discovery: project names and
+# This script owns per-brief personal-rule discovery: project names and
 # projects/<name> resolve under FM_PROJECTS_OVERRIDE or FM_HOME/projects, and
 # absolute clone paths also work.
 # The FM_HOME directory name and absolute home/code-root paths name Firstmate itself,
 # including when its own posture is registered. The firstmate alias also names it
 # unless that name belongs to a registered project or an existing project clone.
+# Each resolved clone supplies CLAUDE.local.md and its directory name selects
+# data/<name>-rules.md under FM_DATA_OVERRIDE or FM_HOME/data.
 # Project-less charters read the home's rules; other charters read every listed
 # project's rules. Each existing file is read before writing a brief, then included
 # in full with its absolute source path for every harness and remote secondmate.
@@ -326,7 +328,7 @@ DATABASE_TOOL=$(shell_quote "$FM_ROOT/bin/fm-task-databases.sh")
 DECISION_HOLD_CMD="FM_HOME=$(shell_quote "$FM_HOME") $(shell_quote "$FM_ROOT/bin/fm-decision-hold.sh")"
 
 project_local_rules() {
-  local project=$1 clone path contents
+  local project=$1 clone name path contents
   case "$project" in
     "$FM_ROOT"|"${FM_HOME##*/}") clone=$FM_HOME ;;
     /*) clone=$project ;;
@@ -341,16 +343,19 @@ project_local_rules() {
       fi
       ;;
   esac
-  path="$clone/CLAUDE.local.md"
-  if [ ! -e "$path" ] && [ ! -L "$path" ]; then
-    printf 'ABSENT: %s (no project-local personal rules).\n' "$path"
-    return 0
-  fi
-  if [ ! -f "$path" ] || ! contents=$(cat "$path" 2>/dev/null); then
-    printf 'error: unreadable project-local rules: %s; refusing to scaffold without them\n' "$path" >&2
-    return 1
-  fi
-  printf '\nRead in full before starting work (source: %s). These personal rules apply to you on every harness:\n\n%s\n\n' "\`$path\`" "$contents"
+  name=${clone%/}
+  name=${name##*/}
+  for path in "$clone/CLAUDE.local.md" "$DATA/$name-rules.md"; do
+    if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+      printf 'ABSENT: %s (no project-local personal rules).\n' "$path"
+      continue
+    fi
+    if [ ! -f "$path" ] || ! contents=$(cat "$path" 2>/dev/null); then
+      printf 'error: unreadable project-local rules: %s; refusing to scaffold without them\n' "$path" >&2
+      return 1
+    fi
+    printf '\nRead in full before starting work (source: %s). These personal rules apply to you on every harness:\n\n%s\n\n' "\`$path\`" "$contents"
+  done
 }
 
 local_rules_section() {
